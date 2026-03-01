@@ -28,14 +28,14 @@ DT-CWPT is a signal processing technique that provides time-frequency analysis w
 dtcwpt/                  <- JUCE module root
 ├── dtcwpt.h             <- Master header + module declaration
 ├── dtcwpt.cpp           <- Unity build file
-├── dtcwpt_processor.h/.inc
-├── dtcwpt_analysis_node.h/.inc
-├── dtcwpt_synthesis_node.h/.inc
-├── dtcwpt_stateful_filter.h/.inc
-├── dtcwpt_delay_buffer.h/.inc
-├── dtcwpt_topology_planner.h/.inc
-├── dtcwpt_band_processor.h/.inc
-├── dtcwpt_complex_utils.h/.inc
+├── dtcwpt_processor.h/.ipp
+├── dtcwpt_analysis_node.h/.ipp
+├── dtcwpt_synthesis_node.h/.ipp
+├── dtcwpt_stateful_filter.h/.ipp
+├── dtcwpt_delay_buffer.h/.ipp
+├── dtcwpt_topology_planner.h/.ipp
+├── dtcwpt_band_processor.h/.ipp
+├── dtcwpt_complex_utils.h/.ipp
 ├── dtcwpt_filter_structs.h
 └── dtcwpt_filter_coeffs.h
 tests/                   <- Unit tests (optional)
