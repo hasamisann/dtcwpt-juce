@@ -1,0 +1,64 @@
+cmake_minimum_required(VERSION 3.22)
+project(dtcwpt_tests VERSION 0.1.0 LANGUAGES CXX)
+
+# C++20 required
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Add JUCE from parent directory
+add_subdirectory(../JUCE JUCE_build)
+
+# Add dtcwpt module from parent directory
+juce_add_module(../dtcwpt)
+
+# Test executable
+juce_add_console_app(dtcwpt_tests
+    PRODUCT_NAME "DT-CWPT Tests"
+)
+
+target_sources(dtcwpt_tests
+    PRIVATE
+        main.cpp
+        suites/AnalysisSynthesisTests.cpp
+        suites/ComplexUtilsTests.cpp
+        suites/DelayBufferTests.cpp
+        suites/DTCWPTProcessorTests.cpp
+        suites/StatefulFilterTests.cpp
+        suites/TopologyPlannerTests.cpp
+        util/TestUtils.cpp
+)
+
+target_include_directories(dtcwpt_tests
+    PRIVATE
+        .
+)
+
+target_link_libraries(dtcwpt_tests
+    PRIVATE
+        dtcwpt
+        juce::juce_core
+        juce::juce_audio_basics
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+# Enable testing
+enable_testing()
+add_test(NAME dtcwpt_unit_tests COMMAND dtcwpt_tests)
+
+# Print configuration summary
+message(STATUS "")
+message(STATUS "DT-CWPT Tests Configuration:")
+message(STATUS "  Version: ${PROJECT_VERSION}")
+message(STATUS "  C++ Standard: ${CMAKE_CXX_STANDARD}")
+message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "  Generator: ${CMAKE_GENERATOR}")
+message(STATUS "")
+message(STATUS "To build:")
+message(STATUS "  cmake --build . --config Release")
+message(STATUS "")
+message(STATUS "To run tests:")
+message(STATUS "  ctest --output-on-failure -C Release")
+message(STATUS "")
