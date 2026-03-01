@@ -6,8 +6,32 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Add JUCE from parent directory
-add_subdirectory(../JUCE JUCE_build)
+# Find JUCE (in order of priority)
+# 1. System-installed JUCE (via find_package)
+# 2. Local submodule at ../JUCE
+# 3. Auto-download via FetchContent
+if(NOT DEFINED JUCE_FOUND)
+    find_package(JUCE QUIET)
+endif()
+
+if(NOT JUCE_FOUND)
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../JUCE/CMakeLists.txt)
+        message(STATUS "Using JUCE from local submodule at ../JUCE")
+        add_subdirectory(../JUCE JUCE_build)
+    else()
+        message(STATUS "JUCE not found locally. Downloading via FetchContent...")
+        include(FetchContent)
+        FetchContent_Declare(
+            JUCE
+            GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
+            GIT_TAG 8.0.0
+            GIT_SHALLOW TRUE
+        )
+        FetchContent_MakeAvailable(JUCE)
+    endif()
+else()
+    message(STATUS "Using system-installed JUCE")
+endif()
 
 # Add dtcwpt module from parent directory
 juce_add_module(../dtcwpt)
