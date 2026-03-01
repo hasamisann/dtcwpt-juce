@@ -6,19 +6,25 @@ Dual-Tree Complex Wavelet Packet Transform library for JUCE 8.x
 
 ## Overview
 
-DT-CWPT is a signal processing technique that provides time-frequency analysis with perfect reconstruction capability. It decomposes input signals into multiple sub-bands using dual-tree complex wavelet transform, allowing flexible frequency resolution through packet decomposition.
+This library implements the Dual-Tree Complex Wavelet Packet Transform (Bayram & Selesnick, 2008) as a JUCE module. It performs subband decomposition of audio signals via dual-tree complex wavelet filter banks with configurable tree topology, and reconstructs the output with perfect reconstruction. A callback interface allows user-defined processing on the complex subbands between analysis and synthesis.
+
+---
+
+## Requirements
+
+- JUCE: tested with 8.0.12 (may work with 6.x or later, but not guaranteed)
+- C++: C++20 or later (tested with C++20)
 
 ---
 
 ## Features
 
-- Perfect Reconstruction: Input signals can be fully reconstructed from decomposed sub-bands (with proper configuration)
-- Flexible Topology: Supports various tree structures (full packet, wavelet tree, custom mixed-depth)
-- Band Processing: Pluggable subband processing between analysis and synthesis via the `BandProcessor` interface
-- Complex Utilities: Re/Im <-> Magnitude/Phase conversion with in-place support
-- Sidechain Support: Parallel CWPT analysis of sidechain input for cross-signal processing (e.g., spectral morphing)
-- Stateful Processing: Sample-accurate processing using stateful filters
-- Latency Compensation: Automatic delay calculation and compensation for aligned output
+- Configurable tree topology: full packet, wavelet tree, or arbitrary mixed-depth binary trees
+- Perfect reconstruction for any valid topology
+- Pluggable subband processing via the `BandProcessor` interface (per-band or cross-band)
+- Re/Im to Magnitude/Phase conversion with in-place support
+- Sidechain input for parallel analysis
+- Sample-accurate stateful filtering with automatic inter-band delay compensation
 
 ---
 
@@ -136,14 +142,23 @@ target_link_libraries(MyTarget PRIVATE dtcwpt)
 
 ## Tests
 
-The `tests/` directory contains unit tests. Build and run them with your preferred build system:
+The `tests/` directory contains unit tests.
 
-**CMake example:**
+### Building Tests
+
+Prerequisites: JUCE must be available in your environment.
+
+Build commands:
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -B build -S tests
 cmake --build build --config Release
-ctest --test-dir build --output-on-failure
+ctest --test-dir build -C Release --output-on-failure
 ```
+
+The build system will automatically locate JUCE in the following order:
+1. System-installed JUCE (via CMake's `find_package`)
+2. Local `../JUCE` directory (e.g., git submodule)
+3. Download automatically via CMake FetchContent (if neither above is found)
 
 ---
 
@@ -151,18 +166,18 @@ ctest --test-dir build --output-on-failure
 
 ### Depth Limitation
 
-- Maximum tree depth: **8** (maximum 256 leaf bands at full depth)
+- Maximum tree depth: 8 (maximum 256 leaf bands at full depth)
 
 ### Topology (Destinations) Rules
 
-`TopologyConfig::destinations` defines the **leaf nodes** of a binary wavelet packet tree.
+`TopologyConfig::destinations` defines the leaf nodes of a binary wavelet packet tree.
 Each destination is a path string of `'L'` (low-pass) and `'H'` (high-pass) characters, where the string length equals the node depth.
 
-**The destinations must form the complete leaf set of a valid binary tree where every node has either 0 or 2 children, and the tree height does not exceed `maxDepth + 1`.**
+The destinations must form the complete leaf set of a valid binary tree where every node has either 0 or 2 children, and the tree height does not exceed `maxDepth + 1`.
 
 In other words:
 
-- If a node is split (has children), **both** its L-child and H-child must exist in the tree
+- If a node is split (has children), both its L-child and H-child must exist in the tree
 - Leaf nodes (destinations) have no children
 - No path may be longer than `maxDepth` characters
 
@@ -178,7 +193,7 @@ In other words:
 
 #### Valid Topology Examples
 
-**Example 1: Full packet at depth 2** -- All leaves at the same depth.
+Example 1: Full packet at depth 2 -- All leaves at the same depth.
 
 ```
          (root)
@@ -192,7 +207,7 @@ destinations = {"LL", "LH", "HL", "HH"}    Valid
 
 Every internal node (root, L, H) has exactly 2 children. All 4 leaves are listed.
 
-**Example 2: Mixed-depth tree** -- Leaves at different depths.
+Example 2: Mixed-depth tree -- Leaves at different depths.
 
 ```
          (root)
@@ -206,7 +221,7 @@ destinations = {"L", "HL", "HH"}    Valid
 
 `L` is a leaf (no children). `H` is an internal node with both children `HL` and `HH`.
 
-**Example 3: Wavelet tree at depth 3** -- Only the L-branch is fully decomposed.
+Example 3: Wavelet tree at depth 3 -- Only the L-branch is fully decomposed.
 
 ```
               (root)
@@ -222,7 +237,7 @@ destinations = {"LLL", "LLH", "LH", "H"}    Valid
 
 #### Invalid Topology Examples
 
-**Invalid 1: Missing sibling** -- Node H is split, but only HL exists (HH is missing).
+Invalid 1: Missing sibling -- Node H is split, but only HL exists (HH is missing).
 
 ```
          (root)
@@ -234,19 +249,19 @@ destinations = {"LLL", "LLH", "LH", "H"}    Valid
 destinations = {"L", "HL"}    INVALID -- H has only 1 child
 ```
 
-**Invalid 2: Overlapping paths** -- `"L"` is listed as a leaf, but `"LL"` implies `L` is an internal node.
+Invalid 2: Overlapping paths -- `"L"` is listed as a leaf, but `"LL"` implies `L` is an internal node.
 
 ```
 destinations = {"L", "LL", "LH", "H"}    INVALID -- L cannot be both a leaf and a parent
 ```
 
-**Invalid 3: Incomplete leaves** -- Internal node L has children LL and LH, but only LL is listed.
+Invalid 3: Incomplete leaves -- Internal node L has children LL and LH, but only LL is listed.
 
 ```
 destinations = {"LL", "H"}    INVALID -- LH is missing (L must have both children)
 ```
 
-> **Warning:** The production library performs only minimal validation on destinations (checks for non-empty list). Providing an invalid topology will result in undefined behavior. Validate your topology before passing it to `prepareToPlay()`.
+The production library performs only minimal validation on destinations (checks for non-empty list). Providing an invalid topology will result in undefined behavior. Validate your topology before passing it to `prepareToPlay()`.
 
 ### Double Precision
 
@@ -286,12 +301,12 @@ The DT-CWPT processor follows a fixed 4-stage pipeline:
 Input -> [Analysis] -> [Delay Compensation] -> [Band Processing] -> [Synthesis] -> Output
 ```
 
-| Stage | Description |
-|-------|-------------|
-| **Analysis** | Decomposes input through dual-tree filter banks into sub-bands at each destination |
-| **Delay Compensation** | Aligns sub-band phases before cross-band processing (automatic) |
-| **Band Processing** | User-defined processing on aligned sub-bands via `BandProcessor` (optional) |
-| **Synthesis** | Reconstructs the output signal from processed sub-bands via inverse transform |
+| Stage               | Description                                                                        |
+| ------------------- | ---------------------------------------------------------------------------------- |
+| Analysis            | Decomposes input through dual-tree filter banks into sub-bands at each destination |
+| Delay Compensation  | Aligns sub-band phases before cross-band processing (automatic)                    |
+| Band Processing | User-defined processing on aligned sub-bands via `BandProcessor` (optional)        |
+| Synthesis       | Reconstructs the output signal from processed sub-bands via inverse transform      |
 
 Without a registered `BandProcessor`, the pipeline acts as a passthrough (perfect reconstruction).
 
@@ -354,7 +369,7 @@ dtcwpt::complexToMagPhase(re, im, mag, phase, n);
 dtcwpt::magPhaseToComplex(mag, phase, re, im, n);
 ```
 
-**In-place operation is supported.** You can pass the same pointers for input and output (e.g., `re == mag` and `im == phase`), which avoids the need for temporary buffers on the audio thread:
+In-place operation is supported. You can pass the same pointers for input and output (e.g., `re == mag` and `im == phase`), which avoids the need for temporary buffers on the audio thread:
 
 ```cpp
 // In-place: re becomes magnitude, im becomes phase
@@ -435,7 +450,7 @@ Registers a band processor (takes ownership). If `prepareToPlay()` was already c
 void processSidechain(juce::AudioBuffer<double>& sidechainBuffer);
 ```
 
-Feeds sidechain audio for parallel CWPT analysis. Must be called with the same sample count as the main `processBlock()` call, and must be called **before** `processBlock()` for the same block.
+Feeds sidechain audio for parallel CWPT analysis. Must be called with the same sample count as the main `processBlock()` call, and must be called before `processBlock()` for the same block.
 
 ---
 
@@ -530,27 +545,36 @@ Convert between rectangular (Re/Im) and polar (Magnitude/Phase) representations.
 
 ## Technical Details
 
-### What is DT-CWPT?
+### Background
 
-DT-CWPT is an advanced wavelet transform that combines:
+The standard Discrete Wavelet Transform (DWT) decomposes a signal through iterated 2-channel filter banks (low-pass/high-pass analysis, downsampling by 2, and corresponding synthesis). The DWT applies this only to the low-pass branch, yielding logarithmic frequency tiling. However, the decimated DWT is shift-variant: small time shifts in the input produce large changes in coefficients.
 
-- Dual-Tree Structure: Two parallel filter banks (real and imaginary trees) for complex coefficient representation
-- Complex Wavelets: Maintains phase information through complex-valued coefficients
-- Packet Decomposition: Flexible frequency decomposition beyond standard wavelet transforms
-- Shift-Invariance: Reduced sensitivity to signal shifts compared to discrete wavelet transform
+The Dual-Tree Complex Wavelet Transform (DT-CWT) [1] mitigates this by running two parallel filter banks whose wavelets form an approximate Hilbert pair. The resulting complex coefficients have near shift-invariant magnitude and cleanly separated phase. The wavelet packet extension (DT-CWPT) [2] generalises the tree structure so that both the low-pass and high-pass branches can be further decomposed, allowing arbitrary frequency tilings beyond the fixed logarithmic layout of the DT-CWT.
 
-### Processing Flow
+### Filter coefficients
 
-1. **Analysis**: Input signal is decomposed through dual-tree filter banks into multiple sub-bands at the configured destination depths
-2. **Delay Compensation**: Sub-band phases are aligned by compensating for depth-dependent filter delays (automatic, ensures temporal coherence for cross-band processing)
-3. **Band Processing**: Optional user-defined processing applied to aligned sub-bands via `BandProcessor` interface
-4. **Synthesis**: Processed sub-bands are recombined through inverse dual-tree transform, producing the reconstructed output with latency compensation
+This implementation uses two sets of filters:
 
----
+| Level | Filters | Taps (lo / hi) |
+|-------|---------|-----------------|
+| 1 | CDF 9/7 biorthogonal | 10 / 8 |
+| >= 2 | Kingsbury Q-shift | 14 / 14 |
 
-## JUCE Compatibility
+The half-sample delay between the two trees' filter sets produces the approximate 90-degree phase shift required for the Hilbert pair relationship.
 
-This library is designed for **JUCE 8.x**.
+### Perfect reconstruction
+
+Perfect reconstruction holds for any valid binary tree topology (every internal node has exactly two children). The PR filter bank conditions are:
+
+$$H_0(z)G_0(z) + H_1(z)G_1(z) = 2z^{-l}$$
+
+$$H_0(-z)G_0(z) + H_1(-z)G_1(z) = 0$$
+
+### References
+
+1. Selesnick, I. W., Baraniuk, R. G., & Kingsbury, N. G. (2005). The dual-tree complex wavelet transform. *IEEE Signal Processing Magazine*, 22(6), 123-151. https://doi.org/10.1109/MSP.2005.1550194
+
+2. Bayram, I., & Selesnick, I. W. (2008). On the dual-tree complex wavelet packet and M-band transforms. *IEEE Transactions on Signal Processing*, 56(6), 2298-2310. https://doi.org/10.1109/TSP.2007.916129
 
 ---
 
