@@ -42,3 +42,6 @@ logs/
 CTestTestfile.cmake
 Testing/
 _deps/
+
+# JUCE submodule (keep locally, exclude from GitHub)
+JUCE/
