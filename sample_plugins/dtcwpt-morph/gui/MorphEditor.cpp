@@ -51,9 +51,16 @@ MorphEditor::MorphEditor (MorphAudioProcessor& processor)
     showMain();
 
     // -----------------------------------------------------------------------
-    // Fixed editor size
+    // Resizable editor with fixed 7:10 aspect ratio.
+    // Min size: 280×400 (1×), Max size: 560×800 (2×).
+    // setResizable(true, true) enables the resize handle for Standalone and
+    // allows the host to resize the editor window in VST3/AU.
     // -----------------------------------------------------------------------
     setSize (kEditorWidth, kEditorHeight);
+    setResizable (true, true);
+    setResizeLimits (kEditorWidth, kEditorHeight, kEditorWidth * 2, kEditorHeight * 2);
+    getConstrainer()->setFixedAspectRatio (
+        static_cast<double> (kEditorWidth) / static_cast<double> (kEditorHeight));
 }
 
 //==============================================================================

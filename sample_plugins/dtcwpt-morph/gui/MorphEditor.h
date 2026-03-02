@@ -14,7 +14,8 @@
  * showMain(), showTopology(), and showAbout() methods, which are wired as
  * callbacks into the sub-views.
  *
- * The editor has a fixed size of 280 × 400 pixels.
+ * The editor is resizable with a fixed 7:10 aspect ratio. Minimum size is
+ * 280×400 pixels; maximum size is 560×800 pixels (2× scale).
  */
 
 #include "MainView.h"
@@ -42,7 +43,8 @@ public:
      * @brief Constructs the editor.
      *
      * Creates all three sub-views, wires navigation callbacks, shows MainView,
-     * and sets the editor to a fixed 280 × 400 pixel size.
+     * and configures the editor to be resizable with a fixed 7:10 aspect ratio
+     * (min: 280×400, max: 560×800).
      *
      * @param processor  Reference to the owning MorphAudioProcessor.
      *                   Passed to sub-views that need APVTS or bridge access.
