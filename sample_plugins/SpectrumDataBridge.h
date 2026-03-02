@@ -99,7 +99,7 @@ private:
     {
         std::array<float, kSlotSize> input  {};   ///< Input mono samples
         std::array<float, kSlotSize> output {};   ///< Output mono samples
-        int fill { 0 };                           ///< Number of samples filled (0..kSlotSize)
+        std::atomic<int> fill { 0 };              ///< Number of samples filled (0..kSlotSize); atomic for thread-safety
     };
 
     //==============================================================================
