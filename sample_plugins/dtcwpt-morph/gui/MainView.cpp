@@ -271,23 +271,24 @@ void MainView::resized()
     // -----------------------------------------------------------------------
     // Header bar (top, full width, kHeaderHeight px)
     // -----------------------------------------------------------------------
-    constexpr int kNavButtonWidth = 36;
+    constexpr int kNavButtonWidth = 50;  // Increased from 36 to fit "Bands"
     constexpr int kNavButtonMargin = 4;
 
-    // About button — far right
-    aboutButton_.setBounds (w - kNavButtonWidth - kNavButtonMargin,
+    // About button — far right (narrower for single "i" character)
+    constexpr int kAboutButtonWidth = 28;  // "i" is compact
+    aboutButton_.setBounds (w - kAboutButtonWidth - kNavButtonMargin,
                             kNavButtonMargin,
-                            kNavButtonWidth,
+                            kAboutButtonWidth,
                             kHeaderHeight - 2 * kNavButtonMargin);
 
-    // Settings button — left of About
-    settingsButton_.setBounds (w - 2 * (kNavButtonWidth + kNavButtonMargin),
+    // Settings/Bands button — left of About (wider for "Bands" text)
+    settingsButton_.setBounds (w - kAboutButtonWidth - kNavButtonMargin - kNavButtonWidth - kNavButtonMargin,
                                kNavButtonMargin,
                                kNavButtonWidth,
                                kHeaderHeight - 2 * kNavButtonMargin);
 
-    // Title — occupies the rest of the header
-    titleLabel_.setBounds (8, 0, w - 2 * (kNavButtonWidth + kNavButtonMargin) - 12, kHeaderHeight);
+    // Title — occupies the rest of the header (adjusted for different button widths)
+    titleLabel_.setBounds (8, 0, w - kNavButtonWidth - kAboutButtonWidth - 2 * kNavButtonMargin - 16, kHeaderHeight);
 
     // -----------------------------------------------------------------------
     // Bottom section heights
