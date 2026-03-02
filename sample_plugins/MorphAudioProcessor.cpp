@@ -65,6 +65,10 @@ void MorphAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     mainDoubleBuffer_.setSize (2, samplesPerBlock);
     scDoubleBuffer_.setSize   (2, samplesPerBlock);
 
+    // Pre-allocate mono scratch buffers for spectrum bridge (avoids heap alloc in processBlock)
+    inputMonoScratch_.setSize  (1, samplesPerBlock);
+    outputMonoScratch_.setSize (1, samplesPerBlock);
+
     // Build the DTCWPTProcessor
     rebuildDTCWPT();
 }
@@ -75,6 +79,8 @@ void MorphAudioProcessor::releaseResources()
     morphProcessor_ = nullptr;
     mainDoubleBuffer_.setSize (0, 0);
     scDoubleBuffer_.setSize   (0, 0);
+    inputMonoScratch_.setSize  (0, 0);
+    outputMonoScratch_.setSize (0, 0);
 }
 
 //==============================================================================
@@ -168,16 +174,13 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     // -------------------------------------------------------------------------
     // 3. Save a copy of the float input for the spectrum bridge (mono-averaged)
-    //    We'll do this after step 6 from the double buffer, but we need to
-    //    average across input channels here first.
+    //    Use the pre-allocated inputMonoScratch_ member to avoid heap allocation
+    //    on the audio thread.
     // -------------------------------------------------------------------------
-    // Allocate a small stack buffer for mono-averaged input samples.
-    // (numSamples ≤ currentBlockSize_, which is bounded at prepare time.)
-    juce::AudioBuffer<float> inputMonoSnapshot (1, numSamples);
-    inputMonoSnapshot.clear();
+    inputMonoScratch_.clear();
     for (int ch = 0; ch < std::min (numChannels, 2); ++ch)
     {
-        inputMonoSnapshot.addFrom (0, 0,
+        inputMonoScratch_.addFrom (0, 0,
                                     buffer,
                                     ch, 0,
                                     numSamples,
@@ -246,20 +249,21 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     // -------------------------------------------------------------------------
     // 9. Push mono-averaged input + output to SpectrumDataBridge
+    //    Use pre-allocated outputMonoScratch_ member to avoid heap allocation
+    //    on the audio thread.
     // -------------------------------------------------------------------------
-    juce::AudioBuffer<float> outputMonoSnapshot (1, numSamples);
-    outputMonoSnapshot.clear();
+    outputMonoScratch_.clear();
     for (int ch = 0; ch < 2; ++ch)
     {
-        outputMonoSnapshot.addFrom (0, 0,
+        outputMonoScratch_.addFrom (0, 0,
                                      buffer,
                                      ch, 0,
                                      numSamples,
                                      0.5f);
     }
 
-    spectrumBridge_.push (inputMonoSnapshot.getReadPointer (0),
-                           outputMonoSnapshot.getReadPointer (0),
+    spectrumBridge_.push (inputMonoScratch_.getReadPointer (0),
+                           outputMonoScratch_.getReadPointer (0),
                            numSamples);
 }
 

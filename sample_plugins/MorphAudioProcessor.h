@@ -319,6 +319,16 @@ private:
     juce::AudioBuffer<double> scDoubleBuffer_;
 
     //==============================================================================
+    // Mono scratch buffers for spectrum bridge (pre-allocated in prepareToPlay)
+    //==============================================================================
+
+    /** Pre-allocated mono scratch buffer for input spectrum snapshot (single channel). */
+    juce::AudioBuffer<float> inputMonoScratch_;
+
+    /** Pre-allocated mono scratch buffer for output spectrum snapshot (single channel). */
+    juce::AudioBuffer<float> outputMonoScratch_;
+
+    //==============================================================================
     // Cached prepare() state
     //==============================================================================
 
