@@ -101,6 +101,9 @@ private:
     /** VST3 trademark notice label. */
     juce::Label trademarkLabel_;
 
+    /** SIL Open Font License notice for Hanken Grotesk. */
+    juce::Label oflLicenseLabel_;
+
     /** Back button — returns to the main view. */
     juce::TextButton backButton_;
 

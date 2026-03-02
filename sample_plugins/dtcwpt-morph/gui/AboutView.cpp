@@ -5,6 +5,8 @@
 
 #include "AboutView.h"
 
+#include "FontHelper.h"
+
 //==============================================================================
 // Colours (anonymous namespace)
 //==============================================================================
@@ -54,7 +56,7 @@ AboutView::AboutView (std::function<void()> onBack)
     // Plugin name label
     // -----------------------------------------------------------------------
     pluginNameLabel_.setText ("DT-CWPT Morph", juce::dontSendNotification);
-    pluginNameLabel_.setFont (juce::Font (28.0f, juce::Font::bold));
+    pluginNameLabel_.setFont (FontHelper::getFont (28.0f, true));
     pluginNameLabel_.setColour (juce::Label::textColourId, juce::Colour (kTextColour));
     pluginNameLabel_.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (pluginNameLabel_);
@@ -63,7 +65,7 @@ AboutView::AboutView (std::function<void()> onBack)
     // Version label
     // -----------------------------------------------------------------------
     versionLabel_.setText ("Version 0.1.0", juce::dontSendNotification);
-    versionLabel_.setFont (juce::Font (14.0f));
+    versionLabel_.setFont (FontHelper::getFont (14.0f));
     versionLabel_.setColour (juce::Label::textColourId, juce::Colour (kMutedTextColour));
     versionLabel_.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (versionLabel_);
@@ -74,25 +76,35 @@ AboutView::AboutView (std::function<void()> onBack)
     const juce::Colour linkColour (kLinkColour);
 
     githubLink_.setColour (juce::HyperlinkButton::textColourId, linkColour);
-    githubLink_.setFont (juce::Font (13.0f), false, juce::Justification::centred);
+    githubLink_.setFont (FontHelper::getFont (13.0f), false, juce::Justification::centred);
     addAndMakeVisible (githubLink_);
 
     twitterLink_.setColour (juce::HyperlinkButton::textColourId, linkColour);
-    twitterLink_.setFont (juce::Font (13.0f), false, juce::Justification::centred);
+    twitterLink_.setFont (FontHelper::getFont (13.0f), false, juce::Justification::centred);
     addAndMakeVisible (twitterLink_);
 
     soundcloudLink_.setColour (juce::HyperlinkButton::textColourId, linkColour);
-    soundcloudLink_.setFont (juce::Font (13.0f), false, juce::Justification::centred);
+    soundcloudLink_.setFont (FontHelper::getFont (13.0f), false, juce::Justification::centred);
     addAndMakeVisible (soundcloudLink_);
 
     // -----------------------------------------------------------------------
     // Trademark label
     // -----------------------------------------------------------------------
     trademarkLabel_.setText (kTrademarkText, juce::dontSendNotification);
-    trademarkLabel_.setFont (juce::Font (10.0f));
+    trademarkLabel_.setFont (FontHelper::getFont (10.0f));
     trademarkLabel_.setColour (juce::Label::textColourId, juce::Colour (kMutedTextColour));
     trademarkLabel_.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (trademarkLabel_);
+
+    // -----------------------------------------------------------------------
+    // OFL license notice
+    // -----------------------------------------------------------------------
+    oflLicenseLabel_.setText ("Font: Hanken Grotesk (SIL Open Font License v1.1)",
+                               juce::dontSendNotification);
+    oflLicenseLabel_.setFont (FontHelper::getFont (9.0f));
+    oflLicenseLabel_.setColour (juce::Label::textColourId, juce::Colour (kMutedTextColour));
+    oflLicenseLabel_.setJustificationType (juce::Justification::centred);
+    addAndMakeVisible (oflLicenseLabel_);
 
     // -----------------------------------------------------------------------
     // Back button
@@ -124,6 +136,7 @@ void AboutView::paint (juce::Graphics& g)
 void AboutView::resized()
 {
     constexpr int kRowH   = 28;
+    constexpr int kOflH   = 20;
     constexpr int kGap    = 10;
     constexpr int kLinkH  = 24;
     constexpr int kBtnH   = 28;
@@ -145,7 +158,9 @@ void AboutView::resized()
                      + kGap
                      + kLinkH         // soundcloud
                      + kGap * 2
-                     + kRowH;         // trademark
+                     + kRowH          // trademark
+                     + kGap
+                     + kOflH;         // OFL license notice
 
     int y = (getHeight() - totalH) / 2;
     if (y < 44) y = 44;  // don't overlap back button
@@ -166,4 +181,7 @@ void AboutView::resized()
     y += kLinkH + kGap * 2;
 
     trademarkLabel_.setBounds (0, y, w, kRowH);
+    y += kRowH + kGap;
+
+    oflLicenseLabel_.setBounds (0, y, w, kOflH);
 }
