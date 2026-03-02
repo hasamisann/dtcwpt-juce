@@ -306,30 +306,37 @@ void TopologyEditorView::splitNode (int nodeId)
     if (!node || !node->isLeaf) return;
     if (nodeDepth (nodeId) >= kMaxDepth) return;
 
-    const float midFreq = (node->freqLow + node->freqHigh) * 0.5f;
+    // Cache parent properties before any push_back, which may reallocate
+    // nodes_ and invalidate the `node` pointer (use-after-free fix).
+    const float parentFreqLow  = node->freqLow;
+    const float parentFreqHigh = node->freqHigh;
+    const std::string parentPath = node->path;
+    node = nullptr; // Discard to prevent accidental use after reallocation.
+
+    const float midFreq = (parentFreqLow + parentFreqHigh) * 0.5f;
 
     // Left child (L)
     TreeNode leftChild;
     leftChild.nodeId   = 2 * nodeId;
-    leftChild.path     = node->path + "L";
+    leftChild.path     = parentPath + "L";
     leftChild.isLeaf   = true;
-    leftChild.freqLow  = node->freqLow;
+    leftChild.freqLow  = parentFreqLow;
     leftChild.freqHigh = midFreq;
-    nodes_.push_back (leftChild);
-    node->children.push_back (leftChild.nodeId);
+    nodes_.push_back (leftChild); // May reallocate nodes_.
 
     // Right child (H)
     TreeNode rightChild;
     rightChild.nodeId   = 2 * nodeId + 1;
-    rightChild.path     = node->path + "H";
+    rightChild.path     = parentPath + "H";
     rightChild.isLeaf   = true;
     rightChild.freqLow  = midFreq;
-    rightChild.freqHigh = node->freqHigh;
-    nodes_.push_back (rightChild);
+    rightChild.freqHigh = parentFreqHigh;
+    nodes_.push_back (rightChild); // May reallocate nodes_.
 
-    // Re-find node pointer (push_back may have reallocated)
+    // Re-acquire parent pointer after all push_backs are complete.
     if (auto* n = findNode (nodeId))
     {
+        n->children.push_back (leftChild.nodeId);
         n->children.push_back (rightChild.nodeId);
         n->isLeaf = false;
     }
@@ -345,17 +352,25 @@ void TopologyEditorView::mergeNode (int nodeId)
     {
         auto* n = findNode (id);
         if (!n) return;
-        for (int childId : n->children)
+        // Cache children before erasing from nodes_, which shifts elements
+        // and may invalidate the `n` pointer (iterator/pointer invalidation fix).
+        const std::vector<int> grandchildren = n->children;
+        for (int childId : grandchildren)
             removeDescendants (childId);
         nodes_.erase (std::remove_if (nodes_.begin(), nodes_.end(),
                                       [id] (const TreeNode& tn) { return tn.nodeId == id; }),
                       nodes_.end());
     };
 
-    for (int childId : node->children)
+    // Cache the immediate children before calling removeDescendants, because
+    // erasing descendants from nodes_ shifts elements and invalidates `node`.
+    const std::vector<int> childrenToMerge = node->children;
+    node = nullptr; // Discard to prevent accidental use after pointer invalidation.
+
+    for (int childId : childrenToMerge)
         removeDescendants (childId);
 
-    // Re-find after erase
+    // Re-acquire parent pointer after all erasures are complete.
     if (auto* n = findNode (nodeId))
     {
         n->children.clear();
