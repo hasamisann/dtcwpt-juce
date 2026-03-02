@@ -4,6 +4,7 @@
  */
 
 #include "WiperLookAndFeel.h"
+#include "FontHelper.h"
 
 //==============================================================================
 // Constructor
@@ -118,4 +119,19 @@ void WiperLookAndFeel::drawRotarySlider (juce::Graphics& g,
                    centreY - knobRadius,
                    knobRadius * 2.0f,
                    knobRadius * 2.0f);
+}
+
+juce::Font WiperLookAndFeel::getTextButtonFont (juce::TextButton&, int buttonHeight)
+{
+    return FontHelper::getFont (static_cast<float> (buttonHeight) * 0.6f);
+}
+
+juce::Font WiperLookAndFeel::getLabelFont (juce::Label&)
+{
+    return FontHelper::getFont (11.0f);
+}
+
+juce::Font WiperLookAndFeel::getSliderPopupFont (juce::Slider&)
+{
+    return FontHelper::getFont (11.0f);
 }

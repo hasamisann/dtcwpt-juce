@@ -61,6 +61,15 @@ public:
                            float rotaryEndAngle,
                            juce::Slider& slider) override;
 
+    /** Returns Hanken Grotesk font for text buttons. */
+    juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override;
+
+    /** Returns Hanken Grotesk font for labels. */
+    juce::Font getLabelFont (juce::Label&) override;
+
+    /** Returns Hanken Grotesk font for slider text boxes. */
+    juce::Font getSliderPopupFont (juce::Slider&) override;
+
 private:
     //==============================================================================
     // Visual constants
