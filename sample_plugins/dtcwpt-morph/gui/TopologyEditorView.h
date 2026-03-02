@@ -120,6 +120,7 @@ private:
         bool                    isLeaf    { true };
         float                   freqLow   { 0.0f };  ///< Hz
         float                   freqHigh  { 0.0f };  ///< Hz
+        float                   slot      { 0.0f };  ///< Vertical slot index (set by assignSlots())
         std::vector<int>        children;            ///< nodeIds of children (empty if leaf)
         juce::Rectangle<float>  bounds;              ///< Screen rect (set by layoutTree())
     };
@@ -137,6 +138,17 @@ private:
 
     /** Recomputes node screen bounds using current pan/zoom state. */
     void layoutTree();
+
+    /**
+     * @brief Recursive bottom-up pass: assigns sequential vertical slot indices
+     *        to all nodes. Leaves get unique integer slots; internal nodes get
+     *        the average slot of their children.
+     *
+     * @param nodeId    The node to process.
+     * @param nextSlot  The next available leaf slot index.
+     * @return          The updated next available slot index after this subtree.
+     */
+    int assignSlots (int nodeId, int nextSlot);
 
     /**
      * @brief Splits a leaf node into L/H children (if depth < kMaxDepth).
@@ -192,6 +204,32 @@ private:
     void drawTooltip (juce::Graphics& g, const TreeNode& node) const;
 
     //==============================================================================
+    // Preset topology generators
+    //==============================================================================
+
+    /**
+     * @brief Generates a DWT (Discrete Wavelet Transform) topology of the given depth.
+     *
+     * A DWT of depth N produces N+1 leaves: "H", "LH", "LLH", ..., "L...LH", "L...L".
+     * The low-frequency band is recursively split at each level.
+     *
+     * @param depth  Number of decomposition levels (1–8).
+     * @return       Vector of destination path strings in frequency order.
+     */
+    static std::vector<std::string> generateDWT (int depth);
+
+    /**
+     * @brief Generates a Full Tree topology of the given depth.
+     *
+     * A Full Tree of depth N produces 2^N leaves by recursively splitting
+     * every node at each level. Leaves are enumerated in DFS order (L before H).
+     *
+     * @param depth  Number of decomposition levels (1–4).
+     * @return       Vector of destination path strings in DFS order.
+     */
+    static std::vector<std::string> generateFullTree (int depth);
+
+    //==============================================================================
     // Constants
     //==============================================================================
 
@@ -205,8 +243,8 @@ private:
     /** Horizontal spacing between depth levels. */
     static constexpr float kDepthSpacing = 80.0f;
 
-    /** Vertical spacing between sibling nodes. */
-    static constexpr float kVertSpacing = 30.0f;
+    /** Vertical height per leaf slot (kNodeHeight + padding). */
+    static constexpr float kSlotHeight = kNodeHeight + 6.0f;  // = 30.0f
 
     //==============================================================================
     // Members
@@ -231,6 +269,9 @@ private:
 
     /** Back button */
     juce::TextButton backButton_ { "< Back" };
+
+    /** Preset topology selector ComboBox. */
+    juce::ComboBox presetCombo_;
 
     /** Callback for back-button click. */
     std::function<void()> onBack_;

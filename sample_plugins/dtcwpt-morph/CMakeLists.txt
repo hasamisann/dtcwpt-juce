@@ -1,5 +1,13 @@
 project(dtcwpt_morph_plugin VERSION 0.1.0 LANGUAGES CXX)
 
+# Embedded font resources (Hanken Grotesk, SIL OFL v1.1)
+juce_add_binary_data(DtcwptMorphResources
+    SOURCES
+        resources/HankenGrotesk-Regular.ttf
+        resources/HankenGrotesk-Bold.ttf
+        resources/OFL.txt
+)
+
 # DT-CWPT Morph Plugin target
 juce_add_plugin(DtcwptMorph
     COMPANY_NAME                "LTSU"
@@ -24,6 +32,7 @@ target_sources(DtcwptMorph
         TopologyState.h
         SpectrumDataBridge.h
         SpectrumDataBridge.cpp
+        gui/FontHelper.h
         gui/WiperLookAndFeel.h
         gui/WiperLookAndFeel.cpp
         gui/SpectrumAnalyzerWidget.h
@@ -60,6 +69,7 @@ endif()
 
 target_link_libraries(DtcwptMorph
     PRIVATE
+        DtcwptMorphResources
         dtcwpt
         juce::juce_audio_processors
         juce::juce_gui_basics

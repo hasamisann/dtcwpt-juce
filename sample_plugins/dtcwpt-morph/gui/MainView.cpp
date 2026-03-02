@@ -5,6 +5,7 @@
 
 #include "MainView.h"
 
+#include "FontHelper.h"
 #include "MorphAudioProcessor.h"
 
 //==============================================================================
@@ -43,7 +44,7 @@ MainView::MainView (MorphAudioProcessor& processor)
     // Header bar
     // -----------------------------------------------------------------------
     titleLabel_.setText ("DT-CWPT Morph", juce::dontSendNotification);
-    titleLabel_.setFont (juce::Font (juce::FontOptions().withHeight (16.0f).withStyle ("Bold")));
+    titleLabel_.setFont (FontHelper::getFont (16.0f, true));
     titleLabel_.setColour (juce::Label::textColourId, juce::Colour (kTitleColour));
     titleLabel_.setJustificationType (juce::Justification::centredLeft);
     addAndMakeVisible (titleLabel_);
@@ -70,7 +71,7 @@ MainView::MainView (MorphAudioProcessor& processor)
     addAndMakeVisible (magnitudeKnob_);
 
     magnitudeLabel_.setText ("Magnitude", juce::dontSendNotification);
-    magnitudeLabel_.setFont (juce::Font (juce::FontOptions().withHeight (11.0f)));
+    magnitudeLabel_.setFont (FontHelper::getFont (11.0f));
     magnitudeLabel_.setColour (juce::Label::textColourId, juce::Colour (kLabelColour));
     magnitudeLabel_.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (magnitudeLabel_);
@@ -84,7 +85,7 @@ MainView::MainView (MorphAudioProcessor& processor)
     addAndMakeVisible (phaseKnob_);
 
     phaseLabel_.setText ("Phase", juce::dontSendNotification);
-    phaseLabel_.setFont (juce::Font (juce::FontOptions().withHeight (11.0f)));
+    phaseLabel_.setFont (FontHelper::getFont (11.0f));
     phaseLabel_.setColour (juce::Label::textColourId, juce::Colour (kLabelColour));
     phaseLabel_.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (phaseLabel_);
@@ -98,7 +99,7 @@ MainView::MainView (MorphAudioProcessor& processor)
     addAndMakeVisible (thresholdKnob_);
 
     thresholdLabel_.setText ("Threshold", juce::dontSendNotification);
-    thresholdLabel_.setFont (juce::Font (juce::FontOptions().withHeight (11.0f)));
+    thresholdLabel_.setFont (FontHelper::getFont (11.0f));
     thresholdLabel_.setColour (juce::Label::textColourId, juce::Colour (kLabelColour));
     thresholdLabel_.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (thresholdLabel_);
