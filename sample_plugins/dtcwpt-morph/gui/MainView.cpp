@@ -21,7 +21,7 @@ namespace
     constexpr juce::uint32 kHeaderBg    = 0xFF282842;
 
     /** Header bar title text colour. */
-    constexpr juce::uint32 kTitleColour = 0xFFDDDDDD;
+    constexpr juce::uint32 kTitleColour = 0xFFBBBBBB;
 
     /** Knob label text colour. */
     constexpr juce::uint32 kLabelColour = 0xFF999999;
@@ -44,16 +44,19 @@ MainView::MainView (MorphAudioProcessor& processor)
     // Header bar
     // -----------------------------------------------------------------------
     titleLabel_.setText ("DT-CWPT Morph", juce::dontSendNotification);
-    titleLabel_.setFont (FontHelper::getFont (20.0f));
-    titleLabel_.setColour (juce::Label::textColourId, juce::Colour (kTitleColour));
+    auto titleFont = FontHelper::getFont (24.0f).withExtraKerningFactor (0.1f);
+    titleLabel_.setFont (titleFont);
+    titleLabel_.setColour (juce::Label::textColourId, juce::Colour (0xFFBBBBBB));
     titleLabel_.setJustificationType (juce::Justification::centredLeft);
     addAndMakeVisible (titleLabel_);
 
-    settingsButton_.setButtonText (juce::CharPointer_UTF8 ("\xe2\x9a\x99"));  // ⚙ (U+2699)
+    // Bands button (topology/band configuration)
+    settingsButton_.setButtonText ("Bands");
     settingsButton_.onClick = [this] { if (onSettings_) onSettings_(); };
     addAndMakeVisible (settingsButton_);
 
-    aboutButton_.setButtonText (juce::CharPointer_UTF8 ("\xe2\x84\xb9"));     // ℹ (U+2139)
+    // About button with lowercase "i"
+    aboutButton_.setButtonText ("i");
     aboutButton_.onClick = [this] { if (onAbout_) onAbout_(); };
     addAndMakeVisible (aboutButton_);
 
