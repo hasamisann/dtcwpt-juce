@@ -45,6 +45,7 @@ target_sources(DtcwptMorph
     PRIVATE
         MorphAudioProcessor.h
         MorphAudioProcessor.cpp
+        MorphAudioProcessorEditor.cpp
         MorphBandProcessor.h
         MorphBandProcessor.cpp
         TopologyState.h

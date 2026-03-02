@@ -286,20 +286,6 @@ bool MorphAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) co
 }
 
 //==============================================================================
-// Editor
-//==============================================================================
-
-juce::AudioProcessorEditor* MorphAudioProcessor::createEditor()
-{
-    return new MorphEditor (*this);
-}
-
-bool MorphAudioProcessor::hasEditor() const
-{
-    return true;
-}
-
-//==============================================================================
 // Plugin identity
 //==============================================================================
 
