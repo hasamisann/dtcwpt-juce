@@ -7,10 +7,17 @@
  */
 
 #include <juce_core/juce_core.h>
+#include <juce_audio_processors/juce_audio_processors.h>
 #include <iostream>
 
 int main(int argc, char* argv[])
 {
+    // Initialise the JUCE MessageManager on the main thread.
+    // This is required by AudioProcessor (and other JUCE components) even in
+    // headless/console applications. The MessageManager must be created before
+    // any AudioProcessor is instantiated.
+    juce::initialiseJuce_GUI();
+
     // Create unit test runner
     juce::UnitTestRunner runner;
     
@@ -50,6 +57,14 @@ int main(int argc, char* argv[])
         if (result != nullptr) {
             totalPasses += result->passes;
             totalFailures += result->failures;
+            if (result->failures > 0) {
+                std::cout << "[FAIL] " << result->unitTestName.toStdString()
+                          << " / " << result->subcategoryName.toStdString()
+                          << "  (passes=" << result->passes
+                          << " failures=" << result->failures << ")" << std::endl;
+                for (auto& msg : result->messages)
+                    std::cout << "       " << msg.toStdString() << std::endl;
+            }
         }
     }
 
@@ -65,9 +80,11 @@ int main(int argc, char* argv[])
 
     if (totalFailures == 0) {
         std::cout << "All tests passed!" << std::endl;
+        juce::shutdownJuce_GUI();
         return 0;
     } else {
         std::cout << "Some tests failed!" << std::endl;
+        juce::shutdownJuce_GUI();
         return 1;
     }
 }

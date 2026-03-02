@@ -1,0 +1,121 @@
+/**
+ * @file WiperLookAndFeel.cpp
+ * @brief Custom LookAndFeel for wiper-style arc rotary knobs.
+ */
+
+#include "WiperLookAndFeel.h"
+
+//==============================================================================
+// Constructor
+//==============================================================================
+
+WiperLookAndFeel::WiperLookAndFeel()
+{
+    // Apply dark colour scheme as the base
+    setColourScheme (getDarkColourScheme());
+
+    // Customise slider colours
+    // Thumb: transparent (we draw our own arc, no thumb needed)
+    setColour (juce::Slider::thumbColourId,
+               juce::Colour (0x00000000));
+
+    // Track background: dark grey (matches kTrackColour)
+    setColour (juce::Slider::trackColourId,
+               juce::Colour (kTrackColour));
+
+    // Rotary fill: accent blue (matches kFillColour)
+    setColour (juce::Slider::rotarySliderFillColourId,
+               juce::Colour (kFillColour));
+
+    // Rotary outline: slightly lighter grey for track outline
+    setColour (juce::Slider::rotarySliderOutlineColourId,
+               juce::Colour (kTrackColour));
+}
+
+//==============================================================================
+// drawRotarySlider
+//==============================================================================
+
+void WiperLookAndFeel::drawRotarySlider (juce::Graphics& g,
+                                          int   x,
+                                          int   y,
+                                          int   width,
+                                          int   height,
+                                          float sliderPosProportional,
+                                          float rotaryStartAngle,
+                                          float rotaryEndAngle,
+                                          juce::Slider& /*slider*/)
+{
+    // -----------------------------------------------------------------------
+    // Geometry
+    // -----------------------------------------------------------------------
+
+    const float centreX  = static_cast<float> (x) + static_cast<float> (width)  * 0.5f;
+    const float centreY  = static_cast<float> (y) + static_cast<float> (height) * 0.5f;
+    const float radius   = juce::jmin (static_cast<float> (width),
+                                       static_cast<float> (height)) * 0.5f - 2.0f;
+    const float arcWidth = radius * kArcWidthFraction * 2.0f;  // stroke width (both sides)
+
+    // Current value angle (clamped to [startAngle, endAngle])
+    const float toAngle  = rotaryStartAngle
+                           + sliderPosProportional * (rotaryEndAngle - rotaryStartAngle);
+
+    // Arc bounding rectangle (centred, inset by half arcWidth so the stroke fits)
+    const float arcRadius = radius - arcWidth * 0.5f;
+    const juce::Rectangle<float> arcBounds (centreX - arcRadius,
+                                             centreY - arcRadius,
+                                             arcRadius * 2.0f,
+                                             arcRadius * 2.0f);
+
+    // -----------------------------------------------------------------------
+    // 1. Background track arc (dark grey, full range)
+    // -----------------------------------------------------------------------
+
+    juce::Path trackArc;
+    trackArc.addArc (arcBounds.getX(),
+                     arcBounds.getY(),
+                     arcBounds.getWidth(),
+                     arcBounds.getHeight(),
+                     rotaryStartAngle,
+                     rotaryEndAngle,
+                     true);
+
+    g.setColour (juce::Colour (kTrackColour));
+    g.strokePath (trackArc,
+                  juce::PathStrokeType (arcWidth,
+                                        juce::PathStrokeType::curved,
+                                        juce::PathStrokeType::rounded));
+
+    // -----------------------------------------------------------------------
+    // 2. Filled value arc (accent blue, start → current angle)
+    // -----------------------------------------------------------------------
+
+    if (toAngle > rotaryStartAngle)
+    {
+        juce::Path fillArc;
+        fillArc.addArc (arcBounds.getX(),
+                        arcBounds.getY(),
+                        arcBounds.getWidth(),
+                        arcBounds.getHeight(),
+                        rotaryStartAngle,
+                        toAngle,
+                        true);
+
+        g.setColour (juce::Colour (kFillColour));
+        g.strokePath (fillArc,
+                      juce::PathStrokeType (arcWidth,
+                                            juce::PathStrokeType::curved,
+                                            juce::PathStrokeType::rounded));
+    }
+
+    // -----------------------------------------------------------------------
+    // 3. Centre knob body circle
+    // -----------------------------------------------------------------------
+
+    const float knobRadius = radius * kKnobRadiusFraction;
+    g.setColour (juce::Colour (kKnobColour));
+    g.fillEllipse (centreX - knobRadius,
+                   centreY - knobRadius,
+                   knobRadius * 2.0f,
+                   knobRadius * 2.0f);
+}

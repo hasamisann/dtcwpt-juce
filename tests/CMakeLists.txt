@@ -48,14 +48,32 @@ target_sources(dtcwpt_tests
         suites/ComplexUtilsTests.cpp
         suites/DelayBufferTests.cpp
         suites/DTCWPTProcessorTests.cpp
+        suites/MorphBandProcessorTests.cpp
+        suites/MorphAudioProcessorTests.cpp
         suites/StatefulFilterTests.cpp
         suites/TopologyPlannerTests.cpp
+        suites/TopologyStateTests.cpp
+        suites/SpectrumDataBridgeTests.cpp
         util/TestUtils.cpp
+        ../sample_plugins/MorphBandProcessor.cpp
+        ../sample_plugins/MorphAudioProcessor.cpp
+        ../sample_plugins/SpectrumDataBridge.cpp
 )
 
 target_include_directories(dtcwpt_tests
     PRIVATE
         .
+        ../sample_plugins
+        ../sample_plugins/gui
+)
+
+target_compile_definitions(dtcwpt_tests
+    PRIVATE
+        JucePlugin_Name="DT-CWPT Morph"
+        JucePlugin_IsSynth=0
+        JucePlugin_WantsMidiInput=0
+        JucePlugin_ProducesMidiOutput=0
+        JucePlugin_IsMidiEffect=0
 )
 
 target_link_libraries(dtcwpt_tests
@@ -63,6 +81,10 @@ target_link_libraries(dtcwpt_tests
         dtcwpt
         juce::juce_core
         juce::juce_audio_basics
+        juce::juce_audio_processors
+        juce::juce_dsp
+        juce::juce_gui_basics
+        juce::juce_audio_utils
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
