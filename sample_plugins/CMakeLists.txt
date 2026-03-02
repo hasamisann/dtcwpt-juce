@@ -45,11 +45,25 @@ target_sources(DtcwptMorph
     PRIVATE
         MorphAudioProcessor.h
         MorphAudioProcessor.cpp
+        MorphBandProcessor.h
+        MorphBandProcessor.cpp
+        TopologyState.h
+        SpectrumDataBridge.h
+        SpectrumDataBridge.cpp
+        gui/WiperLookAndFeel.h
+        gui/WiperLookAndFeel.cpp
+        gui/SpectrumAnalyzerWidget.h
+        gui/SpectrumAnalyzerWidget.cpp
+        gui/TopologyEditorView.h
+        gui/TopologyEditorView.cpp
+        gui/AboutView.h
+        gui/AboutView.cpp
 )
 
 target_include_directories(DtcwptMorph
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/gui
 )
 
 target_compile_definitions(DtcwptMorph
