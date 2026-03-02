@@ -48,14 +48,20 @@ target_sources(dtcwpt_tests
         suites/ComplexUtilsTests.cpp
         suites/DelayBufferTests.cpp
         suites/DTCWPTProcessorTests.cpp
+        suites/MorphBandProcessorTests.cpp
         suites/StatefulFilterTests.cpp
         suites/TopologyPlannerTests.cpp
+        suites/TopologyStateTests.cpp
+        suites/SpectrumDataBridgeTests.cpp
         util/TestUtils.cpp
+        ../sample_plugins/MorphBandProcessor.cpp
+        ../sample_plugins/SpectrumDataBridge.cpp
 )
 
 target_include_directories(dtcwpt_tests
     PRIVATE
         .
+        ../sample_plugins
 )
 
 target_link_libraries(dtcwpt_tests

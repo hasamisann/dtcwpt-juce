@@ -50,6 +50,14 @@ int main(int argc, char* argv[])
         if (result != nullptr) {
             totalPasses += result->passes;
             totalFailures += result->failures;
+            if (result->failures > 0) {
+                std::cout << "[FAIL] " << result->unitTestName.toStdString()
+                          << " / " << result->subcategoryName.toStdString()
+                          << "  (passes=" << result->passes
+                          << " failures=" << result->failures << ")" << std::endl;
+                for (auto& msg : result->messages)
+                    std::cout << "       " << msg.toStdString() << std::endl;
+            }
         }
     }
 
