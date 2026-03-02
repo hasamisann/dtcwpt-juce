@@ -67,13 +67,13 @@ private:
     //==============================================================================
 
     /** GitHub profile URL. */
-    static constexpr const char* kGitHubURL    = "https://github.com/hasamisann";
+    static constexpr const char* kGitHubURL    = "https://github.com/hasamisann/dtcwpt-juce";
 
     /** X (Twitter) profile URL. */
-    static constexpr const char* kTwitterURL   = "https://x.com/hasamisann";
+    static constexpr const char* kTwitterURL   = "https://x.com/LTSU_n_nv";
 
     /** SoundCloud profile URL. */
-    static constexpr const char* kSoundCloudURL = "https://soundcloud.com/hasamisann";
+    static constexpr const char* kSoundCloudURL = "https://soundcloud.com/LTSU_n_nv";
 
     /** VST3 trademark notice text. */
     static constexpr const char* kTrademarkText =

@@ -29,9 +29,9 @@ juce_add_module(../dtcwpt)
 
 # DT-CWPT Morph Plugin target
 juce_add_plugin(DtcwptMorph
-    COMPANY_NAME                "hasamisann"
-    PLUGIN_MANUFACTURER_CODE    "Hmsn"
-    PLUGIN_CODE                 "DtMo"
+    COMPANY_NAME                "LTSU"
+    PLUGIN_MANUFACTURER_CODE    "LTSU"
+    PLUGIN_CODE                 "CWTM"
     FORMATS                     VST3 Standalone
     PRODUCT_NAME                "DT-CWPT Morph"
     NEEDS_MIDI_INPUT            FALSE

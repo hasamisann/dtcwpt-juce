@@ -45,9 +45,9 @@ AboutView::~AboutView()
 //==============================================================================
 
 AboutView::AboutView (std::function<void()> onBack)
-    : githubLink_     ("GitHub: hasamisann",    juce::URL (kGitHubURL))
-    , twitterLink_    ("X: hasamisann",         juce::URL (kTwitterURL))
-    , soundcloudLink_ ("SoundCloud: hasamisann", juce::URL (kSoundCloudURL))
+    : githubLink_     ("GitHub",    juce::URL (kGitHubURL))
+    , twitterLink_    ("X",         juce::URL (kTwitterURL))
+    , soundcloudLink_ ("SoundCloud", juce::URL (kSoundCloudURL))
     , onBack_         (std::move (onBack))
 {
     // -----------------------------------------------------------------------
