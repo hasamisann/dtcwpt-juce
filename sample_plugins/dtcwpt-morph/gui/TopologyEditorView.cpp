@@ -546,7 +546,7 @@ std::vector<std::string> TopologyEditorView::generateFullTree (int depth)
     // A Full Tree of depth N produces 2^N leaves by recursively splitting
     // every node at each level. Enumerate in DFS order (L before H).
     std::vector<std::string> dests;
-    dests.reserve (static_cast<std::size_t> (1 << depth));
+    dests.reserve (static_cast<std::size_t> (1) << static_cast<std::size_t> (depth));
 
     // Recursive DFS enumeration
     std::function<void(std::string, int)> enumerate = [&] (std::string path, int remaining)

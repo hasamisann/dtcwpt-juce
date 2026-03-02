@@ -204,6 +204,32 @@ private:
     void drawTooltip (juce::Graphics& g, const TreeNode& node) const;
 
     //==============================================================================
+    // Preset topology generators
+    //==============================================================================
+
+    /**
+     * @brief Generates a DWT (Discrete Wavelet Transform) topology of the given depth.
+     *
+     * A DWT of depth N produces N+1 leaves: "H", "LH", "LLH", ..., "L...LH", "L...L".
+     * The low-frequency band is recursively split at each level.
+     *
+     * @param depth  Number of decomposition levels (1–8).
+     * @return       Vector of destination path strings in frequency order.
+     */
+    static std::vector<std::string> generateDWT (int depth);
+
+    /**
+     * @brief Generates a Full Tree topology of the given depth.
+     *
+     * A Full Tree of depth N produces 2^N leaves by recursively splitting
+     * every node at each level. Leaves are enumerated in DFS order (L before H).
+     *
+     * @param depth  Number of decomposition levels (1–4).
+     * @return       Vector of destination path strings in DFS order.
+     */
+    static std::vector<std::string> generateFullTree (int depth);
+
+    //==============================================================================
     // Constants
     //==============================================================================
 
@@ -243,6 +269,9 @@ private:
 
     /** Back button */
     juce::TextButton backButton_ { "< Back" };
+
+    /** Preset topology selector ComboBox. */
+    juce::ComboBox presetCombo_;
 
     /** Callback for back-button click. */
     std::function<void()> onBack_;
