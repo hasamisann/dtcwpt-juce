@@ -178,15 +178,25 @@ void TopologyEditorView::mouseMove (const juce::MouseEvent& e)
     }
 }
 
-void TopologyEditorView::mouseWheelMove (const juce::MouseEvent& /*e*/,
+void TopologyEditorView::mouseWheelMove (const juce::MouseEvent& e,
                                           const juce::MouseWheelDetails& wheel)
 {
-    constexpr float kZoomMin = 0.3f;
-    constexpr float kZoomMax = 4.0f;
+    constexpr float kZoomMin  = 0.3f;
+    constexpr float kZoomMax  = 4.0f;
     constexpr float kZoomStep = 0.1f;
 
-    zoomScale_ = std::clamp (zoomScale_ + wheel.deltaY * kZoomStep,
-                              kZoomMin, kZoomMax);
+    const float oldZoom = zoomScale_;
+    const float newZoom = std::clamp (oldZoom + wheel.deltaY * kZoomStep,
+                                      kZoomMin, kZoomMax);
+
+    // Adjust pan so the world-space point under the cursor stays fixed:
+    //   screenPos = panOffset + worldPos * zoom
+    //   worldPos  = (screenPos - panOffset) / zoom
+    //   new panOffset = screenPos - worldPos * newZoom
+    const auto mousePos = e.position;
+    panOffset_ = mousePos - (mousePos - panOffset_) * (newZoom / oldZoom);
+    zoomScale_ = newZoom;
+
     layoutTree();
     repaint();
 }
