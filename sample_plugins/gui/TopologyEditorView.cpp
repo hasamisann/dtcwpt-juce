@@ -63,6 +63,18 @@ TopologyEditorView::TopologyEditorView (TopologyState& topoState, double sampleR
 }
 
 //==============================================================================
+// Destructor
+//==============================================================================
+
+TopologyEditorView::~TopologyEditorView()
+{
+    // Remove all child components before member sub-components are destroyed.
+    // Component::~Component() would otherwise call removeAllChildren() after
+    // all members are already gone, causing use-after-free / heap corruption.
+    removeAllChildren();
+}
+
+//==============================================================================
 // Configuration
 //==============================================================================
 
@@ -230,9 +242,13 @@ void TopologyEditorView::buildTree (const std::vector<std::string>& destinations
                 newNode.freqHigh = (c == 'L') ? midFreq     : parentHigh;
                 nodes_.push_back (newNode);
 
-                // Register as child of parent
+                // Re-find parent after push_back: the push_back may have reallocated
+                // nodes_, invalidating the parentNode pointer obtained above.
                 if (parentNode != nullptr)
-                    parentNode->children.push_back (childId);
+                {
+                    if (auto* pAfterPush = findNode (currentId))
+                        pAfterPush->children.push_back (childId);
+                }
             }
             else if (isLastChar)
             {

@@ -48,8 +48,8 @@ public:
      */
     explicit AboutView (std::function<void()> onBack);
 
-    /** Destructor. */
-    ~AboutView() override = default;
+    /** Destructor. Removes child components before member sub-components are destroyed. */
+    ~AboutView() override;
 
     //==============================================================================
     // juce::Component overrides

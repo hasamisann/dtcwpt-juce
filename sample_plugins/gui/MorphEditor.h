@@ -49,8 +49,8 @@ public:
      */
     explicit MorphEditor (MorphAudioProcessor& processor);
 
-    /** Destructor. */
-    ~MorphEditor() override = default;
+    /** Destructor. Removes child components before member sub-views are destroyed. */
+    ~MorphEditor() override;
 
     //==============================================================================
     // juce::Component overrides

@@ -45,6 +45,19 @@ MorphEditor::MorphEditor (MorphAudioProcessor& processor)
 }
 
 //==============================================================================
+// Destructor
+//==============================================================================
+
+MorphEditor::~MorphEditor()
+{
+    // Remove all child components before member sub-views (mainView_, topologyView_,
+    // aboutView_) are destroyed by the compiler-generated member destruction sequence.
+    // Without this call, Component::~Component() would call removeAllChildren() AFTER
+    // the members are already destroyed, causing use-after-free / heap corruption.
+    removeAllChildren();
+}
+
+//==============================================================================
 // resized
 //==============================================================================
 

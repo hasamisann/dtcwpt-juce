@@ -29,6 +29,18 @@ namespace
 } // namespace
 
 //==============================================================================
+// Destructor
+//==============================================================================
+
+AboutView::~AboutView()
+{
+    // Remove all child components before member sub-components are destroyed.
+    // Component::~Component() would otherwise call removeAllChildren() after
+    // all members are already gone, causing use-after-free / heap corruption.
+    removeAllChildren();
+}
+
+//==============================================================================
 // Constructor
 //==============================================================================
 

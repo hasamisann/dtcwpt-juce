@@ -10,8 +10,12 @@
  *  - Three rotary knobs (Magnitude, Phase, Threshold) using WiperLookAndFeel.
  *  - Two toggle buttons (Bypass Low, Bypass High).
  *
- * All knobs and buttons are connected to the MorphAudioProcessor's APVTS via
- * SliderAttachment and ButtonAttachment, so host automation is fully supported.
+ * Parameter synchronisation uses a polling-based approach (ParameterPoller, ~30 Hz)
+ * rather than JUCE SliderAttachment / ButtonAttachment.  This avoids registering
+ * AudioProcessorParameter::Listener callbacks that would call triggerAsyncUpdate()
+ * — and therefore perform a heap allocation — on the audio thread when the host
+ * automates parameters, which was the root cause of STATUS_HEAP_CORRUPTION under
+ * pluginval's "Open editor whilst processing" test.
  *
  * View-switching callbacks (settings / about) are provided by MorphEditor via
  * setSettingsCallback() and setAboutCallback().
@@ -25,13 +29,16 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <atomic>
 #include <functional>
+#include <vector>
 
 /**
  * @brief Main layout component (header bar, spectrum, knobs, bypass checkboxes).
  *
  * Constructed with a reference to MorphAudioProcessor. Creates all child
- * components, attaches knobs/buttons to APVTS parameters, and manages layout.
+ * components, wires knobs/buttons to APVTS parameters via polling, and manages
+ * layout.
  */
 class MainView : public juce::Component
 {
@@ -51,7 +58,8 @@ public:
     /**
      * @brief Destructor.
      *
-     * Clears LookAndFeel pointers from all sliders to avoid dangling references.
+     * Stops the parameter poller and clears LookAndFeel pointers from all
+     * sliders to avoid dangling references.
      */
     ~MainView() override;
 
@@ -156,23 +164,94 @@ private:
     juce::ToggleButton bypassHighButton_;
 
     //==============================================================================
-    // APVTS attachments
+    // Polling-based parameter synchronisation
+    //
+    // Replaces SliderAttachment / ButtonAttachment to eliminate the audio-thread
+    // triggerAsyncUpdate() -> heap allocation path (root cause of heap corruption).
     //==============================================================================
 
-    /** Attachment connecting magnitudeKnob_ to the "magnitude" APVTS parameter. */
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> magnitudeAttachment_;
+    /**
+     * @brief Polls APVTS raw parameter values at 30 Hz and updates the UI.
+     *
+     * Only reads std::atomic<float>* values (relaxed load) on the message thread.
+     * No AudioProcessorParameter::Listener is registered, so there is no
+     * audio-thread callback path.
+     */
+    class ParameterPoller : public juce::Timer
+    {
+    public:
+        /** Entry for a slider that mirrors a raw parameter value. */
+        struct SliderEntry
+        {
+            std::atomic<float>* raw;       ///< Pointer to APVTS raw parameter atom.
+            juce::Slider*       slider;    ///< The slider to keep in sync.
+            float               lastValue; ///< Last observed value (avoid redundant setValue).
+        };
 
-    /** Attachment connecting phaseKnob_ to the "phase" APVTS parameter. */
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> phaseAttachment_;
+        /** Entry for a toggle button that mirrors a raw parameter value. */
+        struct ButtonEntry
+        {
+            std::atomic<float>*  raw;      ///< Pointer to APVTS raw parameter atom.
+            juce::ToggleButton*  button;   ///< The button to keep in sync.
+            float                lastValue;///< Last observed value.
+        };
 
-    /** Attachment connecting thresholdKnob_ to the "threshold" APVTS parameter. */
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> thresholdAttachment_;
+        /**
+         * @brief Registers a slider to be updated from @p raw at each poll tick.
+         *
+         * @param raw     Pointer returned by APVTS::getRawParameterValue().
+         * @param slider  Slider widget to update (must outlive the poller).
+         */
+        void addSlider (std::atomic<float>* raw, juce::Slider* slider)
+        {
+            sliders_.push_back ({ raw, slider, -1.0e9f });
+        }
 
-    /** Attachment connecting bypassLowButton_ to the "bypassLow" APVTS parameter. */
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassLowAttachment_;
+        /**
+         * @brief Registers a toggle button to be updated from @p raw at each poll tick.
+         *
+         * @param raw     Pointer returned by APVTS::getRawParameterValue().
+         * @param button  Button widget to update (must outlive the poller).
+         */
+        void addButton (std::atomic<float>* raw, juce::ToggleButton* button)
+        {
+            buttons_.push_back ({ raw, button, -1.0e9f });
+        }
 
-    /** Attachment connecting bypassHighButton_ to the "bypassHigh" APVTS parameter. */
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassHighAttachment_;
+        /** Called on the message thread at ~30 Hz. Pushes new values to UI widgets. */
+        void timerCallback() override
+        {
+            for (auto& e : sliders_)
+            {
+                const float v = e.raw->load (std::memory_order_relaxed);
+                if (v != e.lastValue)
+                {
+                    e.lastValue = v;
+                    e.slider->setValue (static_cast<double> (v),
+                                        juce::dontSendNotification);
+                }
+            }
+            for (auto& e : buttons_)
+            {
+                const float v = e.raw->load (std::memory_order_relaxed);
+                if (v != e.lastValue)
+                {
+                    e.lastValue = v;
+                    e.button->setToggleState (v >= 0.5f, juce::dontSendNotification);
+                }
+            }
+        }
+
+    private:
+        std::vector<SliderEntry> sliders_;
+        std::vector<ButtonEntry> buttons_;
+    };
+
+    /** Reference to the processor's APVTS (for write-back lambdas and initial setup). */
+    juce::AudioProcessorValueTreeState& apvts_;
+
+    /** Polls raw parameter values and pushes them to UI widgets at ~30 Hz. */
+    ParameterPoller poller_;
 
     //==============================================================================
     // Navigation callbacks

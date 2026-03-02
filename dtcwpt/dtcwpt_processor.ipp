@@ -491,12 +491,17 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
 
     // If BandProcessor was set before prepareToPlay(), prepare it now
     if (bandProcessor_) {
-        // Compute maxSamplesPerBand from internalBlockSize_ and max depth
-        size_t maxDepth = 0;
+        // Compute maxSamplesPerBand from internalBlockSize_ and MIN depth.
+        // Shallower destinations produce MORE subband samples per block, so the
+        // minimum depth across all destinations gives the largest subband block.
+        // Using maxDepth here would under-allocate scratch buffers in BandProcessor
+        // (e.g. mainMag_/scMag_) for shallower bands — a heap overflow bug.
+        size_t minDepth = static_cast<size_t>(getNodeLevel(destinations_[0]));
         for (int dest : destinations_) {
-            maxDepth = std::max(maxDepth, static_cast<size_t>(getNodeLevel(dest)));
+            const size_t d = static_cast<size_t>(getNodeLevel(dest));
+            if (d < minDepth) minDepth = d;
         }
-        int maxSamplesPerBand = static_cast<int>(internalBlockSize_ >> maxDepth);
+        int maxSamplesPerBand = static_cast<int>(internalBlockSize_ >> minDepth);
         if (maxSamplesPerBand < 1) maxSamplesPerBand = 1;
 
         bandProcessor_->prepare(sampleRate_, maxSamplesPerBand,
@@ -514,12 +519,14 @@ void DTCWPTProcessor::setBandProcessor(std::unique_ptr<BandProcessor> processor)
 
     // If already prepared, prepare the processor immediately
     if (prepared_ && bandProcessor_) {
-        // Compute maxSamplesPerBand from internalBlockSize_ and max depth
-        size_t maxDepth = 0;
+        // Compute maxSamplesPerBand from internalBlockSize_ and MIN depth.
+        // See comment above (prepareToPlay) for why minDepth is correct here.
+        size_t minDepth = static_cast<size_t>(getNodeLevel(destinations_[0]));
         for (int dest : destinations_) {
-            maxDepth = std::max(maxDepth, static_cast<size_t>(getNodeLevel(dest)));
+            const size_t d = static_cast<size_t>(getNodeLevel(dest));
+            if (d < minDepth) minDepth = d;
         }
-        int maxSamplesPerBand = static_cast<int>(internalBlockSize_ >> maxDepth);
+        int maxSamplesPerBand = static_cast<int>(internalBlockSize_ >> minDepth);
         if (maxSamplesPerBand < 1) maxSamplesPerBand = 1;
 
         bandProcessor_->prepare(sampleRate_, maxSamplesPerBand,

@@ -33,6 +33,7 @@ namespace
 
 MainView::MainView (MorphAudioProcessor& processor)
     : spectrumWidget_ (processor.getSpectrumBridge())
+    , apvts_          (processor.getAPVTS())
     , settingsButton_ ("Settings")
     , aboutButton_    ("About")
     , bypassLowButton_  ("Bypass Low")
@@ -109,24 +110,101 @@ MainView::MainView (MorphAudioProcessor& processor)
     addAndMakeVisible (bypassHighButton_);
 
     // -----------------------------------------------------------------------
-    // APVTS attachments (create after adding sliders/buttons to component tree)
+    // Slider range initialisation
+    //
+    // SliderAttachment normally configures the slider range from the
+    // NormalisableRange stored in the APVTS parameter.  We must do this
+    // manually because we are not using SliderAttachment.
     // -----------------------------------------------------------------------
-    auto& apvts = processor.getAPVTS();
+    auto setSliderRange = [&] (juce::Slider& s, const juce::String& paramID)
+    {
+        auto* param = dynamic_cast<juce::RangedAudioParameter*> (apvts_.getParameter (paramID));
+        if (param == nullptr)
+            return;
 
-    magnitudeAttachment_  = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
-        apvts, ParamID::Magnitude,  magnitudeKnob_);
+        const auto& r = param->getNormalisableRange();
+        s.setRange (static_cast<double> (r.start),
+                    static_cast<double> (r.end),
+                    static_cast<double> (r.interval));
+        s.setValue (static_cast<double> (param->convertFrom0to1 (param->getValue())),
+                    juce::dontSendNotification);
+    };
 
-    phaseAttachment_      = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
-        apvts, ParamID::Phase,      phaseKnob_);
+    setSliderRange (magnitudeKnob_,  ParamID::Magnitude);
+    setSliderRange (phaseKnob_,      ParamID::Phase);
+    setSliderRange (thresholdKnob_,  ParamID::Threshold);
 
-    thresholdAttachment_  = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
-        apvts, ParamID::Threshold,  thresholdKnob_);
+    // -----------------------------------------------------------------------
+    // Button initial state
+    // -----------------------------------------------------------------------
+    auto setButtonState = [&] (juce::ToggleButton& b, const juce::String& paramID)
+    {
+        if (auto* param = apvts_.getParameter (paramID))
+            b.setToggleState (param->getValue() >= 0.5f, juce::dontSendNotification);
+    };
 
-    bypassLowAttachment_  = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
-        apvts, ParamID::BypassLow,  bypassLowButton_);
+    setButtonState (bypassLowButton_,  ParamID::BypassLow);
+    setButtonState (bypassHighButton_, ParamID::BypassHigh);
 
-    bypassHighAttachment_ = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
-        apvts, ParamID::BypassHigh, bypassHighButton_);
+    // -----------------------------------------------------------------------
+    // Polling setup: host → GUI direction
+    //
+    // Register each raw parameter pointer with the poller.  The poller reads
+    // these atomics on the message thread at ~30 Hz and updates the widgets.
+    // No AudioProcessorParameter::Listener is registered, so no audio-thread
+    // heap allocation occurs during host automation.
+    // -----------------------------------------------------------------------
+    poller_.addSlider (apvts_.getRawParameterValue (ParamID::Magnitude),  &magnitudeKnob_);
+    poller_.addSlider (apvts_.getRawParameterValue (ParamID::Phase),       &phaseKnob_);
+    poller_.addSlider (apvts_.getRawParameterValue (ParamID::Threshold),   &thresholdKnob_);
+    poller_.addButton (apvts_.getRawParameterValue (ParamID::BypassLow),   &bypassLowButton_);
+    poller_.addButton (apvts_.getRawParameterValue (ParamID::BypassHigh),  &bypassHighButton_);
+
+    poller_.startTimerHz (30);
+
+    // -----------------------------------------------------------------------
+    // Write-back lambdas: GUI → host direction
+    //
+    // When the user moves a knob or clicks a button, convert the displayed
+    // value back to a normalised [0,1] value and call setValueNotifyingHost()
+    // so the host can record automation.  These callbacks fire on the message
+    // thread, which is safe.
+    // -----------------------------------------------------------------------
+    magnitudeKnob_.onValueChange = [this]
+    {
+        if (auto* p = dynamic_cast<juce::RangedAudioParameter*> (
+                          apvts_.getParameter (ParamID::Magnitude)))
+            p->setValueNotifyingHost (
+                p->convertTo0to1 (static_cast<float> (magnitudeKnob_.getValue())));
+    };
+
+    phaseKnob_.onValueChange = [this]
+    {
+        if (auto* p = dynamic_cast<juce::RangedAudioParameter*> (
+                          apvts_.getParameter (ParamID::Phase)))
+            p->setValueNotifyingHost (
+                p->convertTo0to1 (static_cast<float> (phaseKnob_.getValue())));
+    };
+
+    thresholdKnob_.onValueChange = [this]
+    {
+        if (auto* p = dynamic_cast<juce::RangedAudioParameter*> (
+                          apvts_.getParameter (ParamID::Threshold)))
+            p->setValueNotifyingHost (
+                p->convertTo0to1 (static_cast<float> (thresholdKnob_.getValue())));
+    };
+
+    bypassLowButton_.onStateChange = [this]
+    {
+        if (auto* p = apvts_.getParameter (ParamID::BypassLow))
+            p->setValueNotifyingHost (bypassLowButton_.getToggleState() ? 1.0f : 0.0f);
+    };
+
+    bypassHighButton_.onStateChange = [this]
+    {
+        if (auto* p = apvts_.getParameter (ParamID::BypassHigh))
+            p->setValueNotifyingHost (bypassHighButton_.getToggleState() ? 1.0f : 0.0f);
+    };
 }
 
 //==============================================================================
@@ -135,13 +213,13 @@ MainView::MainView (MorphAudioProcessor& processor)
 
 MainView::~MainView()
 {
-    // Detach APVTS attachments before clearing LookAndFeel pointers so the
-    // attachments do not try to use the slider after it is in a destructed state.
-    magnitudeAttachment_.reset();
-    phaseAttachment_.reset();
-    thresholdAttachment_.reset();
-    bypassLowAttachment_.reset();
-    bypassHighAttachment_.reset();
+    // Remove all child components before member components are destroyed.
+    // Component::~Component() would otherwise call removeAllChildren() after
+    // all members are already gone, causing use-after-free / heap corruption.
+    removeAllChildren();
+
+    // Stop the parameter poller before any member is destroyed.
+    poller_.stopTimer();
 
     // Clear LookAndFeel references to avoid dangling pointer on destruction.
     magnitudeKnob_.setLookAndFeel (nullptr);

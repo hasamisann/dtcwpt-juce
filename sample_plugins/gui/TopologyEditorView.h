@@ -49,8 +49,8 @@ public:
      */
     TopologyEditorView (TopologyState& topoState, double sampleRate);
 
-    /** Destructor. */
-    ~TopologyEditorView() override = default;
+    /** Destructor. Removes child components before member sub-components are destroyed. */
+    ~TopologyEditorView() override;
 
     //==============================================================================
     // Configuration
