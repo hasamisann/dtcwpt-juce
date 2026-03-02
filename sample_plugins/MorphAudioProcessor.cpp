@@ -140,18 +140,13 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         {
             currentDestinations_ = newDestinations;
 
-            // Mirror to APVTS state property (for serialisation)
-            juce::StringArray destArray;
-            for (const auto& d : currentDestinations_)
-                destArray.add (juce::String (d));
-            apvts_.state.setProperty (kTopologyPropertyKey,
-                                       destArray.joinIntoString (kTopologySeparator),
-                                       nullptr);
-
-            // Rebuild the engine (brief allocation on audio thread — see Decision 2)
+            // Rebuild the engine on topology change.
+            // NOTE: ValueTree::setProperty and updateHostDisplay have been removed from
+            // here — both trigger heap allocations and UI locks that are not safe on the
+            // audio thread. The APVTS topology property is now updated exclusively on the
+            // Message Thread via the TopologyEditorView::onTopologyChanged_ callback wired
+            // in MorphEditor.
             rebuildDTCWPT();
-            updateHostDisplay (juce::AudioProcessorListener::ChangeDetails()
-                                   .withLatencyChanged (true));
         }
     }
 
@@ -171,6 +166,7 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                   threshLinear,
                                   bypassLow,
                                   bypassHigh);
+
 
     // -------------------------------------------------------------------------
     // 3. Save a copy of the float input for the spectrum bridge (mono-averaged)

@@ -90,6 +90,12 @@ void TopologyEditorView::setBackButtonCallback (std::function<void()> cb)
     onBack_ = std::move (cb);
 }
 
+void TopologyEditorView::setTopologyChangedCallback (
+    std::function<void(const std::vector<std::string>&)> cb)
+{
+    onTopologyChanged_ = std::move (cb);
+}
+
 //==============================================================================
 // Component overrides
 //==============================================================================
@@ -145,6 +151,7 @@ void TopologyEditorView::mouseDown (const juce::MouseEvent& e)
             splitNode (hitId);
             const auto dests = collectDestinations();
             topoState_.requestChange (dests);
+            if (onTopologyChanged_) onTopologyChanged_ (dests);
             layoutTree();
             repaint();
         }
@@ -155,6 +162,7 @@ void TopologyEditorView::mouseDown (const juce::MouseEvent& e)
         mergeNode (hitId);
         const auto dests = collectDestinations();
         topoState_.requestChange (dests);
+        if (onTopologyChanged_) onTopologyChanged_ (dests);
         layoutTree();
         repaint();
     }

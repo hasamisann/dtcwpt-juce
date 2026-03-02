@@ -64,6 +64,16 @@ public:
     void setTopology (const std::vector<std::string>& destinations);
 
     /**
+     * @brief Sets the callback invoked when the topology changes (split or merge).
+     *
+     * Called on the Message Thread immediately after TopologyState::requestChange().
+     * Use this to update the APVTS topology property safely on the GUI thread.
+     *
+     * @param cb  Callback with signature void(const std::vector<std::string>&).
+     */
+    void setTopologyChangedCallback (std::function<void(const std::vector<std::string>&)> cb);
+
+    /**
      * @brief Sets the callback invoked when the "Back" button is clicked.
      *
      * @param cb  Callback with signature void().
@@ -224,6 +234,12 @@ private:
 
     /** Callback for back-button click. */
     std::function<void()> onBack_;
+
+    /**
+     * Callback fired on the Message Thread after every topology change.
+     * Receives the new destination list so the caller can persist it to APVTS.
+     */
+    std::function<void(const std::vector<std::string>&)> onTopologyChanged_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TopologyEditorView)
 };

@@ -27,6 +27,18 @@ MorphEditor::MorphEditor (MorphAudioProcessor& processor)
     topologyView_.setBackButtonCallback ([this] { showMain(); });
 
     // -----------------------------------------------------------------------
+    // Wire topology-changed callback: update APVTS property on Message Thread.
+    // This is the safe replacement for the removed audio-thread ValueTree write.
+    // -----------------------------------------------------------------------
+    topologyView_.setTopologyChangedCallback ([&processor] (const std::vector<std::string>& dests)
+    {
+        juce::StringArray arr;
+        for (const auto& d : dests)
+            arr.add (juce::String (d));
+        processor.getAPVTS().state.setProperty ("topology", arr.joinIntoString (","), nullptr);
+    });
+
+    // -----------------------------------------------------------------------
     // Add sub-views as children
     // -----------------------------------------------------------------------
     addChildComponent (mainView_);
