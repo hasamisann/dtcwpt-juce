@@ -14,7 +14,7 @@
  * showMain(), showTopology(), and showAbout() methods, which are wired as
  * callbacks into the sub-views.
  *
- * The editor has a fixed size of 600 × 450 pixels.
+ * The editor has a fixed size of 280 × 400 pixels.
  */
 
 #include "MainView.h"
@@ -42,7 +42,7 @@ public:
      * @brief Constructs the editor.
      *
      * Creates all three sub-views, wires navigation callbacks, shows MainView,
-     * and sets the editor to a fixed 600 × 450 pixel size.
+     * and sets the editor to a fixed 280 × 400 pixel size.
      *
      * @param processor  Reference to the owning MorphAudioProcessor.
      *                   Passed to sub-views that need APVTS or bridge access.
@@ -78,10 +78,10 @@ private:
     //==============================================================================
 
     /** Editor width in pixels. */
-    static constexpr int kEditorWidth  = 600;
+    static constexpr int kEditorWidth  = 280;
 
     /** Editor height in pixels. */
-    static constexpr int kEditorHeight = 450;
+    static constexpr int kEditorHeight = 400;
 
     //==============================================================================
     // Sub-views (owned by this editor)

@@ -4,6 +4,7 @@
  */
 
 #include "TopologyEditorView.h"
+#include "FontHelper.h"
 
 #include <algorithm>
 #include <cmath>
@@ -60,6 +61,37 @@ TopologyEditorView::TopologyEditorView (TopologyState& topoState, double sampleR
     {
         if (onBack_) onBack_();
     };
+
+    // Preset ComboBox: populate items and wire callback
+    // Items 1-8: DWT 1 through DWT 8
+    for (int d = 1; d <= 8; ++d)
+        presetCombo_.addItem ("DWT " + juce::String (d), d);
+
+    // Items 9-12: Full Tree 1 through Full Tree 4
+    for (int d = 1; d <= 4; ++d)
+        presetCombo_.addItem ("Full Tree " + juce::String (d), 8 + d);
+
+    presetCombo_.setTextWhenNothingSelected ("Presets");
+    presetCombo_.onChange = [this]
+    {
+        const int selectedId = presetCombo_.getSelectedId();
+        if (selectedId <= 0) return;
+
+        std::vector<std::string> dests;
+        if (selectedId <= 8)
+            dests = generateDWT (selectedId);
+        else
+            dests = generateFullTree (selectedId - 8);
+
+        buildTree (dests);
+        layoutTree();
+        repaint();
+
+        topoState_.requestChange (dests);
+        if (onTopologyChanged_) onTopologyChanged_ (dests);
+    };
+
+    addAndMakeVisible (presetCombo_);
 }
 
 //==============================================================================
@@ -103,6 +135,7 @@ void TopologyEditorView::setTopologyChangedCallback (
 void TopologyEditorView::resized()
 {
     backButton_.setBounds (4, 4, 70, 24);
+    presetCombo_.setBounds (80, 4, 120, 24);
     layoutTree();
 }
 
@@ -130,6 +163,14 @@ void TopologyEditorView::paint (juce::Graphics& g)
         if (const auto* node = findNode (tooltipNodeId_))
             drawTooltip (g, *node);
     }
+
+    // Draw static help text at fixed screen position (not affected by pan/zoom)
+    g.setColour (juce::Colour (0x40FFFFFF));
+    g.setFont (FontHelper::getFont (10.0f));
+    g.drawMultiLineText ("Click leaf: split | Click splitter: merge\nScroll: zoom | Drag: pan",
+                         10,
+                         44 + static_cast<int> (FontHelper::getFont (10.0f).getHeight()),
+                         getWidth() - 20);
 }
 
 void TopologyEditorView::mouseDown (const juce::MouseEvent& e)
@@ -477,6 +518,53 @@ int TopologyEditorView::nodeDepth (int nodeId) noexcept
 }
 
 //==============================================================================
+// Preset topology generators
+//==============================================================================
+
+std::vector<std::string> TopologyEditorView::generateDWT (int depth)
+{
+    // A DWT of depth N produces N+1 leaves:
+    //   "H", "LH", "LLH", ..., "L...LH", "L...L" (N L's)
+    // The low-frequency band is recursively split at each level.
+    std::vector<std::string> dests;
+    dests.reserve (static_cast<std::size_t> (depth + 1));
+
+    std::string prefix;
+    for (int i = 0; i < depth; ++i)
+    {
+        dests.push_back (prefix + "H");
+        prefix += "L";
+    }
+    // Final leaf: all L's (deepest low-frequency band)
+    dests.push_back (prefix);
+
+    return dests;
+}
+
+std::vector<std::string> TopologyEditorView::generateFullTree (int depth)
+{
+    // A Full Tree of depth N produces 2^N leaves by recursively splitting
+    // every node at each level. Enumerate in DFS order (L before H).
+    std::vector<std::string> dests;
+    dests.reserve (static_cast<std::size_t> (1 << depth));
+
+    // Recursive DFS enumeration
+    std::function<void(std::string, int)> enumerate = [&] (std::string path, int remaining)
+    {
+        if (remaining == 0)
+        {
+            dests.push_back (std::move (path));
+            return;
+        }
+        enumerate (path + "L", remaining - 1);
+        enumerate (path + "H", remaining - 1);
+    };
+
+    enumerate ("", depth);
+    return dests;
+}
+
+//==============================================================================
 // Drawing helpers
 //==============================================================================
 
@@ -503,7 +591,7 @@ void TopologyEditorView::drawNode (juce::Graphics& g, const TreeNode& node) cons
     const juce::String label = node.path.empty() ? juce::String ("Root")
                                                    : juce::String (node.path);
     g.setColour (juce::Colour (kLabelColour));
-    g.setFont (juce::Font (10.0f * zoomScale_));
+    g.setFont (FontHelper::getFont (10.0f * zoomScale_));
     g.drawText (label, node.bounds.toNearestInt(), juce::Justification::centred, true);
 }
 
@@ -533,7 +621,7 @@ void TopologyEditorView::drawTooltip (juce::Graphics& g, const TreeNode& node) c
     const juce::String tooltip  = pathStr + "\n" + typeStr + "\n" + freqStr;
 
     // Measure tooltip size
-    juce::Font font (11.0f);
+    juce::Font font = FontHelper::getFont (11.0f);
     g.setFont (font);
 
     constexpr int kPad = 6;
