@@ -8,7 +8,7 @@
  * plugin target to avoid pulling in GUI dependencies.
  */
 
-#include "../sample_plugins/MorphAudioProcessor.h"
+#include "../sample_plugins/dtcwpt-morph/MorphAudioProcessor.h"
 
 juce::AudioProcessorEditor* MorphAudioProcessor::createEditor()
 {

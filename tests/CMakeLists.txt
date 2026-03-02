@@ -56,16 +56,16 @@ target_sources(dtcwpt_tests
         suites/SpectrumDataBridgeTests.cpp
         util/TestUtils.cpp
         stubs/MorphAudioProcessorStubs.cpp
-        ../sample_plugins/MorphBandProcessor.cpp
-        ../sample_plugins/MorphAudioProcessor.cpp
-        ../sample_plugins/SpectrumDataBridge.cpp
+        ../sample_plugins/dtcwpt-morph/MorphBandProcessor.cpp
+        ../sample_plugins/dtcwpt-morph/MorphAudioProcessor.cpp
+        ../sample_plugins/dtcwpt-morph/SpectrumDataBridge.cpp
 )
 
 target_include_directories(dtcwpt_tests
     PRIVATE
         .
-        ../sample_plugins
-        ../sample_plugins/gui
+        ../sample_plugins/dtcwpt-morph
+        ../sample_plugins/dtcwpt-morph/gui
 )
 
 target_compile_definitions(dtcwpt_tests
