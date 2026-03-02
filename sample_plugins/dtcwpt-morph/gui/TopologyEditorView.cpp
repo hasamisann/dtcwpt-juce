@@ -62,26 +62,28 @@ TopologyEditorView::TopologyEditorView (TopologyState& topoState, double sampleR
         if (onBack_) onBack_();
     };
 
-    // Preset ComboBox: populate items and wire callback
-    // Items 1-8: DWT 1 through DWT 8
+    // Type ComboBox: DWT or Full Tree
+    typeCombo_.addItem ("DWT",  1);
+    typeCombo_.addItem ("Full", 2);
+    typeCombo_.setTextWhenNothingSelected ("Type");
+
+    // Depth ComboBox: 1–8
     for (int d = 1; d <= 8; ++d)
-        presetCombo_.addItem ("DWT " + juce::String (d), d);
+        depthCombo_.addItem (juce::String (d), d);
+    depthCombo_.setTextWhenNothingSelected ("Depth");
 
-    // Items 9-12: Full Tree 1 through Full Tree 4
-    for (int d = 1; d <= 4; ++d)
-        presetCombo_.addItem ("Full Tree " + juce::String (d), 8 + d);
-
-    presetCombo_.setTextWhenNothingSelected ("Presets");
-    presetCombo_.onChange = [this]
+    // Shared onChange: fires only when both selectors have a valid choice
+    auto applyPreset = [this]
     {
-        const int selectedId = presetCombo_.getSelectedId();
-        if (selectedId <= 0) return;
+        const int typeId  = typeCombo_.getSelectedId();
+        const int depthId = depthCombo_.getSelectedId();
+        if (typeId <= 0 || depthId <= 0) return;
 
         std::vector<std::string> dests;
-        if (selectedId <= 8)
-            dests = generateDWT (selectedId);
+        if (typeId == 1)
+            dests = generateDWT (depthId);
         else
-            dests = generateFullTree (selectedId - 8);
+            dests = generateFullTree (depthId);
 
         buildTree (dests);
         layoutTree();
@@ -91,7 +93,11 @@ TopologyEditorView::TopologyEditorView (TopologyState& topoState, double sampleR
         if (onTopologyChanged_) onTopologyChanged_ (dests);
     };
 
-    addAndMakeVisible (presetCombo_);
+    typeCombo_.onChange  = applyPreset;
+    depthCombo_.onChange = applyPreset;
+
+    addAndMakeVisible (typeCombo_);
+    addAndMakeVisible (depthCombo_);
 }
 
 //==============================================================================
@@ -135,7 +141,8 @@ void TopologyEditorView::setTopologyChangedCallback (
 void TopologyEditorView::resized()
 {
     backButton_.setBounds (4, 4, 70, 24);
-    presetCombo_.setBounds (80, 4, 120, 24);
+    typeCombo_.setBounds  (80,  4, 70, 24);
+    depthCombo_.setBounds (156, 4, 60, 24);
     layoutTree();
 }
 
@@ -544,11 +551,14 @@ std::vector<std::string> TopologyEditorView::generateDWT (int depth)
 std::vector<std::string> TopologyEditorView::generateFullTree (int depth)
 {
     // A Full Tree of depth N produces 2^N leaves by recursively splitting
-    // every node at each level. Enumerate in DFS order (L before H).
+    // every node at each level. Enumerate in DFS order (H before L) so the
+    // highest-frequency leaf receives slot 0 (top of canvas), matching DWT
+    // display convention.
     std::vector<std::string> dests;
     dests.reserve (static_cast<std::size_t> (1) << static_cast<std::size_t> (depth));
 
-    // Recursive DFS enumeration
+    // Enumerate in DFS order (H before L) so high-frequency leaves get the
+    // lowest slot index (top of canvas), matching DWT display convention.
     std::function<void(std::string, int)> enumerate = [&] (std::string path, int remaining)
     {
         if (remaining == 0)
@@ -556,8 +566,8 @@ std::vector<std::string> TopologyEditorView::generateFullTree (int depth)
             dests.push_back (std::move (path));
             return;
         }
-        enumerate (path + "L", remaining - 1);
         enumerate (path + "H", remaining - 1);
+        enumerate (path + "L", remaining - 1);
     };
 
     enumerate ("", depth);

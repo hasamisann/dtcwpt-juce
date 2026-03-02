@@ -222,9 +222,11 @@ private:
      * @brief Generates a Full Tree topology of the given depth.
      *
      * A Full Tree of depth N produces 2^N leaves by recursively splitting
-     * every node at each level. Leaves are enumerated in DFS order (L before H).
+     * every node at each level. Leaves are enumerated in DFS order (H before L),
+     * so the highest-frequency leaf receives slot 0 (top of canvas), matching
+     * DWT display convention.
      *
-     * @param depth  Number of decomposition levels (1–4).
+     * @param depth  Number of decomposition levels (1–8).
      * @return       Vector of destination path strings in DFS order.
      */
     static std::vector<std::string> generateFullTree (int depth);
@@ -270,8 +272,11 @@ private:
     /** Back button */
     juce::TextButton backButton_ { "< Back" };
 
-    /** Preset topology selector ComboBox. */
-    juce::ComboBox presetCombo_;
+    /** Preset type selector: "DWT" or "Full". */
+    juce::ComboBox typeCombo_;
+
+    /** Preset depth selector: 1–8. */
+    juce::ComboBox depthCombo_;
 
     /** Callback for back-button click. */
     std::function<void()> onBack_;
