@@ -292,31 +292,56 @@ void TopologyEditorView::buildTree (const std::vector<std::string>& destinations
 
 void TopologyEditorView::layoutTree()
 {
-    // Assign screen positions based on node depth and frequency position
-    // x = depth * kDepthSpacing * zoom + panOffset.x
-    // y = frequency-proportional within canvas height * zoom + panOffset.y
+    // Pass 1: assign vertical slot indices (leaf-count-based layout).
+    // Each leaf gets a unique sequential slot; internal nodes get the average
+    // of their children's slots. This guarantees no overlaps regardless of depth.
+    assignSlots (1, 0);
 
-    const float canvasHeight = static_cast<float> (getHeight()) - 40.0f; // leave room for button
-    const float nyquist = static_cast<float> (sampleRate_ * 0.5);
+    // Pass 2: convert slot indices to pixel positions.
+    //   x = panOffset.x + depth * kDepthSpacing * zoom
+    //   y = panOffset.y + headerMargin + slot * kSlotHeight * zoom
+    constexpr float kHeaderMargin = 40.0f;
 
     for (auto& node : nodes_)
     {
-        const int depth = nodeDepth (node.nodeId);
+        const int   depth = nodeDepth (node.nodeId);
         const float x = panOffset_.x + static_cast<float> (depth) * kDepthSpacing * zoomScale_;
-
-        // y: map frequency centre to canvas (low freq at bottom, high at top)
-        const float freqCentre = (node.freqLow + node.freqHigh) * 0.5f;
-        const float normFreq   = (nyquist > 0.0f) ? (freqCentre / nyquist) : 0.5f;
-        // Flip: high freq → top (low y), low freq → bottom (high y)
-        const float y = panOffset_.y + 40.0f +
-                        (1.0f - normFreq) * canvasHeight * zoomScale_
-                        - kNodeHeight * zoomScale_ * 0.5f;
+        const float y = panOffset_.y + kHeaderMargin + node.slot * kSlotHeight * zoomScale_;
 
         node.bounds = juce::Rectangle<float> (x, y,
                                                kNodeWidth  * zoomScale_,
                                                kNodeHeight * zoomScale_);
     }
 }
+
+int TopologyEditorView::assignSlots (int nodeId, int nextSlot)
+{
+    auto* node = findNode (nodeId);
+    if (!node) return nextSlot;
+
+    if (node->isLeaf)
+    {
+        node->slot = static_cast<float> (nextSlot);
+        return nextSlot + 1;
+    }
+
+    // Internal node: recurse on children (L child first = low-freq at bottom)
+    float slotSum = 0.0f;
+    for (int childId : node->children)
+    {
+        nextSlot  = assignSlots (childId, nextSlot);
+        if (const auto* child = findNode (childId))
+            slotSum += child->slot;
+    }
+
+    // Internal node gets the average slot of its children
+    node->slot = (node->children.empty())
+                     ? static_cast<float> (nextSlot)
+                     : slotSum / static_cast<float> (node->children.size());
+
+    return nextSlot;
+}
+
 
 void TopologyEditorView::splitNode (int nodeId)
 {

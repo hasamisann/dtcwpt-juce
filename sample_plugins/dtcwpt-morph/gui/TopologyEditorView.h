@@ -120,6 +120,7 @@ private:
         bool                    isLeaf    { true };
         float                   freqLow   { 0.0f };  ///< Hz
         float                   freqHigh  { 0.0f };  ///< Hz
+        float                   slot      { 0.0f };  ///< Vertical slot index (set by assignSlots())
         std::vector<int>        children;            ///< nodeIds of children (empty if leaf)
         juce::Rectangle<float>  bounds;              ///< Screen rect (set by layoutTree())
     };
@@ -137,6 +138,17 @@ private:
 
     /** Recomputes node screen bounds using current pan/zoom state. */
     void layoutTree();
+
+    /**
+     * @brief Recursive bottom-up pass: assigns sequential vertical slot indices
+     *        to all nodes. Leaves get unique integer slots; internal nodes get
+     *        the average slot of their children.
+     *
+     * @param nodeId    The node to process.
+     * @param nextSlot  The next available leaf slot index.
+     * @return          The updated next available slot index after this subtree.
+     */
+    int assignSlots (int nodeId, int nextSlot);
 
     /**
      * @brief Splits a leaf node into L/H children (if depth < kMaxDepth).
@@ -205,8 +217,8 @@ private:
     /** Horizontal spacing between depth levels. */
     static constexpr float kDepthSpacing = 80.0f;
 
-    /** Vertical spacing between sibling nodes. */
-    static constexpr float kVertSpacing = 30.0f;
+    /** Vertical height per leaf slot (kNodeHeight + padding). */
+    static constexpr float kSlotHeight = kNodeHeight + 6.0f;  // = 30.0f
 
     //==============================================================================
     // Members
