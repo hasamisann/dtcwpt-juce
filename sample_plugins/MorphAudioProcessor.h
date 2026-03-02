@@ -151,11 +151,11 @@ public:
     /**
      * @brief Creates the plugin editor.
      *
-     * Returns nullptr — GUI (MorphEditor) will be wired in task 010.
+     * Returns a new MorphEditor instance backed by this processor.
      */
     juce::AudioProcessorEditor* createEditor() override;
 
-    /** Returns false — editor not yet implemented. */
+    /** Returns true — MorphEditor is now wired up. */
     bool hasEditor() const override;
 
     //==============================================================================

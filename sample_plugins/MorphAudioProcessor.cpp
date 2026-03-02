@@ -7,6 +7,7 @@
  */
 
 #include "MorphAudioProcessor.h"
+#include "gui/MorphEditor.h"
 
 #include <juce_core/juce_core.h>
 
@@ -290,13 +291,12 @@ bool MorphAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) co
 
 juce::AudioProcessorEditor* MorphAudioProcessor::createEditor()
 {
-    // GUI will be created in task 010.
-    return nullptr;
+    return new MorphEditor (*this);
 }
 
 bool MorphAudioProcessor::hasEditor() const
 {
-    return false;
+    return true;
 }
 
 //==============================================================================

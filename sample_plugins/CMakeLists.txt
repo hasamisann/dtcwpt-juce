@@ -58,6 +58,10 @@ target_sources(DtcwptMorph
         gui/TopologyEditorView.cpp
         gui/AboutView.h
         gui/AboutView.cpp
+        gui/MainView.h
+        gui/MainView.cpp
+        gui/MorphEditor.h
+        gui/MorphEditor.cpp
 )
 
 target_include_directories(DtcwptMorph
@@ -72,6 +76,13 @@ target_compile_definitions(DtcwptMorph
         # VST3/VST2 parameter-ID mismatch warning that JUCE emits by default.
         JUCE_IGNORE_VST3_MISMATCHED_PARAMETER_ID_WARNING=1
 )
+
+# Suppress C4819 (file encoding / code-page mismatch) on MSVC.
+# This warning is a Japanese-locale artefact (code page 932) and is not a code
+# quality issue.  It is pre-existing across all source files in the project.
+if(MSVC)
+    target_compile_options(DtcwptMorph PRIVATE /wd4819)
+endif()
 
 target_link_libraries(DtcwptMorph
     PRIVATE
