@@ -14,11 +14,11 @@
 
 namespace
 {
-    /** Dark background colour for the main view. */
-    constexpr juce::uint32 kBgColour    = 0xFF1A1A2E;
+    /** Unified background colour (header + main area). */
+    constexpr juce::uint32 kBgColour    = 0xFF282842;
 
-    /** Header bar background colour. */
-    constexpr juce::uint32 kHeaderBg    = 0xFF16213E;
+    /** Header bar background colour — same as main background. */
+    constexpr juce::uint32 kHeaderBg    = 0xFF282842;
 
     /** Header bar title text colour. */
     constexpr juce::uint32 kTitleColour = 0xFFDDDDDD;
@@ -44,7 +44,7 @@ MainView::MainView (MorphAudioProcessor& processor)
     // Header bar
     // -----------------------------------------------------------------------
     titleLabel_.setText ("DT-CWPT Morph", juce::dontSendNotification);
-    titleLabel_.setFont (FontHelper::getFont (16.0f, true));
+    titleLabel_.setFont (FontHelper::getFont (20.0f));
     titleLabel_.setColour (juce::Label::textColourId, juce::Colour (kTitleColour));
     titleLabel_.setJustificationType (juce::Justification::centredLeft);
     addAndMakeVisible (titleLabel_);
