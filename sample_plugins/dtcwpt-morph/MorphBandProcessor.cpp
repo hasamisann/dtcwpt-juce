@@ -89,23 +89,6 @@ void MorphBandProcessor::processAllBands (dtcwpt::BandData& data)
                                        scMag_.data(), scPhase_.data(), n);
 
             // Step 2–6: Per-sample morph
-            // SmoothedValue::getNextValue() is shared across channels and bands,
-            // so we only advance it for ch==0 to avoid multi-advancing per block.
-            // For ch > 0 we use the same (already advanced) values by peeking at
-            // the current instantaneous value via getCurrentValue().
-            //
-            // To implement this cleanly: advance only on the first channel pass,
-            // then use snapshotted values on subsequent channels.
-            //
-            // However, the task spec says "getNextValue() is called per subband
-            // sample inside processAllBands() for per-sample smoothing". The intent
-            // is that the smoothed values advance once per sample (not once per
-            // sample × channel). We therefore snapshot the smoothed values ONCE
-            // per band (advancing on ch==0) and reuse for remaining channels.
-            //
-            // For the first channel (ch==0), we advance the SmoothedValues and
-            // store the per-sample values. For subsequent channels we reuse them.
-
             const bool isFirstChannel = (ch == 0);
 
             for (std::size_t s = 0; s < n; ++s)
@@ -117,12 +100,6 @@ void MorphBandProcessor::processAllBands (dtcwpt::BandData& data)
                     mag = magnitudeSmoothed_.getNextValue();
                     ph  = phaseSmoothed_.getNextValue();
                     thr = thresholdSmoothed_.getNextValue();
-                    // Cache into scratch buffers indexed by sample (reuse mainMag_/etc
-                    // post-polar-conversion would be unsafe — use dedicated cache).
-                    // Instead, we'll process inline and not cache; multi-channel
-                    // morphing will re-use the current target (post-smoothing) value
-                    // for ch > 0. This is the standard approach for multi-channel
-                    // SmoothedValue usage.
                 }
                 else
                 {
