@@ -492,11 +492,6 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
 
     // If BandProcessor was set before prepareToPlay(), prepare it now
     if (bandProcessor_) {
-        // Compute maxSamplesPerBand from internalBlockSize_ and MIN depth.
-        // Shallower destinations produce MORE subband samples per block, so the
-        // minimum depth across all destinations gives the largest subband block.
-        // Using maxDepth here would under-allocate scratch buffers in BandProcessor
-        // (e.g. mainMag_/scMag_) for shallower bands — a heap overflow bug.
         size_t minDepth = static_cast<size_t>(getNodeLevel(destinations_[0]));
         for (int dest : destinations_) {
             const size_t d = static_cast<size_t>(getNodeLevel(dest));
