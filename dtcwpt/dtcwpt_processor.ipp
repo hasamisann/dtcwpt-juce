@@ -82,6 +82,14 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
     if (config.destinations.empty()) {
         throw std::invalid_argument("At least one destination required");
     }
+    // DEBUG: Log destinations
+    std::cerr << "[DTCWPTProcessor] prepareToPlay - destinations count: " << config.destinations.size() << std::endl;
+    std::cerr << "[DTCWPTProcessor] prepareToPlay - destinations: ";
+    for (const auto& d : config.destinations) {
+        std::cerr << "\"" << d << "\" ";
+    }
+    std::cerr << std::endl;
+
     // Store configuration
     sampleRate_ = sampleRate;
     maxBlockSize_ = maxBlockSize;

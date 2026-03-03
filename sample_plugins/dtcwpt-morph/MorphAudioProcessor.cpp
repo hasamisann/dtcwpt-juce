@@ -89,6 +89,12 @@ void MorphAudioProcessor::releaseResources()
 
 void MorphAudioProcessor::rebuildDTCWPT()
 {
+    // DEBUG: Log current destinations
+    juce::StringArray arr;
+    for (const auto& d : currentDestinations_)
+        arr.add (juce::String (d));
+    DBG ("[MorphAudioProcessor] rebuildDTCWPT - destinations: " + arr.joinIntoString (", ") + " (count: " + juce::String (static_cast<int>(currentDestinations_.size())) + ")");
+
     // Build topology config from current destinations
     dtcwpt::TopologyConfig config;
     config.destinations = currentDestinations_;
@@ -138,6 +144,12 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         std::vector<std::string> newDestinations;
         if (topoState_.tryConsume (newDestinations))
         {
+            // DEBUG: Log topology change detection
+            juce::StringArray arr;
+            for (const auto& d : newDestinations)
+                arr.add (juce::String (d));
+            DBG ("[MorphAudioProcessor] processBlock - topology change detected: " + arr.joinIntoString (", "));
+
             currentDestinations_ = newDestinations;
 
             // Rebuild the engine on topology change.
