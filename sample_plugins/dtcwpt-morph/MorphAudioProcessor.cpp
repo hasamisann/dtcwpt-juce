@@ -141,11 +141,6 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             currentDestinations_ = newDestinations;
 
             // Rebuild the engine on topology change.
-            // NOTE: ValueTree::setProperty and updateHostDisplay have been removed from
-            // here — both trigger heap allocations and UI locks that are not safe on the
-            // audio thread. The APVTS topology property is now updated exclusively on the
-            // Message Thread via the TopologyEditorView::onTopologyChanged_ callback wired
-            // in MorphEditor.
             rebuildDTCWPT();
         }
     }
