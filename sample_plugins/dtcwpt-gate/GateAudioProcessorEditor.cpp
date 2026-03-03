@@ -1,4 +1,5 @@
 #include "GateAudioProcessor.h"
+#include "gui/GateEditor.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 
 //==============================================================================
@@ -12,7 +13,7 @@ juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 
 juce::AudioProcessorEditor* GateAudioProcessor::createEditor()
 {
-    return new juce::GenericAudioProcessorEditor (*this);
+    return new GateEditor (*this);
 }
 
 bool GateAudioProcessor::hasEditor() const
