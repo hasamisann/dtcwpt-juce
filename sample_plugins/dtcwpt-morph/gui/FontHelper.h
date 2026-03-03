@@ -32,18 +32,18 @@ namespace FontHelper
      */
     inline juce::Font getFont (float height, bool bold = false)
     {
-        static const juce::Typeface::Ptr regular =
+        static const juce::Typeface::Ptr regularTypeface =
             juce::Typeface::createSystemTypefaceFor (
                 BinaryData::HankenGroteskRegular_ttf,
                 BinaryData::HankenGroteskRegular_ttfSize);
 
-        static const juce::Typeface::Ptr boldFace =
+        static const juce::Typeface::Ptr boldTypeface =
             juce::Typeface::createSystemTypefaceFor (
                 BinaryData::HankenGroteskBold_ttf,
                 BinaryData::HankenGroteskBold_ttfSize);
 
         return juce::Font (juce::FontOptions()
-                               .withTypeface (bold ? boldFace : regular)
+                               .withTypeface (bold ? boldTypeface : regularTypeface)
                                .withHeight (height));
     }
 
