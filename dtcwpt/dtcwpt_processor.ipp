@@ -926,7 +926,7 @@ void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
     for (double x : inputBlock) {
         // Reset all flags at start of each sample to prevent stale state.
         // Only the root node (index 1) is initially active.
-        std::fill(activeFlags.begin(), activeFlags.end(), 0);
+        std::fill(activeFlags.begin(), activeFlags.end(), static_cast<char>(0));
         activeFlags[1] = 1;  // Root is always active
         workBuffer[1] = x;
 
