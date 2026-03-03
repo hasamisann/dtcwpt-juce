@@ -211,7 +211,7 @@ void SpectrumAnalyzerWidget::drawGrid (juce::Graphics& g, float width, float hei
 {
     g.setColour (juce::Colour (kGridColour));
 
-    const juce::Font labelFont (10.0f);
+    const juce::Font labelFont (juce::FontOptions().withHeight (10.0f));
     g.setFont (labelFont);
 
     // Frequency grid lines (vertical)
