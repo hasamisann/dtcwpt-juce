@@ -2,8 +2,6 @@
   BEGIN_JUCE_MODULE_DECLARATION
 
   ID:                   dtcwpt
-  vendor:               nalum
-  version:              0.1.0
   name:                 DT-CWPT Core Library
   description:          Dual-Tree Complex Wavelet Packet Transform for real-time audio processing.
   minimumCppStandard:   20
