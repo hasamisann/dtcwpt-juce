@@ -28,6 +28,7 @@ void GateBandProcessor::processAllBands(dtcwpt::BandData& data) noexcept
         double sumSq = 0.0;
         size_t totalSamples = 0;
         const double threshold = thresholds_[static_cast<size_t>(b)];
+        const bool shouldBypass = data.destinationIds != nullptr && bypassLow_ && isLowBand((*data.destinationIds)[static_cast<size_t>(b)]);
 
         for (int ch = 0; ch < data.numChannels; ++ch)
         {
@@ -46,7 +47,7 @@ void GateBandProcessor::processAllBands(dtcwpt::BandData& data) noexcept
                 const double sqMag = r * r + i_ * i_;
                 sumSq += sqMag;
 
-                if (std::sqrt(sqMag) < threshold)
+                if (!shouldBypass && std::sqrt(sqMag) < threshold)
                 {
                     re[i] = 0.0;
                     im[i] = 0.0;

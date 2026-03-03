@@ -438,6 +438,9 @@ void TopologyEditorView::splitNode (int nodeId)
 
 void TopologyEditorView::mergeNode (int nodeId)
 {
+    // Prevent merging the root node (nodeId 1) to enforce a minimum depth of 1 (H/L split).
+    if (nodeId == 1) return;
+
     auto* node = findNode (nodeId);
     if (!node || node->isLeaf) return;
 

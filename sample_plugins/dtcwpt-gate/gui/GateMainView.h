@@ -33,9 +33,12 @@ private:
     juce::Label titleLabel_;
     juce::TextButton settingsButton_;
     juce::TextButton aboutButton_;
+    juce::ToggleButton bypassLowestButton_;
 
     SpectrumAnalyzerWidget spectrumWidget_;
     GraphicEqWidget graphicEqWidget_;
+
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAttachment_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (GateMainView)
 };

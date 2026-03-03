@@ -6,7 +6,7 @@
  *
  * GateAudioProcessor is the JUCE AudioProcessor for the DT-CWPT Gate plugin.
  * It manages:
- *  - 64 automatable threshold parameters via APVTS.
+ *  - 256 automatable threshold parameters via APVTS.
  *  - A DTCWPTProcessor for real-time wavelet analysis/synthesis.
  *  - A GateBandProcessor for subband hard gating.
  *  - Thread-safe topology change handoff via TopologyState.
@@ -57,7 +57,7 @@ public:
     /**
      * @brief Constructs the processor.
      *
-     * Initialises the APVTS with 64 threshold parameters and sets the default topology
+     * Initialises the APVTS with 256 threshold parameters and sets the default topology
      * (6-level DWT: H, LH, LLH, LLLH, LLLLH, LLLLLH, LLLLLL) as a ValueTree property.
      */
     GateAudioProcessor();
@@ -149,7 +149,7 @@ public:
     //==============================================================================
 
     /**
-     * @brief Creates the APVTS parameter layout with 64 threshold parameters.
+     * @brief Creates the APVTS parameter layout with 256 threshold parameters.
      */
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
@@ -185,8 +185,11 @@ private:
 
     juce::AudioProcessorValueTreeState apvts_;
     
-    /** Cached raw pointers to the 64 threshold parameters. */
-    std::array<std::atomic<float>*, 64> thresholdRaw_ {};
+    /** Cached raw pointers to the 256 threshold parameters. */
+    std::array<std::atomic<float>*, 256> thresholdRaw_ {};
+
+    /** Cached raw pointer to the bypass lowest band parameter. */
+    std::atomic<float>* bypassLowestRaw_ { nullptr };
 
     //==============================================================================
     // DSP objects

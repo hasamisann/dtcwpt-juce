@@ -106,10 +106,13 @@ private:
     //==============================================================================
 
     /** Cached raw parameter states for fast drawing. */
-    std::array<std::atomic<float>*, 64> thresholdRaw_ {};
+    std::array<std::atomic<float>*, GateBandProcessor::kMaxBands> thresholdRaw_ {};
 
     /** Cached parameter objects for host notification during interactions. */
-    std::array<juce::RangedAudioParameter*, 64> thresholdParams_ {};
+    std::array<juce::RangedAudioParameter*, GateBandProcessor::kMaxBands> thresholdParams_ {};
+
+    /** Determines if the lowest band is visually bypassed. */
+    std::atomic<float>* bypassLowestRaw_ {nullptr};
 
     //==============================================================================
     // Interaction State

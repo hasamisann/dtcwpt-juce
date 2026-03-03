@@ -39,12 +39,15 @@ GateAudioProcessor::GateAudioProcessor()
                                destArray.joinIntoString (kTopologySeparator),
                                nullptr);
 
-    // Cache the 64 parameter pointers
-    for (int i = 0; i < 64; ++i)
+    // Cache the 256 parameter pointers
+    for (int i = 0; i < GateBandProcessor::kMaxBands; ++i)
     {
         juce::String paramID = juce::String::formatted("threshold_%02d", i);
         thresholdRaw_[i] = apvts_.getRawParameterValue(paramID);
     }
+    
+    // Cache the bypass parameter
+    bypassLowestRaw_ = apvts_.getRawParameterValue("bypass_lowest_band");
 }
 
 //==============================================================================
@@ -126,9 +129,9 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         }
     }
 
-    // 2. Read 64 threshold params → linear → set thresholds
-    size_t numBands = std::min(currentDestinations_.size(), static_cast<size_t>(64));
-    std::array<double, 64> thresholds {};
+    // 2. Read 256 threshold params → linear → set thresholds
+    size_t numBands = std::min(currentDestinations_.size(), static_cast<size_t>(GateBandProcessor::kMaxBands));
+    std::array<double, GateBandProcessor::kMaxBands> thresholds {};
     for (size_t i = 0; i < numBands; ++i)
     {
         if (thresholdRaw_[i] != nullptr)
@@ -138,6 +141,9 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         }
     }
     gateProcessor_->setThresholds(thresholds.data(), static_cast<int>(numBands));
+
+    if (bypassLowestRaw_ != nullptr)
+        gateProcessor_->setBypassLowest(bypassLowestRaw_->load() >= 0.5f);
 
     // 3. Snapshot input (mono-averaged) for spectrum
     inputMonoScratch_.clear();
@@ -165,9 +171,9 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     dtcwptMain_->processBlock (mainDoubleBuffer_);
 
     // 6. Push levels to bandLevelBridge_
-    float levels[64];
+    float levels[GateBandProcessor::kMaxBands];
     int nBands = gateProcessor_->getBandLevelsDb(levels);
-    bandLevelBridge_.update(levels, std::min(nBands, 64));
+    bandLevelBridge_.update(levels, std::min(nBands, GateBandProcessor::kMaxBands));
 
     // 7. Double → Float conversion
     for (int ch = 0; ch < std::min(numChannels, 2); ++ch)
@@ -273,7 +279,7 @@ void GateAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
                 for (const auto& t : tokens)
                     newDests.push_back (t.toStdString());
 
-                if (!newDests.empty() && newDests.size() <= 64)
+                if (!newDests.empty() && newDests.size() <= 256)
                 {
                     topoState_.requestChange (newDests);
                 }
@@ -290,13 +296,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout GateAudioProcessor::createPa
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
-    for (int i = 0; i < 64; ++i)
+    for (int i = 0; i < GateBandProcessor::kMaxBands; ++i)
     {
         juce::String paramID = juce::String::formatted("threshold_%02d", i);
         layout.add(std::make_unique<juce::AudioParameterFloat>(
             juce::ParameterID{paramID, 1},
             "Threshold " + juce::String(i),
-            juce::NormalisableRange<float>(-120.0f, 0.0f, 0.1f),
+            juce::NormalisableRange<float>(-120.0f, 10.0f, 0.1f),
             -60.0f,
             juce::String(),
             juce::AudioProcessorParameter::genericParameter,
@@ -304,6 +310,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout GateAudioProcessor::createPa
             [](const juce::String& text) { return text.dropLastCharacters(3).getFloatValue(); }
         ));
     }
+
+    // Bypass lowest frequency band toggle
+    layout.add(std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID{"bypass_lowest_band", 1},
+        "Bypass Lowest",
+        false
+    ));
 
     return layout;
 }

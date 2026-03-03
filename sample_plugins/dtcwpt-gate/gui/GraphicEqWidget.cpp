@@ -16,7 +16,7 @@ namespace
 
     const float kFreqMinDisplay = 20.0f;
     const float kDbMinDisplay   = -120.0f;
-    const float kDbMaxDisplay   = 0.0f;
+    const float kDbMaxDisplay   = 10.0f;
 }
 
 //==============================================================================
@@ -44,6 +44,8 @@ GraphicEqWidget::GraphicEqWidget (GateAudioProcessor& processor, float sampleRat
         thresholdRaw_[i]     = processor_.getAPVTS().getRawParameterValue (paramID);
         thresholdParams_[i]  = processor_.getAPVTS().getParameter (paramID);
     }
+
+    bypassLowestRaw_ = processor_.getAPVTS().getRawParameterValue("bypass_lowest_band");
 
     // Fire repaint at 30 Hz for live meters
     startTimerHz (30);
@@ -146,21 +148,17 @@ void GraphicEqWidget::paint (juce::Graphics& g)
     g.fillAll (kBgColor);
 
     // 2. Draw Horizontal Grid (dB lines)
-    g.setColour (kTextDim.withMultipliedAlpha (0.3f));
-    const float dbLines[] = { -20.0f, -40.0f, -60.0f, -80.0f, -100.0f };
-    for (float db : dbLines)
-    {
-        float y = dbToY (db);
-        g.drawLine (0.0f, y, width, y, 1.0f);
-    }
+    // Horizontal grid lines (dB)
+    g.setColour (kTextDim.withAlpha (0.4f));
+    g.setFont (FontHelper::getFont (10.0f));
 
-    g.setFont (FontHelper::getFont (9.0f));
-    g.setColour (kTextDim);
-    for (float db : dbLines)
+    const std::vector<float> gridDbs = { 10.0f, 0.0f, -20.0f, -40.0f, -60.0f, -80.0f, -100.0f, -120.0f };
+    for (float db : gridDbs)
     {
         float y = dbToY (db);
-        g.drawText (juce::String (db, 0) + " dB",
-                    4, static_cast<int>(y - 10.0f), 40, 10,
+        g.drawLine (0.0f, y, static_cast<float>(getWidth()), y, 1.0f);
+        g.drawText (juce::String (static_cast<int>(db)) + " dB",
+                    4, static_cast<int>(y) - 14, 40, 14,
                     juce::Justification::bottomLeft, false);
     }
 
@@ -213,8 +211,19 @@ void GraphicEqWidget::paint (juce::Graphics& g)
         float padding = (xRight - xLeft > 3.0f) ? 1.0f : 0.0f;
         float barWidth = std::max(1.0f, (xRight - xLeft) - (padding * 2.0f));
         
-        juce::Colour fillColor = isHovered ? kAccentColor.withMultipliedAlpha (0.55f)
-                                           : kAccentColor.withMultipliedAlpha (0.40f);
+        bool isLowestBand = true;
+        for (char c : currentDestinations_[i]) {
+            if (c != 'L') {
+                isLowestBand = false;
+                break;
+            }
+        }
+        
+        bool isBypassed = isLowestBand && (bypassLowestRaw_ != nullptr && bypassLowestRaw_->load() >= 0.5f);
+        
+        juce::Colour baseColor = isBypassed ? juce::Colours::darkgrey : kAccentColor;
+        juce::Colour fillColor = isHovered ? baseColor.withMultipliedAlpha (isBypassed ? 0.40f : 0.55f)
+                                           : baseColor.withMultipliedAlpha (isBypassed ? 0.25f : 0.40f);
         
         // Bar rectangle from threshold to bottom edge
         juce::Rectangle<float> barRect (xLeft + padding, yTop, barWidth, height - yTop);
@@ -224,7 +233,7 @@ void GraphicEqWidget::paint (juce::Graphics& g)
         
         // Threshold Line (accent color top line)
         float xEnd = std::max(xLeft + padding, xRight - padding);
-        g.setColour (kAccentColor);
+        g.setColour (baseColor);
         g.drawLine (xLeft + padding, yTop, xEnd, yTop, 2.0f);
         
         // Level Meter (white overlay line)

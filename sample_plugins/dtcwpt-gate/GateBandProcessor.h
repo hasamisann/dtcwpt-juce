@@ -13,7 +13,7 @@
 class GateBandProcessor : public dtcwpt::BandProcessor
 {
 public:
-    static constexpr int kMaxBands = 64;
+    static constexpr int kMaxBands = 256;
 
     GateBandProcessor() noexcept;
     ~GateBandProcessor() override = default;
@@ -41,13 +41,20 @@ public:
      */
     int getBandLevelsDb(float* outLevelsDb) const noexcept;
 
+    /** Enable or disable processing on the lowest-frequency band. */
+    void setBypassLowest(bool bypass) noexcept { bypassLow_ = bypass; }
+
 private:
+    /** Subband is fundamental/DC if it falls on index matching (nodeId & (nodeId - 1)) == 0. */
+    static bool isLowBand(int nodeId) noexcept { return nodeId > 0 && (nodeId & (nodeId - 1)) == 0; }
+
     std::array<double, kMaxBands> thresholds_;   // Linear amplitude
     std::array<float, kMaxBands> bandLevelsDb_;  // Pre-gate RMS in dB
     int numBands_ = 0;
     double sampleRate_ = 44100.0;
     int maxSamplesPerBand_ = 0;
     int numChannels_ = 0;
+    bool bypassLow_ = false;
     
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(GateBandProcessor)
 };

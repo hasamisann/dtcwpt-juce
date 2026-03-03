@@ -31,6 +31,14 @@ GateMainView::GateMainView (GateAudioProcessor& processor, double sampleRate)
     aboutButton_.setButtonText (juce::CharPointer_UTF8("\xe2\x84\xb9")); // ℹ
     aboutButton_.onClick = [this] { if (onAboutClicked) onAboutClicked(); };
     addAndMakeVisible (aboutButton_);
+    
+    bypassLowestButton_.setButtonText ("Bypass Lowest");
+    bypassLowestButton_.setColour (juce::ToggleButton::textColourId, juce::Colours::white);
+    addAndMakeVisible (bypassLowestButton_);
+    
+    bypassAttachment_ = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+        processor_.getAPVTS(), "bypass_lowest_band", bypassLowestButton_
+    );
 
     // Customise button looks
     struct HeaderButtonLookAndFeel : public juce::LookAndFeel_V4
@@ -87,6 +95,8 @@ void GateMainView::resized()
     aboutButton_.setBounds (headerBounds.removeFromRight (24).withSizeKeepingCentre (24, 24));
     headerBounds.removeFromRight (12); // spacing
     settingsButton_.setBounds (headerBounds.removeFromRight (24).withSizeKeepingCentre (24, 24));
+    headerBounds.removeFromRight (16);
+    bypassLowestButton_.setBounds (headerBounds.removeFromRight (110).withSizeKeepingCentre (110, 24));
 
     // Spectrum
     bounds.removeFromTop (10); // add_space(10.0)

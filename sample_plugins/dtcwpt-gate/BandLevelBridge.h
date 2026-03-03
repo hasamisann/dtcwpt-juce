@@ -16,7 +16,7 @@
 class BandLevelBridge
 {
 public:
-    static constexpr int kMaxBands = 64;
+    static constexpr int kMaxBands = 256;
 
     BandLevelBridge() noexcept { levelsDb_.fill(-80.0f); }
 
