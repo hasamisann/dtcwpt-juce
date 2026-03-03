@@ -108,8 +108,8 @@ AboutView::AboutView (std::function<void()> onBack)
 
     // -----------------------------------------------------------------------
     // Back button
-    // -----------------------------------------------------------------------
     backButton_.setButtonText ("< Back");
+    backButton_.setLookAndFeel (&buttonLnf_);
     backButton_.onClick = [this]
     {
         if (onBack_) onBack_();

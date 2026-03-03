@@ -57,6 +57,7 @@ TopologyEditorView::TopologyEditorView (TopologyState& topoState, double sampleR
 
     // Back button
     addAndMakeVisible (backButton_);
+    backButton_.setLookAndFeel (&buttonLnf_);
     backButton_.onClick = [this]
     {
         if (onBack_) onBack_();

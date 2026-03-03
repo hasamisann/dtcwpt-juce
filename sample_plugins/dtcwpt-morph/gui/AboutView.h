@@ -18,7 +18,23 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "FontHelper.h"
+
 #include <functional>
+
+//==============================================================================
+// LookAndFeel class for custom button fonts
+//==============================================================================
+
+/** LookAndFeel for TextButtons that uses Hanken Grotesk font. */
+class AboutButtonLookAndFeel : public juce::LookAndFeel_V4
+{
+public:
+    juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override
+    {
+        return FontHelper::getFont (static_cast<float> (buttonHeight) * 0.5f);
+    }
+};
 
 /**
  * @brief Static informational component shown in the About view.
@@ -103,6 +119,9 @@ private:
 
     /** SIL Open Font License notice for Hanken Grotesk. */
     juce::Label oflLicenseLabel_;
+
+    /** LookAndFeel for the back button. */
+    AboutButtonLookAndFeel buttonLnf_;
 
     /** Back button — returns to the main view. */
     juce::TextButton backButton_;

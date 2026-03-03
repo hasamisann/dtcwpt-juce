@@ -19,12 +19,27 @@
  */
 
 #include "TopologyState.h"
+#include "FontHelper.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <functional>
 #include <string>
 #include <vector>
+
+//==============================================================================
+// LookAndFeel class for custom button fonts
+//==============================================================================
+
+/** LookAndFeel for TextButtons that uses Hanken Grotesk font. */
+class TopologyButtonLookAndFeel : public juce::LookAndFeel_V4
+{
+public:
+    juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override
+    {
+        return FontHelper::getFont (static_cast<float> (buttonHeight) * 0.5f);
+    }
+};
 
 /**
  * @brief Interactive wavelet tree canvas component.
@@ -268,6 +283,9 @@ private:
 
     /** Previous mouse position for drag delta computation. */
     juce::Point<float> lastDragPos_;
+
+    /** LookAndFeel for the back button. */
+    TopologyButtonLookAndFeel buttonLnf_;
 
     /** Back button */
     juce::TextButton backButton_ { "< Back" };
