@@ -29,3 +29,4 @@ juce_add_module(../dtcwpt)
 
 # Add plugin subdirectories
 add_subdirectory(dtcwpt-morph)
+add_subdirectory(dtcwpt-gate)
