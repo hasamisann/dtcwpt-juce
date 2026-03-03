@@ -25,6 +25,7 @@
 #include "WiperLookAndFeel.h"
 
 #include "MorphAudioProcessor.h"
+#include "FontHelper.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -32,6 +33,49 @@
 #include <atomic>
 #include <functional>
 #include <vector>
+
+//==============================================================================
+// LookAndFeel classes for custom button fonts
+//==============================================================================
+
+/** LookAndFeel for TextButtons that uses Hanken Grotesk font. */
+class ButtonLookAndFeel : public juce::LookAndFeel_V4
+{
+public:
+    juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override
+    {
+        return FontHelper::getFont (static_cast<float> (buttonHeight) * 0.5f);
+    }
+};
+
+/** LookAndFeel for ToggleButtons that uses Hanken Grotesk font. */
+class ToggleButtonLookAndFeel : public juce::LookAndFeel_V4
+{
+public:
+    void drawToggleButton (juce::Graphics& g, juce::ToggleButton& button,
+                           bool shouldDrawButtonAsHighlighted,
+                           bool shouldDrawButtonAsDown) override
+    {
+        auto font = FontHelper::getFont (11.0f);
+        auto tickWidth = font.getHeight() * 1.2f;
+
+        drawTickBox (g, button, 4.0f, (static_cast<float> (button.getHeight()) - tickWidth) * 0.5f,
+                     tickWidth, tickWidth,
+                     button.getToggleState(),
+                     button.isEnabled(),
+                     shouldDrawButtonAsHighlighted,
+                     shouldDrawButtonAsDown);
+
+        g.setColour (button.findColour (juce::ToggleButton::textColourId));
+        g.setFont (font);
+
+        auto textX = static_cast<int> (tickWidth + 10.0f);
+        g.drawFittedText (button.getButtonText(),
+                          textX, 0,
+                          button.getWidth() - textX - 2, button.getHeight(),
+                          juce::Justification::centredLeft, 1);
+    }
+};
 
 /**
  * @brief Main layout component (header bar, spectrum, knobs, bypass checkboxes).
@@ -134,6 +178,12 @@ private:
 
     /** Custom LookAndFeel for all three rotary knobs. */
     WiperLookAndFeel wiperLnf_;
+
+    /** Custom LookAndFeel for TextButtons (Settings/About). */
+    ButtonLookAndFeel buttonLnf_;
+
+    /** Custom LookAndFeel for ToggleButtons (Bypass). */
+    ToggleButtonLookAndFeel toggleLnf_;
 
     /** Magnitude morph knob [0, 1]. */
     juce::Slider magnitudeKnob_;

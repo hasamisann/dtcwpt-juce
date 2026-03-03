@@ -52,11 +52,13 @@ MainView::MainView (MorphAudioProcessor& processor)
 
     // Bands button (topology/band configuration)
     settingsButton_.setButtonText ("Bands");
+    settingsButton_.setLookAndFeel (&buttonLnf_);
     settingsButton_.onClick = [this] { if (onSettings_) onSettings_(); };
     addAndMakeVisible (settingsButton_);
 
     // About button with lowercase "i"
     aboutButton_.setButtonText ("i");
+    aboutButton_.setLookAndFeel (&buttonLnf_);
     aboutButton_.onClick = [this] { if (onAbout_) onAbout_(); };
     addAndMakeVisible (aboutButton_);
 
@@ -111,7 +113,9 @@ MainView::MainView (MorphAudioProcessor& processor)
     // Bypass toggle buttons
     // -----------------------------------------------------------------------
     addAndMakeVisible (bypassLowButton_);
+    bypassLowButton_.setLookAndFeel (&toggleLnf_);
     addAndMakeVisible (bypassHighButton_);
+    bypassHighButton_.setLookAndFeel (&toggleLnf_);
 
     // -----------------------------------------------------------------------
     // Slider range initialisation
@@ -229,6 +233,11 @@ MainView::~MainView()
     magnitudeKnob_.setLookAndFeel (nullptr);
     phaseKnob_.setLookAndFeel     (nullptr);
     thresholdKnob_.setLookAndFeel (nullptr);
+
+    settingsButton_.setLookAndFeel (nullptr);
+    aboutButton_.setLookAndFeel    (nullptr);
+    bypassLowButton_.setLookAndFeel (nullptr);
+    bypassHighButton_.setLookAndFeel (nullptr);
 }
 
 //==============================================================================
