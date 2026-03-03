@@ -256,19 +256,27 @@ void GateAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
         apvts_.replaceState (state);
 
         const juce::var prop = apvts_.state.getProperty (kTopologyPropertyKey);
-        if (prop.isString() && prop.toString().isNotEmpty())
+        if (prop.isString())
         {
-            const juce::StringArray tokens =
-                juce::StringArray::fromTokens (prop.toString(), kTopologySeparator, "");
-
-            std::vector<std::string> newDests;
-            newDests.reserve (static_cast<std::size_t> (tokens.size()));
-            for (const auto& t : tokens)
-                newDests.push_back (t.toStdString());
-
-            if (!newDests.empty() && newDests.size() <= 64)
+            if (prop.toString().isEmpty())
             {
+                std::vector<std::string> newDests { "" };
                 topoState_.requestChange (newDests);
+            }
+            else
+            {
+                const juce::StringArray tokens =
+                    juce::StringArray::fromTokens (prop.toString(), kTopologySeparator, "");
+
+                std::vector<std::string> newDests;
+                newDests.reserve (static_cast<std::size_t> (tokens.size()));
+                for (const auto& t : tokens)
+                    newDests.push_back (t.toStdString());
+
+                if (!newDests.empty() && newDests.size() <= 64)
+                {
+                    topoState_.requestChange (newDests);
+                }
             }
         }
     }

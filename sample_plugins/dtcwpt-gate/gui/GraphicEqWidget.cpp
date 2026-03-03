@@ -210,34 +210,40 @@ void GraphicEqWidget::paint (juce::Graphics& g)
         
         bool isHovered = isMouseOver && (mousePos.x >= xLeft && mousePos.x <= xRight);
         
+        float padding = (xRight - xLeft > 3.0f) ? 1.0f : 0.0f;
+        float barWidth = std::max(1.0f, (xRight - xLeft) - (padding * 2.0f));
+        
         juce::Colour fillColor = isHovered ? kAccentColor.withMultipliedAlpha (0.55f)
                                            : kAccentColor.withMultipliedAlpha (0.40f);
         
         // Bar rectangle from threshold to bottom edge
-        juce::Rectangle<float> barRect (xLeft + 1.0f, yTop, (xRight - xLeft) - 2.0f, height - yTop);
+        juce::Rectangle<float> barRect (xLeft + padding, yTop, barWidth, height - yTop);
         
         g.setColour (fillColor);
         g.fillRect (barRect);
         
         // Threshold Line (accent color top line)
+        float xEnd = std::max(xLeft + padding, xRight - padding);
         g.setColour (kAccentColor);
-        g.drawLine (xLeft + 1.0f, yTop, xRight - 1.0f, yTop, 2.0f);
+        g.drawLine (xLeft + padding, yTop, xEnd, yTop, 2.0f);
         
         // Level Meter (white overlay line)
         float dbLevel = levelsDb[i];
         if (dbLevel > kDbMinDisplay + 0.1f) // only draw if actively populated
         {
             float yLevel = dbToY (dbLevel);
+            float padLevel = (xRight - xLeft > 4.0f) ? 2.0f : padding;
+            float xEndLevel = std::max(xLeft + padLevel, xRight - padLevel);
             g.setColour (juce::Colours::white);
-            g.drawLine (xLeft + 2.0f, yLevel, xRight - 2.0f, yLevel, 2.0f);
+            g.drawLine (xLeft + padLevel, yLevel, xEndLevel, yLevel, 2.0f);
         }
         
         // Capture tooltip properties if hovering and not actively dragging
         if (isHovered && !isDragging_)
         {
-            tooltipText = juce::String::formatted ("Band: %s\n%.0f Hz - %.0f Hz\nThreshold: %.1f dB",
-                                                   currentDestinations_[i].c_str(),
-                                                   freqMin, freqMax, currentDb);
+            tooltipText = "Band: " + juce::String (currentDestinations_[i]) + "\n"
+                          + juce::String (freqMin, 0) + " Hz - " + juce::String (freqMax, 0) + " Hz\n"
+                          + "Threshold: " + juce::String (currentDb, 1) + " dB";
             tooltipPos  = juce::Point<float> ((xLeft + xRight) * 0.5f, yTop - 4.0f);
         }
     }
@@ -417,12 +423,19 @@ void GraphicEqWidget::timerCallback()
     // For now, let's just use the current APVTS ValueTree property `topology`.
     
     juce::var prop = processor_.getAPVTS().state.getProperty ("topology");
-    if (prop.isString() && prop.toString().isNotEmpty())
+    if (prop.isString())
     {
-        auto tokens = juce::StringArray::fromTokens (prop.toString(), ",", "");
         std::vector<std::string> newDests;
-        for (const auto& t : tokens)
-            newDests.push_back (t.toStdString());
+        if (prop.toString().isEmpty())
+        {
+            newDests.push_back ("");
+        }
+        else
+        {
+            auto tokens = juce::StringArray::fromTokens (prop.toString(), ",", "");
+            for (const auto& t : tokens)
+                newDests.push_back (t.toStdString());
+        }
         
         if (newDests != currentDestinations_)
         {
