@@ -30,6 +30,9 @@ target_sources(DtcwptGate
         BandLevelBridge.h
         GateBandProcessor.h
         GateBandProcessor.cpp
+        GateAudioProcessor.h
+        GateAudioProcessor.cpp
+        GateAudioProcessorEditor.cpp
         gui/FontHelper.h
         gui/SpectrumAnalyzerWidget.h
         gui/SpectrumAnalyzerWidget.cpp
