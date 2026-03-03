@@ -264,21 +264,10 @@ void TopologyEditorView::mouseDrag (const juce::MouseEvent& e)
 
 void TopologyEditorView::buildTree (const std::vector<std::string>& destinations)
 {
-    // DEBUG: Log buildTree START
-    juce::StringArray destArr;
-    for (const auto& d : destinations)
-        destArr.add (juce::String (d));
-    DBG ("[TopologyEditor] === buildTree START === destinations: " + destArr.joinIntoString (", "));
-    DBG ("[TopologyEditor] nodes_ size before clear: " + juce::String (static_cast<int>(nodes_.size())));
-
     nodes_.clear();
-    DBG ("[TopologyEditor] nodes_ size after clear: " + juce::String (static_cast<int>(nodes_.size())));
 
-    if (destinations.empty()) 
-    {
-        DBG ("[TopologyEditor] === buildTree END (empty) ===");
+    if (destinations.empty())
         return;
-    }
 
     // Root node (node ID = 1)
     TreeNode root;
@@ -288,12 +277,6 @@ void TopologyEditorView::buildTree (const std::vector<std::string>& destinations
     root.freqLow  = 0.0f;
     root.freqHigh = static_cast<float> (sampleRate_ * 0.5);
     nodes_.push_back (root);
-    
-    // DEBUG: Log buildTree start
-    juce::StringArray arr;
-    for (const auto& d : destinations)
-        arr.add (juce::String (d));
-    DBG ("[TopologyEditor] buildTree start with: " + arr.joinIntoString (", "));
 
     // For each destination, walk down the tree and create nodes as needed
     for (const auto& dest : destinations)
@@ -355,16 +338,6 @@ void TopologyEditorView::buildTree (const std::vector<std::string>& destinations
     // Re-validate leaf flags: a node is a leaf iff it has no children
     for (auto& n : nodes_)
         n.isLeaf = n.children.empty();
-    
-    // DEBUG: Log tree structure
-    DBG ("[TopologyEditor] buildTree complete - nodes count: " + juce::String (static_cast<int>(nodes_.size())));
-    for (const auto& n : nodes_)
-    {
-        juce::String childStr;
-        for (int c : n.children)
-            childStr += juce::String (c) + " ";
-        DBG ("[TopologyEditor]   node " + juce::String (n.nodeId) + " path=" + juce::String (n.path) + " isLeaf=" + (n.isLeaf ? "true" : "false") + " children=" + childStr);
-    }
 }
 
 void TopologyEditorView::layoutTree()
@@ -466,12 +439,6 @@ void TopologyEditorView::mergeNode (int nodeId)
 {
     auto* node = findNode (nodeId);
     if (!node || node->isLeaf) return;
-    
-    // DEBUG: Log merge operation
-    juce::String childStr;
-    for (int c : node->children)
-        childStr += juce::String (c) + " ";
-    DBG ("[TopologyEditor] mergeNode START - nodeId=" + juce::String (nodeId) + " path=" + juce::String (node->path) + " children=" + childStr);
 
     // Recursively remove all descendants
     std::function<void(int)> removeDescendants = [&] (int id)
@@ -501,11 +468,6 @@ void TopologyEditorView::mergeNode (int nodeId)
     {
         n->children.clear();
         n->isLeaf = true;
-        DBG ("[TopologyEditor] mergeNode END - nodeId=" + juce::String (nodeId) + " is now leaf");
-    }
-    else
-    {
-        DBG ("[TopologyEditor] mergeNode ERROR - nodeId=" + juce::String (nodeId) + " not found after merge!");
     }
 }
 
@@ -523,13 +485,6 @@ std::vector<std::string> TopologyEditorView::collectDestinations() const
 {
     std::vector<std::string> dests;
     collectLeaves (1, dests);
-    
-    // DEBUG: Log collected destinations
-    juce::StringArray arr;
-    for (const auto& d : dests)
-        arr.add (juce::String (d));
-    DBG ("[TopologyEditor] collectDestinations: " + arr.joinIntoString (", "));
-    
     return dests;
 }
 
@@ -592,12 +547,6 @@ std::vector<std::string> TopologyEditorView::generateDWT (int depth)
     // Final leaf: all L's (deepest low-frequency band)
     dests.push_back (prefix);
 
-    // DEBUG: Log generated destinations
-    juce::StringArray arr;
-    for (const auto& d : dests)
-        arr.add (juce::String (d));
-    DBG ("[TopologyEditor] generateDWT(" + juce::String (depth) + "): " + arr.joinIntoString (", "));
-
     return dests;
 }
 
@@ -649,12 +598,6 @@ void TopologyEditorView::drawNode (juce::Graphics& g, const TreeNode& node) cons
         g.setColour (juce::Colour (kSplitOutline));
         g.drawRoundedRectangle (node.bounds, cornerRadius, 1.0f);
     }
-
-    // DEBUG: Log node drawing
-    DBG ("[TopologyEditor] drawNode: nodeId=" + juce::String (node.nodeId) + 
-         " path=\"" + juce::String (node.path) + "\" " +
-         " isLeaf=" + (node.isLeaf ? "true" : "false") +
-         " bounds=[" + juce::String (node.bounds.getX()) + "," + juce::String (node.bounds.getY()) + "]");
 
     // Label: path string (or "Root")
     const juce::String label = node.path.empty() ? juce::String ("Root")
