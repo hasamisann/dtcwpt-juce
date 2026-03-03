@@ -113,6 +113,9 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     const int numSamples  = buffer.getNumSamples();
     const int numChannels = buffer.getNumChannels();
 
+    if (numSamples == 0 || numChannels == 0)
+        return;
+
     // 1. Topology dirty check
     {
         std::vector<std::string> newDestinations;
@@ -124,8 +127,9 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
 
     // 2. Read 64 threshold params → linear → set thresholds
-    std::vector<double> thresholds(64, 0.0);
-    for (int i = 0; i < 64; ++i)
+    size_t numBands = std::min(currentDestinations_.size(), static_cast<size_t>(64));
+    std::array<double, 64> thresholds {};
+    for (size_t i = 0; i < numBands; ++i)
     {
         if (thresholdRaw_[i] != nullptr)
         {
@@ -133,7 +137,7 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             thresholds[i] = std::pow(10.0, db / 20.0);
         }
     }
-    gateProcessor_->setThresholds(thresholds.data(), static_cast<int>(currentDestinations_.size()));
+    gateProcessor_->setThresholds(thresholds.data(), static_cast<int>(numBands));
 
     // 3. Snapshot input (mono-averaged) for spectrum
     inputMonoScratch_.clear();
@@ -148,10 +152,10 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     // 4. Float → Double conversion for main input
     mainDoubleBuffer_.setSize (2, numSamples, false, false, true);
-    for (int ch = 0; ch < 2; ++ch)
+    mainDoubleBuffer_.clear();
+    for (int ch = 0; ch < std::min(numChannels, 2); ++ch)
     {
-        const int srcCh = (ch < numChannels) ? ch : 0;
-        const float* src = buffer.getReadPointer (srcCh);
+        const float* src = buffer.getReadPointer (ch);
         double*       dst = mainDoubleBuffer_.getWritePointer (ch);
         for (int i = 0; i < numSamples; ++i)
             dst[i] = static_cast<double> (src[i]);
@@ -163,10 +167,10 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // 6. Push levels to bandLevelBridge_
     float levels[64];
     int nBands = gateProcessor_->getBandLevelsDb(levels);
-    bandLevelBridge_.update(levels, nBands);
+    bandLevelBridge_.update(levels, std::min(nBands, 64));
 
     // 7. Double → Float conversion
-    for (int ch = 0; ch < 2; ++ch)
+    for (int ch = 0; ch < std::min(numChannels, 2); ++ch)
     {
         const double* src = mainDoubleBuffer_.getReadPointer (ch);
         float*         dst = buffer.getWritePointer (ch);
@@ -176,13 +180,13 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     // 8. Snapshot output and push spectrum to bridge
     outputMonoScratch_.clear();
-    for (int ch = 0; ch < 2; ++ch)
+    for (int ch = 0; ch < std::min(numChannels, 2); ++ch)
     {
         outputMonoScratch_.addFrom (0, 0,
                                      buffer,
                                      ch, 0,
                                      numSamples,
-                                     0.5f);
+                                     1.0f / static_cast<float>(std::min(numChannels, 2)));
     }
 
     spectrumBridge_.push (inputMonoScratch_.getReadPointer (0),
@@ -262,7 +266,7 @@ void GateAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
             for (const auto& t : tokens)
                 newDests.push_back (t.toStdString());
 
-            if (!newDests.empty())
+            if (!newDests.empty() && newDests.size() <= 64)
             {
                 topoState_.requestChange (newDests);
             }

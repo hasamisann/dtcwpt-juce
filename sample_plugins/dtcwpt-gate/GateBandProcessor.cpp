@@ -31,6 +31,9 @@ void GateBandProcessor::processAllBands(dtcwpt::BandData& data) noexcept
 
         for (int ch = 0; ch < data.numChannels; ++ch)
         {
+            if (static_cast<size_t>(ch) >= data.bands.size() || static_cast<size_t>(b) >= data.bands[static_cast<size_t>(ch)].size())
+                continue;
+
             auto& view = data.bands[static_cast<size_t>(ch)][static_cast<size_t>(b)];
             double* re = view.re;
             double* im = view.im;

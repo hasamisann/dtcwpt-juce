@@ -22,6 +22,16 @@ GateEditor::GateEditor (GateAudioProcessor& p)
     mainView_.onAboutClicked = [this] { showAbout(); };
 
     topoView_.setBackButtonCallback ([this] { showMain(); });
+    topoView_.setTopologyChangedCallback ([this](const std::vector<std::string>& dests)
+    {
+        juce::StringArray strArray;
+        for (const auto& d : dests)
+            strArray.add (juce::String (d));
+
+        processor_.getAPVTS().state.setProperty ("topology",
+                                                 strArray.joinIntoString (","),
+                                                 nullptr);
+    });
     // aboutView takes the back callback directly in the constructor
 
     // Set initial view
