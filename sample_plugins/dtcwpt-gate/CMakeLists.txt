@@ -34,6 +34,10 @@ target_sources(DtcwptGate
         GateAudioProcessor.cpp
         GateAudioProcessorEditor.cpp
         gui/FontHelper.h
+        gui/GateMainView.h
+        gui/GateMainView.cpp
+        gui/GraphicEqWidget.h
+        gui/GraphicEqWidget.cpp
         gui/SpectrumAnalyzerWidget.h
         gui/SpectrumAnalyzerWidget.cpp
         gui/TopologyEditorView.h
