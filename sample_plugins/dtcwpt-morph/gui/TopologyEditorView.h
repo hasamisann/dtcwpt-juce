@@ -239,7 +239,7 @@ private:
     static constexpr int kMaxDepth = 8;
 
     /** Node bounding box size (before zoom). */
-    static constexpr float kNodeWidth  = 50.0f;
+    static constexpr float kNodeWidth  = 24.0f;
     static constexpr float kNodeHeight = 24.0f;
 
     /** Horizontal spacing between depth levels. */
