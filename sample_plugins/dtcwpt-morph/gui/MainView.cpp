@@ -44,7 +44,7 @@ MainView::MainView (MorphAudioProcessor& processor)
     // Header bar
     // -----------------------------------------------------------------------
     titleLabel_.setText ("DT-CWPT Morph", juce::dontSendNotification);
-    auto titleFont = FontHelper::getFont (24.0f).withExtraKerningFactor (0.05f);
+    auto titleFont = FontHelper::getFont (24.0f, false, 0.05f);
     titleLabel_.setFont (titleFont);
     titleLabel_.setColour (juce::Label::textColourId, juce::Colour (0xFFBBBBBB));
     titleLabel_.setJustificationType (juce::Justification::centredLeft);

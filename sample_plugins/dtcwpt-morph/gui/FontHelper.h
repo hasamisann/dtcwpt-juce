@@ -26,11 +26,12 @@ namespace FontHelper
     /**
      * @brief Returns a Hanken Grotesk font at the given height.
      *
-     * @param height  Desired font height in points.
-     * @param bold    If true, returns the Bold weight; otherwise Regular.
-     * @return        A juce::Font configured with the appropriate typeface.
+     * @param height       Desired font height in points.
+     * @param bold         If true, returns the Bold weight; otherwise Regular.
+     * @param extraKerning Extra kerning factor (default 0.025f for subtle spacing).
+     * @return             A juce::Font configured with the appropriate typeface.
      */
-    inline juce::Font getFont (float height, bool bold = false)
+    inline juce::Font getFont (float height, bool bold = false, float extraKerning = 0.025f)
     {
         static const juce::Typeface::Ptr regularTypeface =
             juce::Typeface::createSystemTypefaceFor (
@@ -44,7 +45,8 @@ namespace FontHelper
 
         return juce::Font (juce::FontOptions()
                                .withTypeface (bold ? boldTypeface : regularTypeface)
-                               .withHeight (height));
+                               .withHeight (height)
+                               .withKerningFactor (extraKerning));
     }
 
 } // namespace FontHelper
