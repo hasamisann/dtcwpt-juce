@@ -243,7 +243,7 @@ private:
     static constexpr float kNodeHeight = 24.0f;
 
     /** Horizontal spacing between depth levels. */
-    static constexpr float kDepthSpacing = 80.0f;
+    static constexpr float kDepthSpacing = 60.0f;
 
     /** Vertical height per leaf slot (kNodeHeight + padding). */
     static constexpr float kSlotHeight = kNodeHeight + 6.0f;  // = 30.0f
