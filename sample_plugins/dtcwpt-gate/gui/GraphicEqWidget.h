@@ -84,8 +84,18 @@ private:
     /** Map Y coordinate to threshold (dB). */
     float yToDb (float y) const;
 
-    /** Updates the parameter associated with the band at the given mouse event. */
-    void updateThresholdFromMouse (const juce::MouseEvent& e);
+    /** Updates one specific band from a Y position in widget coordinates. */
+    void updateThresholdForBandFromY (int bandIdx, float y);
+
+    /** Applies one drag segment and fills all crossed bands. */
+    void applyDragSegment (juce::Point<float> from, juce::Point<float> to);
+
+    /** Begin/end gesture lifecycle for touched bands. */
+    void beginGestureForBand (int bandIdx);
+    void endAllActiveGestures();
+
+    /** Returns X center coordinate of band index, or -1 if invalid. */
+    float getBandCenterX (int bandIdx) const;
     
     /** Returns the index of the band that covers the given X coordinate. */
     int findBandAtX (float x) const;
@@ -120,6 +130,7 @@ private:
 
     bool isDragging_ = false;
     juce::Point<float> lastMousePos_ {};
+    std::array<bool, GateBandProcessor::kMaxBands> activeBandGestures_ {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (GraphicEqWidget)
 };

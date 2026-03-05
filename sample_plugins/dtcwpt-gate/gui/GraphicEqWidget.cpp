@@ -1,5 +1,6 @@
 #include "GraphicEqWidget.h"
 #include "FontHelper.h"
+#include "../../common/GraphicEqDragPaint.h"
 
 #include <cmath>
 
@@ -28,6 +29,8 @@ GraphicEqWidget::GraphicEqWidget (GateAudioProcessor& processor, float sampleRat
       sampleRate_ (sampleRate),
       nyquist_ (sampleRate * 0.5f)
 {
+    activeBandGestures_.fill (false);
+
     // Fetch initial destinations from topology state
     // We get a fresh copy each timer tick so we don't query it per-paint
     processor_.getTopologyState().tryConsume (currentDestinations_);
@@ -132,6 +135,109 @@ int GraphicEqWidget::findBandAtX (float x) const
             return static_cast<int>(i);
     }
     return -1;
+}
+
+float GraphicEqWidget::getBandCenterX (int bandIdx) const
+{
+    if (bandIdx < 0 || static_cast<std::size_t> (bandIdx) >= currentDestinations_.size())
+        return -1.0f;
+
+    auto [freqMin, freqMax] = getBandFreqRange (currentDestinations_[static_cast<std::size_t> (bandIdx)]);
+    const float xLeft  = freqToX (std::max (kFreqMinDisplay, freqMin));
+    const float xRight = freqToX (std::max (kFreqMinDisplay, freqMax));
+    return 0.5f * (xLeft + xRight);
+}
+
+void GraphicEqWidget::beginGestureForBand (int bandIdx)
+{
+    if (bandIdx < 0 || bandIdx >= GateBandProcessor::kMaxBands)
+        return;
+
+    if (activeBandGestures_[static_cast<std::size_t> (bandIdx)])
+        return;
+
+    auto* param = thresholdParams_[static_cast<std::size_t> (bandIdx)];
+    if (param == nullptr)
+        return;
+
+    param->beginChangeGesture();
+    activeBandGestures_[static_cast<std::size_t> (bandIdx)] = true;
+}
+
+void GraphicEqWidget::endAllActiveGestures()
+{
+    for (int bandIdx = 0; bandIdx < GateBandProcessor::kMaxBands; ++bandIdx)
+    {
+        if (!activeBandGestures_[static_cast<std::size_t> (bandIdx)])
+            continue;
+
+        if (auto* param = thresholdParams_[static_cast<std::size_t> (bandIdx)]; param != nullptr)
+            param->endChangeGesture();
+
+        activeBandGestures_[static_cast<std::size_t> (bandIdx)] = false;
+    }
+}
+
+void GraphicEqWidget::updateThresholdForBandFromY (int bandIdx, float y)
+{
+    if (bandIdx < 0 || bandIdx >= GateBandProcessor::kMaxBands)
+        return;
+
+    auto* param = thresholdParams_[static_cast<std::size_t> (bandIdx)];
+    auto* raw = thresholdRaw_[static_cast<std::size_t> (bandIdx)];
+    if (param == nullptr || raw == nullptr)
+        return;
+
+    const float targetDb = yToDb (y);
+    const float currentDb = raw->load();
+
+    if (std::abs (targetDb - currentDb) <= 0.2f)
+        return;
+
+    param->setValueNotifyingHost (param->convertTo0to1 (targetDb));
+}
+
+void GraphicEqWidget::applyDragSegment (juce::Point<float> from, juce::Point<float> to)
+{
+    if (getWidth() <= 0)
+        return;
+
+    const auto clampX = [this] (float x)
+    {
+        return juce::jlimit (0.0f, static_cast<float> (getWidth() - 1), x);
+    };
+
+    from.x = clampX (from.x);
+    to.x = clampX (to.x);
+
+    const int startBandIdx = findBandAtX (from.x);
+    const int endBandIdx = findBandAtX (to.x);
+    const int numBands = static_cast<int> (std::min (currentDestinations_.size(),
+                                                      static_cast<std::size_t> (GateBandProcessor::kMaxBands)));
+
+    const auto crossedBands = graphic_eq::enumerateCrossedBands (startBandIdx, endBandIdx, numBands);
+    if (!crossedBands.empty())
+    {
+        for (int bandIdx : crossedBands)
+        {
+            beginGestureForBand (bandIdx);
+
+            const float xCenter = getBandCenterX (bandIdx);
+            if (xCenter < 0.0f)
+                continue;
+
+            const float y = graphic_eq::interpolateYForX (from.x, from.y, to.x, to.y, xCenter);
+            updateThresholdForBandFromY (bandIdx, y);
+        }
+        return;
+    }
+
+    const int fallbackBand = (endBandIdx >= 0) ? endBandIdx : startBandIdx;
+    if (fallbackBand >= 0)
+    {
+        beginGestureForBand (fallbackBand);
+        updateThresholdForBandFromY (fallbackBand, to.y);
+    }
 }
 
 //==============================================================================
@@ -293,12 +399,12 @@ void GraphicEqWidget::mouseDown (const juce::MouseEvent& e)
 
     isDragging_ = true;
     lastMousePos_ = e.position;
-    
-    int bandIdx = findBandAtX (e.position.x);
-    if (bandIdx >= 0 && thresholdParams_[bandIdx] != nullptr)
+
+    const int bandIdx = findBandAtX (e.position.x);
+    if (bandIdx >= 0)
     {
-        thresholdParams_[bandIdx]->beginChangeGesture();
-        updateThresholdFromMouse (e);
+        beginGestureForBand (bandIdx);
+        updateThresholdForBandFromY (bandIdx, e.position.y);
     }
 }
 
@@ -306,27 +412,7 @@ void GraphicEqWidget::mouseDrag (const juce::MouseEvent& e)
 {
     if (isDragging_)
     {
-        // For sweeping across multiple bands, we want to start a change gesture
-        // for any newly entered band, and update the current one.
-        // For simplicity matching the reference, we just update whatever is under the mouse.
-        // To be perfectly pure we should track which ones had beginChangeGesture called, 
-        // but setValueNotifyingHost works fine generally within a drag loop in JUCE APVTS.
-        
-        int bandIdx = findBandAtX (e.position.x);
-        int lastBandIdx = findBandAtX (lastMousePos_.x);
-        
-        // Note: The Rust version just overwrites `setter.set_parameter(param, new_db)` indiscriminately 
-        // if `(new_db - current_db).abs() > 0.2`.
-        if (bandIdx >= 0 && bandIdx != lastBandIdx)
-        {
-            if (lastBandIdx >= 0 && thresholdParams_[lastBandIdx] != nullptr)
-                thresholdParams_[lastBandIdx]->endChangeGesture();
-            
-            if (thresholdParams_[bandIdx] != nullptr)
-                thresholdParams_[bandIdx]->beginChangeGesture();
-        }
-        
-        updateThresholdFromMouse (e);
+        applyDragSegment (lastMousePos_, e.position);
         lastMousePos_ = e.position;
     }
 }
@@ -335,11 +421,7 @@ void GraphicEqWidget::mouseUp (const juce::MouseEvent& e)
 {
     if (isDragging_)
     {
-        int bandIdx = findBandAtX (lastMousePos_.x);
-        if (bandIdx >= 0 && thresholdParams_[bandIdx] != nullptr)
-        {
-            thresholdParams_[bandIdx]->endChangeGesture();
-        }
+        endAllActiveGestures();
         isDragging_ = false;
         return; // Was a paint operation, so exit.
     }
@@ -391,22 +473,6 @@ void GraphicEqWidget::mouseMove (const juce::MouseEvent&)
 void GraphicEqWidget::mouseExit (const juce::MouseEvent&)
 {
     repaint();
-}
-
-void GraphicEqWidget::updateThresholdFromMouse (const juce::MouseEvent& e)
-{
-    int bandIdx = findBandAtX (e.position.x);
-    if (bandIdx >= 0 && thresholdParams_[bandIdx] != nullptr)
-    {
-        float targetDb = yToDb (e.position.y);
-        float currentDb = thresholdRaw_[bandIdx]->load();
-        
-        if (std::abs(targetDb - currentDb) > 0.2f)
-        {
-            auto* param = thresholdParams_[bandIdx];
-            param->setValueNotifyingHost (param->convertTo0to1 (targetDb));
-        }
-    }
 }
 
 //==============================================================================
