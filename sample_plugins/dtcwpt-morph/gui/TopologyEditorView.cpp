@@ -5,6 +5,7 @@
 
 #include "TopologyEditorView.h"
 #include "FontHelper.h"
+#include "../../common/TopologySplitOrder.h"
 
 #include <algorithm>
 #include <cmath>
@@ -409,29 +410,29 @@ void TopologyEditorView::splitNode (int nodeId)
 
     const float midFreq = (parentFreqLow + parentFreqHigh) * 0.5f;
 
-    // Left child (L)
-    TreeNode leftChild;
-    leftChild.nodeId   = 2 * nodeId;
-    leftChild.path     = parentPath + "L";
-    leftChild.isLeaf   = true;
-    leftChild.freqLow  = parentFreqLow;
-    leftChild.freqHigh = midFreq;
-    nodes_.push_back (leftChild); // May reallocate nodes_.
+    const auto splitChildren = topology::makeHighFirstSplitChildren (nodeId, parentPath);
 
-    // Right child (H)
-    TreeNode rightChild;
-    rightChild.nodeId   = 2 * nodeId + 1;
-    rightChild.path     = parentPath + "H";
-    rightChild.isLeaf   = true;
-    rightChild.freqLow  = midFreq;
-    rightChild.freqHigh = parentFreqHigh;
-    nodes_.push_back (rightChild); // May reallocate nodes_.
+    TreeNode highChild;
+    highChild.nodeId   = splitChildren.highChild.nodeId;
+    highChild.path     = splitChildren.highChild.path;
+    highChild.isLeaf   = true;
+    highChild.freqLow  = midFreq;
+    highChild.freqHigh = parentFreqHigh;
+    nodes_.push_back (highChild); // May reallocate nodes_.
+
+    TreeNode lowChild;
+    lowChild.nodeId   = splitChildren.lowChild.nodeId;
+    lowChild.path     = splitChildren.lowChild.path;
+    lowChild.isLeaf   = true;
+    lowChild.freqLow  = parentFreqLow;
+    lowChild.freqHigh = midFreq;
+    nodes_.push_back (lowChild); // May reallocate nodes_.
 
     // Re-acquire parent pointer after all push_backs are complete.
     if (auto* n = findNode (nodeId))
     {
-        n->children.push_back (leftChild.nodeId);
-        n->children.push_back (rightChild.nodeId);
+        n->children.push_back (highChild.nodeId);
+        n->children.push_back (lowChild.nodeId);
         n->isLeaf = false;
     }
 }

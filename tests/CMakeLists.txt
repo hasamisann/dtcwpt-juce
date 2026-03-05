@@ -52,6 +52,7 @@ target_sources(dtcwpt_tests
         suites/StatefulFilterTests.cpp
         suites/TopologyPlannerTests.cpp
         suites/TopologyStateTests.cpp
+        suites/TopologySplitOrderTests.cpp
         suites/SpectrumDataBridgeTests.cpp
         suites/BandLevelBridgeTests.cpp
         suites/GateBandProcessorTests.cpp
