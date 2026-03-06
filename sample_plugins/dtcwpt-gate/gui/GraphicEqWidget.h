@@ -13,6 +13,7 @@
  * the gate for a specific band.
  */
 
+#include "GateGuiFrequencyMapping.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "../GateAudioProcessor.h"
 #include <array>

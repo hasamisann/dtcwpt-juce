@@ -55,6 +55,7 @@ target_sources(dtcwpt_tests
         suites/TopologySplitOrderTests.cpp
         suites/GraphicEqDragPaintTests.cpp
         suites/GateEditorSampleRateTests.cpp
+        suites/GateGuiFrequencyMappingTests.cpp
         suites/SpectrumDataBridgeTests.cpp
         suites/BandLevelBridgeTests.cpp
         suites/GateBandProcessorTests.cpp
@@ -63,6 +64,7 @@ target_sources(dtcwpt_tests
         ../sample_plugins/dtcwpt-morph/MorphBandProcessor.cpp
         ../sample_plugins/dtcwpt-morph/SpectrumDataBridge.cpp
         ../sample_plugins/dtcwpt-gate/GateBandProcessor.cpp
+        ../sample_plugins/dtcwpt-gate/gui/GateGuiFrequencyMapping.cpp
 )
 
 target_include_directories(dtcwpt_tests

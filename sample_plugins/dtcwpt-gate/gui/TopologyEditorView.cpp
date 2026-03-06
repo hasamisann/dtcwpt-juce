@@ -5,6 +5,7 @@
 
 #include "TopologyEditorView.h"
 #include "FontHelper.h"
+#include "GateGuiFrequencyMapping.h"
 #include "../../common/TopologySplitOrder.h"
 
 #include <algorithm>
@@ -52,7 +53,7 @@ namespace
 
 TopologyEditorView::TopologyEditorView (TopologyState& topoState, double sampleRate)
     : topoState_   (topoState)
-    , sampleRate_  (sampleRate)
+    , sampleRate_  (gate_gui::sanitizeSampleRateAndNyquist (static_cast<float> (sampleRate)).sampleRate)
 {
     buildTree (kDefaultTopology);
 
@@ -271,13 +272,15 @@ void TopologyEditorView::buildTree (const std::vector<std::string>& destinations
     if (destinations.empty())
         return;
 
+    const auto sanitized = gate_gui::sanitizeSampleRateAndNyquist (static_cast<float> (sampleRate_));
+
     // Root node (node ID = 1)
     TreeNode root;
     root.nodeId   = 1;
     root.path     = "";
     root.isLeaf   = false;
     root.freqLow  = 0.0f;
-    root.freqHigh = static_cast<float> (sampleRate_ * 0.5);
+    root.freqHigh = sanitized.nyquist;
     nodes_.push_back (root);
 
     // For each destination, walk down the tree and create nodes as needed
@@ -300,7 +303,7 @@ void TopologyEditorView::buildTree (const std::vector<std::string>& destinations
                 auto* parentNode = findNode (currentId);
                 const float parentLow  = parentNode ? parentNode->freqLow  : 0.0f;
                 const float parentHigh = parentNode ? parentNode->freqHigh
-                                                    : static_cast<float> (sampleRate_ * 0.5);
+                                                    : sanitized.nyquist;
                 const float midFreq = (parentLow + parentHigh) * 0.5f;
 
                 TreeNode newNode;

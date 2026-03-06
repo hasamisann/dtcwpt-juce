@@ -14,10 +14,6 @@ namespace
     const juce::Colour kAccentColor = juce::Colour (115, 170, 230);
     const juce::Colour kTextColor   = juce::Colour (220, 220, 220);
     const juce::Colour kTextDim     = juce::Colour (150, 150, 150);
-
-    const float kFreqMinDisplay = 20.0f;
-    const float kDbMinDisplay   = -120.0f;
-    const float kDbMaxDisplay   = 10.0f;
 }
 
 //==============================================================================
@@ -25,10 +21,12 @@ namespace
 //==============================================================================
 
 GraphicEqWidget::GraphicEqWidget (GateAudioProcessor& processor, float sampleRate)
-    : processor_ (processor),
-      sampleRate_ (sampleRate),
-      nyquist_ (sampleRate * 0.5f)
+    : processor_ (processor)
 {
+    const auto sanitized = gate_gui::sanitizeSampleRateAndNyquist (sampleRate);
+    sampleRate_ = sanitized.sampleRate;
+    nyquist_ = sanitized.nyquist;
+
     activeBandGestures_.fill (false);
 
     // Fetch initial destinations from topology state
@@ -64,50 +62,39 @@ GraphicEqWidget::~GraphicEqWidget()
 
 std::pair<float, float> GraphicEqWidget::getBandFreqRange (const std::string& path) const
 {
-    float lo = 0.0f;
-    float hi = nyquist_;
-
-    for (char ch : path)
-    {
-        float mid = (lo + hi) * 0.5f;
-        if (ch == 'L')
-            hi = mid;
-        else
-            lo = mid;
-    }
-
-    return { lo, hi };
+    return gate_gui::getBandFrequencyRange (path, nyquist_);
 }
 
 float GraphicEqWidget::freqToX (float freq) const
 {
-    float clampedFreq = juce::jlimit (kFreqMinDisplay, nyquist_, freq);
-    float logMin   = std::log10 (kFreqMinDisplay);
-    float logMax   = std::log10 (nyquist_);
-    float logRange = logMax - logMin;
+    const auto mapping = gate_gui::makeFrequencyMapping (nyquist_);
+    const float clampedFreq = juce::jlimit (gate_gui::kFreqMinDisplay, mapping.displayNyquist, freq);
+    const float logRange = mapping.logMax - mapping.logMin;
 
-    float t = (std::log10 (clampedFreq) - logMin) / logRange;
+    const float t = (std::log10 (clampedFreq) - mapping.logMin) / logRange;
     return static_cast<float> (getWidth()) * t;
 }
 
 float GraphicEqWidget::xToFreq (float x) const
 {
-    float t = x / static_cast<float> (getWidth());
-    float logMin   = std::log10 (kFreqMinDisplay);
-    float logMax   = std::log10 (nyquist_);
-    float logRange = logMax - logMin;
+    if (getWidth() <= 0)
+        return gate_gui::kFreqMinDisplay;
 
-    float logFreq = logMin + t * logRange;
+    const auto mapping = gate_gui::makeFrequencyMapping (nyquist_);
+    const float t = x / static_cast<float> (getWidth());
+    const float logRange = mapping.logMax - mapping.logMin;
+
+    const float logFreq = mapping.logMin + t * logRange;
     return std::pow (10.0f, logFreq);
 }
 
 float GraphicEqWidget::dbToY (float db) const
 {
-    float clampedDb = juce::jlimit (kDbMinDisplay, kDbMaxDisplay, db);
-    float dbRange   = kDbMaxDisplay - kDbMinDisplay;
+    const float clampedDb = juce::jlimit (gate_gui::kDbMinDisplay, gate_gui::kDbMaxDisplay, db);
+    const float dbRange   = gate_gui::kDbMaxDisplay - gate_gui::kDbMinDisplay;
 
     // t is 0.0 at bottom (-120dB) and 1.0 at top (0dB)
-    float t = (clampedDb - kDbMinDisplay) / dbRange;
+    const float t = (clampedDb - gate_gui::kDbMinDisplay) / dbRange;
     
     // Y runs top-down
     return static_cast<float> (getHeight()) * (1.0f - t);
@@ -115,11 +102,14 @@ float GraphicEqWidget::dbToY (float db) const
 
 float GraphicEqWidget::yToDb (float y) const
 {
+    if (getHeight() <= 0)
+        return gate_gui::kDbMinDisplay;
+
     float t = 1.0f - (y / static_cast<float> (getHeight()));
-    float dbRange = kDbMaxDisplay - kDbMinDisplay;
+    float dbRange = gate_gui::kDbMaxDisplay - gate_gui::kDbMinDisplay;
     
-    float db = kDbMinDisplay + t * dbRange;
-    return juce::jlimit (kDbMinDisplay, kDbMaxDisplay, db);
+    float db = gate_gui::kDbMinDisplay + t * dbRange;
+    return juce::jlimit (gate_gui::kDbMinDisplay, gate_gui::kDbMaxDisplay, db);
 }
 
 int GraphicEqWidget::findBandAtX (float x) const
@@ -128,8 +118,8 @@ int GraphicEqWidget::findBandAtX (float x) const
     {
         auto [freqMin, freqMax] = getBandFreqRange (currentDestinations_[i]);
         
-        float xLeft  = freqToX (std::max(kFreqMinDisplay, freqMin));
-        float xRight = freqToX (std::max(kFreqMinDisplay, freqMax));
+        float xLeft  = freqToX (std::max (gate_gui::kFreqMinDisplay, freqMin));
+        float xRight = freqToX (std::max (gate_gui::kFreqMinDisplay, freqMax));
         
         if (x >= xLeft && x <= xRight)
             return static_cast<int>(i);
@@ -143,8 +133,8 @@ float GraphicEqWidget::getBandCenterX (int bandIdx) const
         return -1.0f;
 
     auto [freqMin, freqMax] = getBandFreqRange (currentDestinations_[static_cast<std::size_t> (bandIdx)]);
-    const float xLeft  = freqToX (std::max (kFreqMinDisplay, freqMin));
-    const float xRight = freqToX (std::max (kFreqMinDisplay, freqMax));
+    const float xLeft  = freqToX (std::max (gate_gui::kFreqMinDisplay, freqMin));
+    const float xRight = freqToX (std::max (gate_gui::kFreqMinDisplay, freqMax));
     return 0.5f * (xLeft + xRight);
 }
 
@@ -291,7 +281,7 @@ void GraphicEqWidget::paint (juce::Graphics& g)
 
     // Grab current levels
     std::array<float, GateBandProcessor::kMaxBands> levelsDb;
-    levelsDb.fill (-120.0f);
+    levelsDb.fill (gate_gui::kDbMinDisplay);
     processor_.getBandLevelBridge().read (levelsDb.data());
 
     // Determine hover state
@@ -306,8 +296,8 @@ void GraphicEqWidget::paint (juce::Graphics& g)
     {
         auto [freqMin, freqMax] = getBandFreqRange (currentDestinations_[i]);
         
-        float xLeft  = freqToX (std::max(kFreqMinDisplay, freqMin));
-        float xRight = freqToX (std::max(kFreqMinDisplay, freqMax));
+        float xLeft  = freqToX (std::max (gate_gui::kFreqMinDisplay, freqMin));
+        float xRight = freqToX (std::max (gate_gui::kFreqMinDisplay, freqMax));
         
         float currentDb = thresholdRaw_[i] ? thresholdRaw_[i]->load() : -60.0f;
         float yTop      = dbToY (currentDb);
@@ -344,7 +334,7 @@ void GraphicEqWidget::paint (juce::Graphics& g)
         
         // Level Meter (white overlay line)
         float dbLevel = levelsDb[i];
-        if (dbLevel > kDbMinDisplay + 0.1f) // only draw if actively populated
+        if (dbLevel > gate_gui::kDbMinDisplay + 0.1f) // only draw if actively populated
         {
             float yLevel = dbToY (dbLevel);
             float padLevel = (xRight - xLeft > 4.0f) ? 2.0f : padding;

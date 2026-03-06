@@ -38,6 +38,8 @@ target_sources(DtcwptGate
         gui/GateEditor.cpp
         gui/GateMainView.h
         gui/GateMainView.cpp
+        gui/GateGuiFrequencyMapping.h
+        gui/GateGuiFrequencyMapping.cpp
         gui/GraphicEqWidget.h
         gui/GraphicEqWidget.cpp
         gui/SpectrumAnalyzerWidget.h
