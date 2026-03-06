@@ -1,13 +1,17 @@
 #include "GateEditor.h"
+#include "GateEditorSampleRate.h"
 
 //==============================================================================
 GateEditor::GateEditor (GateAudioProcessor& p)
     : AudioProcessorEditor (&p),
       processor_ (p),
-      mainView_ (p, p.getSampleRate()),
-      topoView_ (p.getTopologyState(), p.getSampleRate()),
+      constructionSampleRate_ (resolveGateEditorConstructionSampleRate (p.getSampleRate())),
+      mainView_ (p, constructionSampleRate_),
+      topoView_ (p.getTopologyState(), constructionSampleRate_),
       aboutView_ ([this] { showMain(); })
 {
+    // Hosts may create the editor before prepareToPlay(), so getSampleRate()
+    // is not guaranteed to be initialised here.
     // Make sure that before the constructor has finished, you've set the
     // editor's size to whatever you need it to be.
     setSize (500, 420);

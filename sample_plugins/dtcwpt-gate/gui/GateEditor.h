@@ -35,6 +35,8 @@ private:
     // access the processor object that created it.
     GateAudioProcessor& processor_;
 
+    const double constructionSampleRate_;
+
     // Views
     GateMainView mainView_;
     TopologyEditorView topoView_;
