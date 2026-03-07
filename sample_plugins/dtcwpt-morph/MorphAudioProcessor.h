@@ -256,6 +256,14 @@ public:
      */
     juce::AudioProcessorValueTreeState& getAPVTS() noexcept { return apvts_; }
 
+    /**
+     * @brief Resolves topology destinations persisted in APVTS state.
+     *
+     * Prefers a valid persisted topology property and falls back to the
+     * processor's in-memory destination list when the property is missing or invalid.
+     */
+    std::vector<std::string> getStoredTopologyDestinations() const;
+
 private:
     //==============================================================================
     // Private helpers

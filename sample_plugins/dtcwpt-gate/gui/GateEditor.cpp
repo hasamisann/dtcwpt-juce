@@ -1,6 +1,8 @@
 #include "GateEditor.h"
 #include "GateEditorSampleRate.h"
 
+#include "../../common/TopologyPersistence.h"
+
 //==============================================================================
 GateEditor::GateEditor (GateAudioProcessor& p)
     : AudioProcessorEditor (&p),
@@ -28,14 +30,12 @@ GateEditor::GateEditor (GateAudioProcessor& p)
     topoView_.setBackButtonCallback ([this] { showMain(); });
     topoView_.setTopologyChangedCallback ([this](const std::vector<std::string>& dests)
     {
-        juce::StringArray strArray;
-        for (const auto& d : dests)
-            strArray.add (juce::String (d));
-
-        processor_.getAPVTS().state.setProperty ("topology",
-                                                 strArray.joinIntoString (","),
+        processor_.getAPVTS().state.setProperty (topology::kTopologyPropertyKey,
+                                                 topology::serializeTopologyDestinations (dests),
                                                  nullptr);
     });
+
+    topoView_.setTopology (processor_.getStoredTopologyDestinations());
     // aboutView takes the back callback directly in the constructor
 
     // Set initial view
@@ -73,6 +73,7 @@ void GateEditor::showMain()
 
 void GateEditor::showSettings()
 {
+    topoView_.setTopology (processor_.getStoredTopologyDestinations());
     mainView_.setVisible (false);
     topoView_.setVisible (true);
     aboutView_.setVisible (false);

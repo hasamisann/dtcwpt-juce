@@ -5,6 +5,8 @@
 
 #include "MorphEditor.h"
 
+#include "../../common/TopologyPersistence.h"
+
 //==============================================================================
 // Constructor
 //==============================================================================
@@ -18,7 +20,11 @@ MorphEditor::MorphEditor (MorphAudioProcessor& processor)
     // -----------------------------------------------------------------------
     // Wire MainView navigation callbacks
     // -----------------------------------------------------------------------
-    mainView_.setSettingsCallback ([this] { showTopology(); });
+    mainView_.setSettingsCallback ([this, &processor]
+    {
+        topologyView_.setTopology (processor.getStoredTopologyDestinations());
+        showTopology();
+    });
     mainView_.setAboutCallback    ([this] { showAbout(); });
 
     // -----------------------------------------------------------------------
@@ -32,11 +38,12 @@ MorphEditor::MorphEditor (MorphAudioProcessor& processor)
     // -----------------------------------------------------------------------
     topologyView_.setTopologyChangedCallback ([&processor] (const std::vector<std::string>& dests)
     {
-        juce::StringArray arr;
-        for (const auto& d : dests)
-            arr.add (juce::String (d));
-        processor.getAPVTS().state.setProperty ("topology", arr.joinIntoString (","), nullptr);
+        processor.getAPVTS().state.setProperty (topology::kTopologyPropertyKey,
+                                                topology::serializeTopologyDestinations (dests),
+                                                nullptr);
     });
+
+    topologyView_.setTopology (processor.getStoredTopologyDestinations());
 
     // -----------------------------------------------------------------------
     // Add sub-views as children

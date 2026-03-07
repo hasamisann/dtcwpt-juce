@@ -59,6 +59,7 @@ target_sources(dtcwpt_tests
         suites/SpectrumDataBridgeTests.cpp
         suites/BandLevelBridgeTests.cpp
         suites/GateBandProcessorTests.cpp
+        suites/TopologyViewStateRestoreTests.cpp
         util/TestUtils.cpp
         stubs/MorphAudioProcessorStubs.cpp
         ../sample_plugins/dtcwpt-morph/MorphBandProcessor.cpp

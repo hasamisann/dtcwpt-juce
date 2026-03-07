@@ -169,6 +169,9 @@ public:
     /** @brief Returns a reference to the APVTS for parameter access. */
     juce::AudioProcessorValueTreeState& getAPVTS() noexcept { return apvts_; }
 
+    /** @brief Resolves topology destinations persisted in APVTS state. */
+    std::vector<std::string> getStoredTopologyDestinations() const;
+
 private:
     //==============================================================================
     // Private helpers

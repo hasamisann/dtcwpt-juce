@@ -1,4 +1,5 @@
 #include "GateAudioProcessor.h"
+#include "../common/TopologyPersistence.h"
 #include <juce_core/juce_core.h>
 
 //==============================================================================
@@ -10,12 +11,6 @@ namespace
     /** Default topology: 6-level DWT destination strings. */
     const std::vector<std::string> kDefaultTopology =
         { "H", "LH", "LLH", "LLLH", "LLLLH", "LLLLLH", "LLLLLL" };
-
-    /** Topology property key on apvts_.state. */
-    constexpr const char* kTopologyPropertyKey = "topology";
-
-    /** Topology separator used when serialising to a comma-separated string. */
-    constexpr const char* kTopologySeparator = ",";
 
 } // namespace
 
@@ -31,12 +26,8 @@ GateAudioProcessor::GateAudioProcessor()
       currentDestinations_ (kDefaultTopology)
 {
     // Store the default topology as a ValueTree property
-    juce::StringArray destArray;
-    for (const auto& d : currentDestinations_)
-        destArray.add (juce::String (d));
-
-    apvts_.state.setProperty (kTopologyPropertyKey,
-                               destArray.joinIntoString (kTopologySeparator),
+    apvts_.state.setProperty (topology::kTopologyPropertyKey,
+                               topology::serializeTopologyDestinations (currentDestinations_),
                                nullptr);
 
     // Cache the 256 parameter pointers
@@ -261,31 +252,14 @@ void GateAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
     {
         apvts_.replaceState (state);
 
-        const juce::var prop = apvts_.state.getProperty (kTopologyPropertyKey);
-        if (prop.isString())
-        {
-            if (prop.toString().isEmpty())
-            {
-                std::vector<std::string> newDests { "" };
-                topoState_.requestChange (newDests);
-            }
-            else
-            {
-                const juce::StringArray tokens =
-                    juce::StringArray::fromTokens (prop.toString(), kTopologySeparator, "");
-
-                std::vector<std::string> newDests;
-                newDests.reserve (static_cast<std::size_t> (tokens.size()));
-                for (const auto& t : tokens)
-                    newDests.push_back (t.toStdString());
-
-                if (!newDests.empty() && newDests.size() <= 256)
-                {
-                    topoState_.requestChange (newDests);
-                }
-            }
-        }
+        const auto resolved = getStoredTopologyDestinations();
+        topoState_.requestChange (resolved);
     }
+}
+
+std::vector<std::string> GateAudioProcessor::getStoredTopologyDestinations() const
+{
+    return topology::resolvePersistedTopologyDestinations (apvts_.state, currentDestinations_);
 }
 
 //==============================================================================
@@ -299,15 +273,23 @@ juce::AudioProcessorValueTreeState::ParameterLayout GateAudioProcessor::createPa
     for (int i = 0; i < GateBandProcessor::kMaxBands; ++i)
     {
         juce::String paramID = juce::String::formatted("threshold_%02d", i);
+
+        auto attributes = juce::AudioParameterFloatAttributes()
+                              .withStringFromValueFunction ([](float value, int)
+                              {
+                                  return juce::String (value, 1) + " dB";
+                              })
+                              .withValueFromStringFunction ([](const juce::String& text)
+                              {
+                                  return text.dropLastCharacters (3).getFloatValue();
+                              });
+
         layout.add(std::make_unique<juce::AudioParameterFloat>(
             juce::ParameterID{paramID, 1},
             "Threshold " + juce::String(i),
             juce::NormalisableRange<float>(-120.0f, 10.0f, 0.1f),
             -60.0f,
-            juce::String(),
-            juce::AudioProcessorParameter::genericParameter,
-            [](float value, int) { return juce::String(value, 1) + " dB"; },
-            [](const juce::String& text) { return text.dropLastCharacters(3).getFloatValue(); }
+            attributes
         ));
     }
 

@@ -8,6 +8,7 @@
 
 #include "MorphAudioProcessor.h"
 #include "gui/MorphEditor.h"
+#include "../common/TopologyPersistence.h"
 
 #include <juce_core/juce_core.h>
 
@@ -20,12 +21,6 @@ namespace
     /** Default topology: 6-level DWT destination strings. */
     const std::vector<std::string> kDefaultTopology =
         { "H", "LH", "LLH", "LLLH", "LLLLH", "LLLLLH", "LLLLLL" };
-
-    /** Topology property key on apvts_.state. */
-    constexpr const char* kTopologyPropertyKey = "topology";
-
-    /** Topology separator used when serialising to a comma-separated string. */
-    constexpr const char* kTopologySeparator = ",";
 
 } // namespace
 
@@ -43,12 +38,8 @@ MorphAudioProcessor::MorphAudioProcessor()
 {
     // Store the default topology as a ValueTree property so it is
     // included in getStateInformation() right from the start.
-    juce::StringArray destArray;
-    for (const auto& d : currentDestinations_)
-        destArray.add (juce::String (d));
-
-    apvts_.state.setProperty (kTopologyPropertyKey,
-                               destArray.joinIntoString (kTopologySeparator),
+    apvts_.state.setProperty (topology::kTopologyPropertyKey,
+                               topology::serializeTopologyDestinations (currentDestinations_),
                                nullptr);
 }
 
@@ -335,24 +326,14 @@ void MorphAudioProcessor::setStateInformation (const void* data, int sizeInBytes
         apvts_.replaceState (state);
 
         // Restore topology from the property
-        const juce::var prop = apvts_.state.getProperty (kTopologyPropertyKey);
-        if (prop.isString() && prop.toString().isNotEmpty())
-        {
-            const juce::StringArray tokens =
-                juce::StringArray::fromTokens (prop.toString(), kTopologySeparator, "");
-
-            std::vector<std::string> newDests;
-            newDests.reserve (static_cast<std::size_t> (tokens.size()));
-            for (const auto& t : tokens)
-                newDests.push_back (t.toStdString());
-
-            if (!newDests.empty())
-            {
-                // Signal the audio thread to rebuild on the next processBlock call
-                topoState_.requestChange (newDests);
-            }
-        }
+        const auto resolved = getStoredTopologyDestinations();
+        topoState_.requestChange (resolved);
     }
+}
+
+std::vector<std::string> MorphAudioProcessor::getStoredTopologyDestinations() const
+{
+    return topology::resolvePersistedTopologyDestinations (apvts_.state, currentDestinations_);
 }
 
 //==============================================================================
