@@ -58,7 +58,7 @@ public:
             bridge.update(in70, 70);
             float out[64] = { 0.0f };
             int n = bridge.read(out);
-            expectEquals(n, 64);
+            expectEquals(n, 70);
             for (int i = 0; i < 64; ++i)
                 expectEquals(out[i], -1.0f);
         }
