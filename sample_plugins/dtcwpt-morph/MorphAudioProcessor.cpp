@@ -59,6 +59,11 @@ void MorphAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     // Pre-allocate mono scratch buffers for spectrum bridge (avoids heap alloc in processBlock)
     inputMonoScratch_.setSize  (1, samplesPerBlock);
     outputMonoScratch_.setSize (1, samplesPerBlock);
+    alignedInputMonoScratch_.setSize (1, samplesPerBlock);
+
+    analyzerInputAlignerMaxDelay_ = std::max (samplesPerBlock * 8, 0);
+    analyzerInputAligner_.prepare (samplesPerBlock, analyzerInputAlignerMaxDelay_);
+    analyzerInputAligner_.setDelaySamples (0);
 
     // Build the DTCWPTProcessor
     rebuildDTCWPT();
@@ -72,6 +77,8 @@ void MorphAudioProcessor::releaseResources()
     scDoubleBuffer_.setSize   (0, 0);
     inputMonoScratch_.setSize  (0, 0);
     outputMonoScratch_.setSize (0, 0);
+    alignedInputMonoScratch_.setSize (0, 0);
+    analyzerInputAligner_.reset();
 }
 
 //==============================================================================
@@ -104,6 +111,15 @@ void MorphAudioProcessor::rebuildDTCWPT()
 
     // Report latency to the host
     setLatencySamples (dtcwptMain_->getLatency());
+
+    const int analyzerDelaySamples = getLatencySamples();
+    if (analyzerDelaySamples > analyzerInputAlignerMaxDelay_)
+    {
+        analyzerInputAlignerMaxDelay_ = analyzerDelaySamples;
+        analyzerInputAligner_.prepare (currentBlockSize_, analyzerInputAlignerMaxDelay_);
+    }
+
+    analyzerInputAligner_.setDelaySamples (analyzerDelaySamples);
 }
 
 //==============================================================================
@@ -244,7 +260,11 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                      0.5f);
     }
 
-    spectrumBridge_.push (inputMonoScratch_.getReadPointer (0),
+    analyzerInputAligner_.processBlock (inputMonoScratch_.getReadPointer (0),
+                                        alignedInputMonoScratch_.getWritePointer (0),
+                                        numSamples);
+
+    spectrumBridge_.push (alignedInputMonoScratch_.getReadPointer (0),
                            outputMonoScratch_.getReadPointer (0),
                            numSamples);
 }

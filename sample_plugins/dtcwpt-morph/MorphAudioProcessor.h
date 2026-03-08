@@ -26,6 +26,7 @@
 #include "MorphBandProcessor.h"
 #include "TopologyState.h"
 #include "SpectrumDataBridge.h"
+#include "../common/AnalyzerLatencyAligner.h"
 
 // Standard library
 #include <memory>
@@ -335,6 +336,15 @@ private:
 
     /** Pre-allocated mono scratch buffer for output spectrum snapshot (single channel). */
     juce::AudioBuffer<float> outputMonoScratch_;
+
+    /** Pre-allocated mono scratch buffer for latency-aligned analyzer input. */
+    juce::AudioBuffer<float> alignedInputMonoScratch_;
+
+    /** Real-time-safe delay aligner for analyzer input snapshots. */
+    AnalyzerLatencyAligner analyzerInputAligner_;
+
+    /** Current delay capacity configured for analyzerInputAligner_. */
+    int analyzerInputAlignerMaxDelay_ { 0 };
 
     //==============================================================================
     // Cached prepare() state

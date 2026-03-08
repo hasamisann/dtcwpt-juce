@@ -54,6 +54,11 @@ void GateAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 
     inputMonoScratch_.setSize  (1, samplesPerBlock);
     outputMonoScratch_.setSize (1, samplesPerBlock);
+    alignedInputMonoScratch_.setSize (1, samplesPerBlock);
+
+    analyzerInputAlignerMaxDelay_ = std::max (samplesPerBlock * 8, 0);
+    analyzerInputAligner_.prepare (samplesPerBlock, analyzerInputAlignerMaxDelay_);
+    analyzerInputAligner_.setDelaySamples (0);
 
     rebuildDTCWPT();
 }
@@ -65,6 +70,8 @@ void GateAudioProcessor::releaseResources()
     mainDoubleBuffer_.setSize (0, 0);
     inputMonoScratch_.setSize  (0, 0);
     outputMonoScratch_.setSize (0, 0);
+    alignedInputMonoScratch_.setSize (0, 0);
+    analyzerInputAligner_.reset();
 }
 
 //==============================================================================
@@ -90,6 +97,15 @@ void GateAudioProcessor::rebuildDTCWPT()
 
     dtcwptMain_ = std::move (newEngine);
     setLatencySamples (dtcwptMain_->getLatency());
+
+    const int analyzerDelaySamples = getLatencySamples();
+    if (analyzerDelaySamples > analyzerInputAlignerMaxDelay_)
+    {
+        analyzerInputAlignerMaxDelay_ = analyzerDelaySamples;
+        analyzerInputAligner_.prepare (currentBlockSize_, analyzerInputAlignerMaxDelay_);
+    }
+
+    analyzerInputAligner_.setDelaySamples (analyzerDelaySamples);
 }
 
 //==============================================================================
@@ -186,7 +202,11 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                      1.0f / static_cast<float>(std::min(numChannels, 2)));
     }
 
-    spectrumBridge_.push (inputMonoScratch_.getReadPointer (0),
+    analyzerInputAligner_.processBlock (inputMonoScratch_.getReadPointer (0),
+                                        alignedInputMonoScratch_.getWritePointer (0),
+                                        numSamples);
+
+    spectrumBridge_.push (alignedInputMonoScratch_.getReadPointer (0),
                            outputMonoScratch_.getReadPointer (0),
                            numSamples);
 }

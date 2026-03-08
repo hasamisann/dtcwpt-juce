@@ -27,6 +27,7 @@
 #include "TopologyState.h"
 #include "SpectrumDataBridge.h"
 #include "BandLevelBridge.h"
+#include "../common/AnalyzerLatencyAligner.h"
 
 // Standard library
 #include <memory>
@@ -221,6 +222,10 @@ private:
 
     juce::AudioBuffer<float> inputMonoScratch_;
     juce::AudioBuffer<float> outputMonoScratch_;
+    juce::AudioBuffer<float> alignedInputMonoScratch_;
+
+    AnalyzerLatencyAligner analyzerInputAligner_;
+    int analyzerInputAlignerMaxDelay_ { 0 };
 
     //==============================================================================
     // Cached prepare() state
