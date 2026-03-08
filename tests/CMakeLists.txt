@@ -60,6 +60,7 @@ target_sources(dtcwpt_tests
         suites/BandLevelBridgeTests.cpp
         suites/GateBandProcessorTests.cpp
         suites/TopologyViewStateRestoreTests.cpp
+        suites/AnalyzerLatencyAlignerTests.cpp
         util/TestUtils.cpp
         stubs/MorphAudioProcessorStubs.cpp
         ../sample_plugins/dtcwpt-morph/MorphBandProcessor.cpp
@@ -74,6 +75,7 @@ target_include_directories(dtcwpt_tests
         ../sample_plugins/dtcwpt-morph
         ../sample_plugins/dtcwpt-morph/gui
         ../sample_plugins/dtcwpt-gate
+        ../sample_plugins/common
 )
 
 target_compile_definitions(dtcwpt_tests
