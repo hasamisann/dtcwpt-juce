@@ -17,7 +17,7 @@
 namespace
 {
     /** Background colour for the canvas. */
-    constexpr juce::uint32 kBgColour       = 0xFF1E1E2E;
+    constexpr juce::uint32 kBgColour       = 0xFF202026;
 
     /** Leaf node fill colour. */
     constexpr juce::uint32 kLeafFill       = 0xFF2E4A6E;
@@ -65,11 +65,13 @@ TopologyEditorView::TopologyEditorView (TopologyState& topoState, double sampleR
     };
 
     // Type ComboBox: DWT or Full Tree
+    typeCombo_.setLookAndFeel (&buttonLnf_);
     typeCombo_.addItem ("DWT",  1);
     typeCombo_.addItem ("Full", 2);
     typeCombo_.setTextWhenNothingSelected ("Type");
 
     // Depth ComboBox: 1–8
+    depthCombo_.setLookAndFeel (&buttonLnf_);
     for (int d = 1; d <= 8; ++d)
         depthCombo_.addItem (juce::String (d), d);
     depthCombo_.setTextWhenNothingSelected ("Depth");
@@ -108,6 +110,11 @@ TopologyEditorView::TopologyEditorView (TopologyState& topoState, double sampleR
 
 TopologyEditorView::~TopologyEditorView()
 {
+    // Clear LookAndFeels
+    backButton_.setLookAndFeel (nullptr);
+    typeCombo_.setLookAndFeel (nullptr);
+    depthCombo_.setLookAndFeel (nullptr);
+
     // Remove all child components before member sub-components are destroyed.
     // Component::~Component() would otherwise call removeAllChildren() after
     // all members are already gone, causing use-after-free / heap corruption.
@@ -143,8 +150,8 @@ void TopologyEditorView::setTopologyChangedCallback (
 void TopologyEditorView::resized()
 {
     backButton_.setBounds (4, 4, 70, 24);
-    typeCombo_.setBounds  (80,  4, 70, 24);
-    depthCombo_.setBounds (156, 4, 60, 24);
+    typeCombo_.setBounds  (78,  4, 70, 24);
+    depthCombo_.setBounds (152, 4, 60, 24);
     layoutTree();
 }
 
@@ -587,21 +594,21 @@ std::vector<std::string> TopologyEditorView::generateFullTree (int depth)
 
 void TopologyEditorView::drawNode (juce::Graphics& g, const TreeNode& node) const
 {
-    const float cornerRadius = 4.0f * zoomScale_;
+    const float cornerRadius = 0.0f; // Flat nodes
 
     if (node.isLeaf)
     {
         g.setColour (juce::Colour (kLeafFill));
-        g.fillRoundedRectangle (node.bounds, cornerRadius);
+        g.fillRect (node.bounds);
         g.setColour (juce::Colour (kLeafOutline));
-        g.drawRoundedRectangle (node.bounds, cornerRadius, 1.5f);
+        g.drawRect (node.bounds, 1.5f);
     }
     else
     {
         g.setColour (juce::Colour (kSplitFill));
-        g.fillRoundedRectangle (node.bounds, cornerRadius);
+        g.fillRect (node.bounds);
         g.setColour (juce::Colour (kSplitOutline));
-        g.drawRoundedRectangle (node.bounds, cornerRadius, 1.0f);
+        g.drawRect (node.bounds, 1.0f);
     }
 
     // Label: path string (or "Root")

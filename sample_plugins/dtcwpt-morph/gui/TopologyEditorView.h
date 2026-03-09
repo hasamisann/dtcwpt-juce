@@ -35,9 +35,62 @@
 class TopologyButtonLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
-    juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override
+    TopologyButtonLookAndFeel()
     {
-        return FontHelper::getFont (static_cast<float> (buttonHeight) * 0.5f);
+        setColour (juce::TextButton::buttonColourId,   juce::Colour (0xFF2E2E2F));
+        setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xFF2E2E2F));
+        setColour (juce::TextButton::textColourOffId,  juce::Colour (0xFFF0F0F0));
+        setColour (juce::TextButton::textColourOnId,   juce::Colour (0xFFF0F0F0));
+
+        // ComboBox styling
+        setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xFF2E2E2F));
+        setColour (juce::ComboBox::textColourId,       juce::Colour (0xFFF0F0F0));
+        setColour (juce::ComboBox::arrowColourId,      juce::Colour (0xFFB7BCC1));
+        setColour (juce::ComboBox::outlineColourId,    juce::Colour (0x00000000));
+        setColour (juce::PopupMenu::backgroundColourId,juce::Colour (0xFF2E2E2F));
+        setColour (juce::PopupMenu::textColourId,      juce::Colour (0xFFF0F0F0));
+    }
+
+    void drawButtonBackground (juce::Graphics& g, juce::Button& button,
+                               const juce::Colour& backgroundColour,
+                               bool, bool) override
+    {
+        auto bounds = button.getLocalBounds().toFloat();
+        g.setColour (backgroundColour);
+        g.fillRect (bounds);
+    }
+
+    void drawComboBox (juce::Graphics& g, int width, int height, bool,
+                       int, int, int, int, juce::ComboBox& box) override
+    {
+        juce::Rectangle<int> boxBounds (0, 0, width, height);
+
+        g.setColour (box.findColour (juce::ComboBox::backgroundColourId));
+        g.fillRect (boxBounds.toFloat());
+
+        juce::Rectangle<int> arrowZone (width - 22, 0, 22, height);
+        juce::Path path;
+        path.addTriangle (arrowZone.getX() + 5.0f, arrowZone.getCentreY() - 2.0f,
+                          arrowZone.getRight() - 5.0f, arrowZone.getCentreY() - 2.0f,
+                          arrowZone.getCentreX(), arrowZone.getCentreY() + 3.0f);
+
+        g.setColour (box.findColour (juce::ComboBox::arrowColourId).withAlpha (box.isEnabled() ? 1.0f : 0.4f));
+        g.fillPath (path);
+    }
+
+    juce::Font getComboBoxFont (juce::ComboBox& box) override
+    {
+        return FontHelper::getFont (13.0f);
+    }
+
+    juce::Font getPopupMenuFont() override
+    {
+        return FontHelper::getFont (13.0f);
+    }
+
+    juce::Font getTextButtonFont (juce::TextButton&, int) override
+    {
+        return FontHelper::getFont (13.0f);
     }
 };
 

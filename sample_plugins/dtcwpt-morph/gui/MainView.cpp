@@ -15,16 +15,16 @@
 namespace
 {
     /** Unified background colour (header + main area). */
-    constexpr juce::uint32 kBgColour    = 0xFF282842;
+    constexpr juce::uint32 kBgColour    = 0xFF202026;
 
     /** Header bar background colour — same as main background. */
-    constexpr juce::uint32 kHeaderBg    = 0xFF282842;
+    constexpr juce::uint32 kHeaderBg    = 0xFF202026;
 
     /** Header bar title text colour. */
-    constexpr juce::uint32 kTitleColour = 0xFFBBBBBB;
+    constexpr juce::uint32 kTitleColour = 0xFFDDDDDD;
 
     /** Knob label text colour. */
-    constexpr juce::uint32 kLabelColour = 0xFF999999;
+    constexpr juce::uint32 kLabelColour = 0xFFF0F0F0;
 
 } // namespace
 
@@ -46,18 +46,18 @@ MainView::MainView (MorphAudioProcessor& processor)
     titleLabel_.setText ("DT-CWPT Morph", juce::dontSendNotification);
     auto titleFont = FontHelper::getFont (24.0f, false, 0.05f);
     titleLabel_.setFont (titleFont);
-    titleLabel_.setColour (juce::Label::textColourId, juce::Colour (0xFFBBBBBB));
+    titleLabel_.setColour (juce::Label::textColourId, juce::Colour (kTitleColour));
     titleLabel_.setJustificationType (juce::Justification::centredLeft);
     addAndMakeVisible (titleLabel_);
 
     // Bands button (topology/band configuration)
-    settingsButton_.setButtonText ("Bands");
+    settingsButton_.setButtonText ("Freq");
     settingsButton_.setLookAndFeel (&buttonLnf_);
     settingsButton_.onClick = [this] { if (onSettings_) onSettings_(); };
     addAndMakeVisible (settingsButton_);
 
     // About button with lowercase "i"
-    aboutButton_.setButtonText ("i");
+    aboutButton_.setButtonText ("Info");
     aboutButton_.setLookAndFeel (&buttonLnf_);
     aboutButton_.onClick = [this] { if (onAbout_) onAbout_(); };
     addAndMakeVisible (aboutButton_);
@@ -71,12 +71,15 @@ MainView::MainView (MorphAudioProcessor& processor)
     // Magnitude knob
     // -----------------------------------------------------------------------
     magnitudeKnob_.setSliderStyle (juce::Slider::RotaryVerticalDrag);
-    magnitudeKnob_.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 18);
+    magnitudeKnob_.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 80, 20);
+    magnitudeKnob_.setColour (juce::Slider::textBoxOutlineColourId, juce::Colour(0x00000000));
+    magnitudeKnob_.setColour (juce::Slider::textBoxTextColourId, juce::Colour(kLabelColour));
+    magnitudeKnob_.textFromValueFunction = [](double v) { return juce::String (v, 2); };
     magnitudeKnob_.setLookAndFeel (&wiperLnf_);
     addAndMakeVisible (magnitudeKnob_);
 
     magnitudeLabel_.setText ("Magnitude", juce::dontSendNotification);
-    magnitudeLabel_.setFont (FontHelper::getFont (11.0f));
+    magnitudeLabel_.setFont (FontHelper::getFont (13.0f));
     magnitudeLabel_.setColour (juce::Label::textColourId, juce::Colour (kLabelColour));
     magnitudeLabel_.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (magnitudeLabel_);
@@ -85,12 +88,15 @@ MainView::MainView (MorphAudioProcessor& processor)
     // Phase knob
     // -----------------------------------------------------------------------
     phaseKnob_.setSliderStyle (juce::Slider::RotaryVerticalDrag);
-    phaseKnob_.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 18);
+    phaseKnob_.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 80, 20);
+    phaseKnob_.setColour (juce::Slider::textBoxOutlineColourId, juce::Colour(0x00000000));
+    phaseKnob_.setColour (juce::Slider::textBoxTextColourId, juce::Colour(kLabelColour));
+    phaseKnob_.textFromValueFunction = [](double v) { return juce::String (v, 2); };
     phaseKnob_.setLookAndFeel (&wiperLnf_);
     addAndMakeVisible (phaseKnob_);
 
     phaseLabel_.setText ("Phase", juce::dontSendNotification);
-    phaseLabel_.setFont (FontHelper::getFont (11.0f));
+    phaseLabel_.setFont (FontHelper::getFont (13.0f));
     phaseLabel_.setColour (juce::Label::textColourId, juce::Colour (kLabelColour));
     phaseLabel_.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (phaseLabel_);
@@ -99,12 +105,15 @@ MainView::MainView (MorphAudioProcessor& processor)
     // Threshold knob
     // -----------------------------------------------------------------------
     thresholdKnob_.setSliderStyle (juce::Slider::RotaryVerticalDrag);
-    thresholdKnob_.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 18);
+    thresholdKnob_.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 80, 20);
+    thresholdKnob_.setColour (juce::Slider::textBoxOutlineColourId, juce::Colour(0x00000000));
+    thresholdKnob_.setColour (juce::Slider::textBoxTextColourId, juce::Colour(kLabelColour));
+    thresholdKnob_.textFromValueFunction = [](double v) { return juce::String (v, 1) + " dB"; };
     thresholdKnob_.setLookAndFeel (&wiperLnf_);
     addAndMakeVisible (thresholdKnob_);
 
     thresholdLabel_.setText ("Threshold", juce::dontSendNotification);
-    thresholdLabel_.setFont (FontHelper::getFont (11.0f));
+    thresholdLabel_.setFont (FontHelper::getFont (13.0f));
     thresholdLabel_.setColour (juce::Label::textColourId, juce::Colour (kLabelColour));
     thresholdLabel_.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (thresholdLabel_);
@@ -114,8 +123,10 @@ MainView::MainView (MorphAudioProcessor& processor)
     // -----------------------------------------------------------------------
     addAndMakeVisible (bypassLowButton_);
     bypassLowButton_.setLookAndFeel (&toggleLnf_);
+    bypassLowButton_.setButtonText ("Bypass Lowest");
     addAndMakeVisible (bypassHighButton_);
     bypassHighButton_.setLookAndFeel (&toggleLnf_);
+    bypassHighButton_.setButtonText ("Bypass Highest");
 
     // -----------------------------------------------------------------------
     // Slider range initialisation
@@ -280,30 +291,31 @@ void MainView::resized()
     // -----------------------------------------------------------------------
     // Header bar (top, full width, kHeaderHeight px)
     // -----------------------------------------------------------------------
-    constexpr int kNavButtonWidth = 50;  // Increased from 36 to fit "Bands"
-    constexpr int kNavButtonMargin = 4;
-
-    // About button — far right (narrower for single "i" character)
-    constexpr int kAboutButtonWidth = 28;  // "i" is compact
-    aboutButton_.setBounds (w - kAboutButtonWidth - kNavButtonMargin,
+    constexpr int kAboutButtonWidth = 48; // "Info"
+    constexpr int kSettingsButtonWidth = 52; // "Freq"
+    constexpr int kNavButtonHeight = 26;
+    constexpr int kNavButtonMargin = (kHeaderHeight - kNavButtonHeight) / 2;
+    constexpr int kSpacing = 8;
+    
+    // About button — far right
+    aboutButton_.setBounds (w - kAboutButtonWidth - 16,
                             kNavButtonMargin,
                             kAboutButtonWidth,
-                            kHeaderHeight - 2 * kNavButtonMargin);
+                            kNavButtonHeight);
 
-    // Settings/Bands button — left of About (wider for "Bands" text)
-    settingsButton_.setBounds (w - kAboutButtonWidth - kNavButtonMargin - kNavButtonWidth - kNavButtonMargin,
+    // Settings/Bands button — left of About
+    settingsButton_.setBounds (aboutButton_.getX() - kSettingsButtonWidth - kSpacing,
                                kNavButtonMargin,
-                               kNavButtonWidth,
-                               kHeaderHeight - 2 * kNavButtonMargin);
+                               kSettingsButtonWidth,
+                               kNavButtonHeight);
 
-    // Title — occupies the rest of the header (adjusted for different button widths)
-    titleLabel_.setBounds (8, 0, w - kNavButtonWidth - kAboutButtonWidth - 2 * kNavButtonMargin - 16, kHeaderHeight);
+    // Title — occupies the rest of the header
+    titleLabel_.setBounds (16, 0, w - 150, kHeaderHeight);
 
     // -----------------------------------------------------------------------
     // Bottom section heights
     // -----------------------------------------------------------------------
-    constexpr int kLabelHeight = 16;
-    const int bottomSectionHeight = kKnobRowHeight + kLabelHeight + kCheckboxRowHeight + kBottomMargin;
+    const int bottomSectionHeight = 160;
 
     // -----------------------------------------------------------------------
     // Spectrum widget — central area between header and bottom section
@@ -311,26 +323,27 @@ void MainView::resized()
     spectrumWidget_.setBounds (0, kHeaderHeight, w, h - kHeaderHeight - bottomSectionHeight);
 
     // -----------------------------------------------------------------------
-    // Knob row — three equal-width sections
+    // Labels -> Knobs -> Checkboxes
     // -----------------------------------------------------------------------
-    const int knobRowY = h - bottomSectionHeight;
+    const int bottomY = h - bottomSectionHeight;
     const int colWidth = w / 3;
 
-    magnitudeKnob_.setBounds (0,            knobRowY, colWidth, kKnobRowHeight);
-    phaseKnob_.setBounds     (colWidth,     knobRowY, colWidth, kKnobRowHeight);
-    thresholdKnob_.setBounds (colWidth * 2, knobRowY, colWidth, kKnobRowHeight);
+    constexpr int kTitleHeight = 20;
+    constexpr int kKnobTotalHeight = 84; 
+    constexpr int kCheckboxHeight = 24;
 
-    // Labels below knobs
-    const int labelY = knobRowY + kKnobRowHeight;
-    magnitudeLabel_.setBounds (0,            labelY, colWidth, kLabelHeight);
-    phaseLabel_.setBounds     (colWidth,     labelY, colWidth, kLabelHeight);
-    thresholdLabel_.setBounds (colWidth * 2, labelY, colWidth, kLabelHeight);
+    const int titleY = bottomY + 16;
+    magnitudeLabel_.setBounds (0,            titleY, colWidth, kTitleHeight);
+    phaseLabel_.setBounds     (colWidth,     titleY, colWidth, kTitleHeight);
+    thresholdLabel_.setBounds (colWidth * 2, titleY, colWidth, kTitleHeight);
 
-    // -----------------------------------------------------------------------
-    // Bypass checkboxes row — below knob labels
-    // -----------------------------------------------------------------------
-    const int checkY = labelY + kLabelHeight;
+    const int knobY = titleY + kTitleHeight + 2;
+    magnitudeKnob_.setBounds (0,            knobY, colWidth, kKnobTotalHeight);
+    phaseKnob_.setBounds     (colWidth,     knobY, colWidth, kKnobTotalHeight);
+    thresholdKnob_.setBounds (colWidth * 2, knobY, colWidth, kKnobTotalHeight);
+
+    const int checkY = bottomY + bottomSectionHeight - kCheckboxHeight - 14;
     const int checkWidth = w / 2;
-    bypassLowButton_.setBounds  (0,          checkY, checkWidth, kCheckboxRowHeight);
-    bypassHighButton_.setBounds (checkWidth, checkY, checkWidth, kCheckboxRowHeight);
+    bypassLowButton_.setBounds  (24, checkY, checkWidth - 24, kCheckboxHeight);
+    bypassHighButton_.setBounds (checkWidth + 12, checkY, checkWidth - 12, kCheckboxHeight);
 }

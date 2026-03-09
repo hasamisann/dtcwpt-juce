@@ -30,9 +30,26 @@
 class AboutButtonLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
-    juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override
+    AboutButtonLookAndFeel()
     {
-        return FontHelper::getFont (static_cast<float> (buttonHeight) * 0.5f);
+        setColour (juce::TextButton::buttonColourId,   juce::Colour (0xFF2E2E2F));
+        setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xFF2E2E2F));
+        setColour (juce::TextButton::textColourOffId,  juce::Colour (0xFFF0F0F0));
+        setColour (juce::TextButton::textColourOnId,   juce::Colour (0xFFF0F0F0));
+    }
+
+    void drawButtonBackground (juce::Graphics& g, juce::Button& button,
+                               const juce::Colour& backgroundColour,
+                               bool, bool) override
+    {
+        auto bounds = button.getLocalBounds().toFloat();
+        g.setColour (backgroundColour);
+        g.fillRect (bounds);
+    }
+
+    juce::Font getTextButtonFont (juce::TextButton&, int) override
+    {
+        return FontHelper::getFont (13.0f);
     }
 };
 

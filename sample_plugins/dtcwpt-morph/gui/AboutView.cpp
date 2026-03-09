@@ -14,19 +14,19 @@
 namespace
 {
     /** Background fill colour: very dark blue-grey. */
-    constexpr juce::uint32 kBgColour         = 0xFF1A1A2E;
+    constexpr juce::uint32 kBgColour         = 0xFF202026;
 
     /** Divider line colour. */
-    constexpr juce::uint32 kDividerColour    = 0xFF3A3A5A;
+    constexpr juce::uint32 kDividerColour    = 0xFF38393B;
 
     /** Primary text colour: off-white. */
-    constexpr juce::uint32 kTextColour       = 0xFFDDDDDD;
+    constexpr juce::uint32 kTextColour       = 0xFFF0F0F0;
 
     /** Secondary / muted text colour. */
-    constexpr juce::uint32 kMutedTextColour  = 0xFF888888;
+    constexpr juce::uint32 kMutedTextColour  = 0xFFB7BCC1;
 
     /** Hyperlink colour: accent blue. */
-    constexpr juce::uint32 kLinkColour       = 0xFF4A9FFF;
+    constexpr juce::uint32 kLinkColour       = 0xFF6CB1FF;
 
 } // namespace
 
@@ -36,6 +36,8 @@ namespace
 
 AboutView::~AboutView()
 {
+    backButton_.setLookAndFeel (nullptr);
+
     // Remove all child components before member sub-components are destroyed.
     // Component::~Component() would otherwise call removeAllChildren() after
     // all members are already gone, causing use-after-free / heap corruption.
@@ -139,13 +141,13 @@ void AboutView::resized()
     constexpr int kOflH   = 20;
     constexpr int kGap    = 10;
     constexpr int kLinkH  = 24;
-    constexpr int kBtnH   = 28;
-    constexpr int kBtnW   = 80;
+    constexpr int kBtnH   = 24;
+    constexpr int kBtnW   = 70;
 
     const int w = getWidth();
 
     // Back button — top-left
-    backButton_.setBounds (6, 6, kBtnW, kBtnH);
+    backButton_.setBounds (4, 4, kBtnW, kBtnH);
 
     // Vertical stack, centred in the component
     const int totalH = kRowH          // plugin name

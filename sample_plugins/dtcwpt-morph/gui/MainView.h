@@ -42,9 +42,26 @@
 class ButtonLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
-    juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override
+    ButtonLookAndFeel()
     {
-        return FontHelper::getFont (static_cast<float> (buttonHeight) * 0.5f);
+        setColour (juce::TextButton::buttonColourId,   juce::Colour (0xFF2E2E2F));
+        setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xFF2E2E2F));
+        setColour (juce::TextButton::textColourOffId,  juce::Colour (0xFFF0F0F0));
+        setColour (juce::TextButton::textColourOnId,   juce::Colour (0xFFF0F0F0));
+    }
+
+    void drawButtonBackground (juce::Graphics& g, juce::Button& button,
+                               const juce::Colour& backgroundColour,
+                               bool, bool) override
+    {
+        auto bounds = button.getLocalBounds().toFloat();
+        g.setColour (backgroundColour);
+        g.fillRect (bounds);
+    }
+
+    juce::Font getTextButtonFont (juce::TextButton&, int) override
+    {
+        return FontHelper::getFont (13.0f);
     }
 };
 
@@ -53,23 +70,27 @@ class ToggleButtonLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
     void drawToggleButton (juce::Graphics& g, juce::ToggleButton& button,
-                           bool shouldDrawButtonAsHighlighted,
-                           bool shouldDrawButtonAsDown) override
+                           bool, bool) override
     {
-        auto font = FontHelper::getFont (11.0f);
-        auto tickWidth = font.getHeight() * 1.2f;
+        auto font = FontHelper::getFont (12.0f);
+        auto tickWidth = 14.0f;
+        auto tickY = (static_cast<float> (button.getHeight()) - tickWidth) * 0.5f;
+        auto tickX = 4.0f;
 
-        drawTickBox (g, button, 4.0f, (static_cast<float> (button.getHeight()) - tickWidth) * 0.5f,
-                     tickWidth, tickWidth,
-                     button.getToggleState(),
-                     button.isEnabled(),
-                     shouldDrawButtonAsHighlighted,
-                     shouldDrawButtonAsDown);
+        juce::Rectangle<float> box (tickX, tickY, tickWidth, tickWidth);
+        g.setColour (juce::Colour (0xFFB7BCC1));
+        g.drawRect (box, 1.5f);
 
-        g.setColour (button.findColour (juce::ToggleButton::textColourId));
+        if (button.getToggleState())
+        {
+            g.setColour (juce::Colour (0xFFB7BCC1));
+            g.fillRect (box.reduced (3.0f));
+        }
+
+        g.setColour (juce::Colour (0xFFF0F0F0));
         g.setFont (font);
 
-        auto textX = static_cast<int> (tickWidth + 10.0f);
+        auto textX = static_cast<int> (tickX + tickWidth + 6.0f);
         g.drawFittedText (button.getButtonText(),
                           textX, 0,
                           button.getWidth() - textX - 2, button.getHeight(),
@@ -141,16 +162,16 @@ private:
     //==============================================================================
 
     /** Height of the header bar in pixels. */
-    static constexpr int kHeaderHeight = 40;
+    static constexpr int kHeaderHeight = 60;
 
     /** Height of the knob row in pixels. */
-    static constexpr int kKnobRowHeight = 80;
+    static constexpr int kKnobRowHeight = 90;
 
     /** Height of the bypass checkbox row in pixels. */
-    static constexpr int kCheckboxRowHeight = 28;
+    static constexpr int kCheckboxRowHeight = 30;
 
     /** Bottom margin below checkbox row. */
-    static constexpr int kBottomMargin = 4;
+    static constexpr int kBottomMargin = 20;
 
     //==============================================================================
     // Header bar children

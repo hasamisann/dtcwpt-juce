@@ -56,13 +56,14 @@ void WiperLookAndFeel::drawRotarySlider (juce::Graphics& g,
     const float radius   = juce::jmin (static_cast<float> (width),
                                        static_cast<float> (height)) * 0.5f - 2.0f;
     const float arcWidth = radius * kArcWidthFraction * 2.0f;  // stroke width (both sides)
-
+    const float strokeThickness = radius * kArcWidthFraction;
+    
     // Current value angle (clamped to [startAngle, endAngle])
     const float toAngle  = rotaryStartAngle
                            + sliderPosProportional * (rotaryEndAngle - rotaryStartAngle);
 
-    // Arc bounding rectangle (centred, inset by half arcWidth so the stroke fits)
-    const float arcRadius = radius - arcWidth * 0.5f;
+    // Arc bounding rectangle (centred, inset by half stroke so it perfectly fits)
+    const float arcRadius = radius - strokeThickness * 0.5f;
     const juce::Rectangle<float> arcBounds (centreX - arcRadius,
                                              centreY - arcRadius,
                                              arcRadius * 2.0f,
@@ -83,9 +84,9 @@ void WiperLookAndFeel::drawRotarySlider (juce::Graphics& g,
 
     g.setColour (juce::Colour (kTrackColour));
     g.strokePath (trackArc,
-                  juce::PathStrokeType (arcWidth,
+                  juce::PathStrokeType (strokeThickness,
                                         juce::PathStrokeType::curved,
-                                        juce::PathStrokeType::rounded));
+                                        juce::PathStrokeType::butt));
 
     // -----------------------------------------------------------------------
     // 2. Filled value arc (accent blue, start → current angle)
@@ -104,21 +105,39 @@ void WiperLookAndFeel::drawRotarySlider (juce::Graphics& g,
 
         g.setColour (juce::Colour (kFillColour));
         g.strokePath (fillArc,
-                      juce::PathStrokeType (arcWidth,
+                      juce::PathStrokeType (strokeThickness,
                                             juce::PathStrokeType::curved,
-                                            juce::PathStrokeType::rounded));
+                                            juce::PathStrokeType::butt));
     }
 
     // -----------------------------------------------------------------------
     // 3. Centre knob body circle
     // -----------------------------------------------------------------------
 
-    const float knobRadius = radius * kKnobRadiusFraction;
+    const float knobRadius = radius - strokeThickness;
     g.setColour (juce::Colour (kKnobColour));
     g.fillEllipse (centreX - knobRadius,
                    centreY - knobRadius,
                    knobRadius * 2.0f,
                    knobRadius * 2.0f);
+
+    // -----------------------------------------------------------------------
+    // 4. Indicator line at current value
+    // -----------------------------------------------------------------------
+
+    g.setColour (juce::Colour (kIndicatorColour));
+    juce::Path indicator;
+    const float indStart = knobRadius * 0.45f;
+    const float indEnd   = knobRadius;
+
+    const float angleOffset = toAngle - juce::MathConstants<float>::halfPi;
+    indicator.startNewSubPath (centreX + indStart * std::cos (angleOffset),
+                               centreY + indStart * std::sin (angleOffset));
+    indicator.lineTo          (centreX + indEnd   * std::cos (angleOffset),
+                               centreY + indEnd   * std::sin (angleOffset));
+
+    const float indThickness = knobRadius * 0.16f;
+    g.strokePath (indicator, juce::PathStrokeType (indThickness, juce::PathStrokeType::mitered, juce::PathStrokeType::butt));
 }
 
 juce::Font WiperLookAndFeel::getTextButtonFont (juce::TextButton&, int buttonHeight)
@@ -128,10 +147,10 @@ juce::Font WiperLookAndFeel::getTextButtonFont (juce::TextButton&, int buttonHei
 
 juce::Font WiperLookAndFeel::getLabelFont (juce::Label&)
 {
-    return FontHelper::getFont (11.0f);
+    return FontHelper::getFont (13.0f);
 }
 
 juce::Font WiperLookAndFeel::getSliderPopupFont (juce::Slider&)
 {
-    return FontHelper::getFont (11.0f);
+    return FontHelper::getFont (13.0f);
 }

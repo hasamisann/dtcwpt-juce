@@ -76,19 +76,19 @@ private:
     //==============================================================================
 
     /** Background track colour: dark grey. */
-    static constexpr juce::uint32 kTrackColour  = 0xFF3A3A3A;
+    static constexpr juce::uint32 kTrackColour  = 0xFF38393B;
 
     /** Foreground fill colour: accent blue. */
-    static constexpr juce::uint32 kFillColour   = 0xFF4A9FFF;
+    static constexpr juce::uint32 kFillColour   = 0xFF6CB1FF;
 
     /** Centre knob body colour: medium grey. */
-    static constexpr juce::uint32 kKnobColour   = 0xFF555555;
+    static constexpr juce::uint32 kKnobColour   = 0xFFB7BCC1;
+
+    /** Indicator line colour. */
+    static constexpr juce::uint32 kIndicatorColour = 0xFF202026;
 
     /** Arc line width as a fraction of the radius. */
     static constexpr float kArcWidthFraction = 0.12f;
-
-    /** Knob body radius as a fraction of the total radius. */
-    static constexpr float kKnobRadiusFraction = 0.35f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WiperLookAndFeel)
 };

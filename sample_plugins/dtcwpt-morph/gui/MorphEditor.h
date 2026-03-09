@@ -80,10 +80,10 @@ private:
     //==============================================================================
 
     /** Editor width in pixels. */
-    static constexpr int kEditorWidth  = 280;
+    static constexpr int kEditorWidth  = 360;
 
     /** Editor height in pixels. */
-    static constexpr int kEditorHeight = 400;
+    static constexpr int kEditorHeight = 512;
 
     //==============================================================================
     // Sub-views (owned by this editor)
