@@ -10,10 +10,10 @@
 
 namespace
 {
-    const juce::Colour kBgColor     = juce::Colour (25, 25, 35);
-    const juce::Colour kAccentColor = juce::Colour (115, 170, 230);
-    const juce::Colour kTextColor   = juce::Colour (220, 220, 220);
-    const juce::Colour kTextDim     = juce::Colour (150, 150, 150);
+    const juce::Colour kBgColor     = juce::Colour (0xFF202026);
+    const juce::Colour kAccentColor = juce::Colour (0xFF6CB1FF);
+    const juce::Colour kTextColor   = juce::Colour (0xFFF0F0F0);
+    const juce::Colour kTextDim     = juce::Colour (0xFFB7BCC1);
 }
 
 //==============================================================================
@@ -246,7 +246,7 @@ void GraphicEqWidget::paint (juce::Graphics& g)
     // 2. Draw Horizontal Grid (dB lines)
     // Horizontal grid lines (dB)
     g.setColour (kTextDim.withAlpha (0.4f));
-    g.setFont (FontHelper::getFont (10.0f));
+    g.setFont (FontHelper::getFont (12.0f));
 
     const std::vector<float> gridDbs = { 10.0f, 0.0f, -20.0f, -40.0f, -60.0f, -80.0f, -100.0f, -120.0f };
     for (float db : gridDbs)
@@ -254,7 +254,7 @@ void GraphicEqWidget::paint (juce::Graphics& g)
         float y = dbToY (db);
         g.drawLine (0.0f, y, static_cast<float>(getWidth()), y, 1.0f);
         g.drawText (juce::String (static_cast<int>(db)) + " dB",
-                    4, static_cast<int>(y) - 14, 40, 14,
+                    4, static_cast<int>(y) - 16, 40, 16,
                     juce::Justification::bottomLeft, false);
     }
 
@@ -268,16 +268,16 @@ void GraphicEqWidget::paint (juce::Graphics& g)
         
         juce::String label = (f >= 1000.0f) ? juce::String (static_cast<int>(f) / 1000) + "k"
                                             : juce::String (static_cast<int>(f));
-        g.drawText (label, static_cast<int>(x - 15.0f), static_cast<int>(height - 12.0f), 30, 10,
+        g.drawText (label, static_cast<int>(x - 15.0f), static_cast<int>(height - 14.0f), 30, 12,
                     juce::Justification::centredBottom, false);
     }
 
     // 4. Main Axis Labels
     g.setColour (kTextColor);
-    g.drawText ("0 dB",     4, 2, 40, 10, juce::Justification::topLeft, false);
-    g.drawText ("-120 dB",  4, static_cast<int>(height - 12.0f), 40, 10, juce::Justification::bottomLeft, false);
-    g.drawText ("20 Hz",    4, static_cast<int>(height - 24.0f), 40, 10, juce::Justification::bottomLeft, false);
-    g.drawText ("20kHz",    static_cast<int>(width - 42.0f), static_cast<int>(height - 24.0f), 40, 10, juce::Justification::bottomRight, false);
+    g.drawText ("0 dB",     4, 2, 40, 12, juce::Justification::topLeft, false);
+    g.drawText ("-120 dB",  4, static_cast<int>(height - 14.0f), 45, 12, juce::Justification::bottomLeft, false);
+    g.drawText ("20 Hz",    4, static_cast<int>(height - 28.0f), 40, 12, juce::Justification::bottomLeft, false);
+    g.drawText ("20kHz",    static_cast<int>(width - 46.0f), static_cast<int>(height - 28.0f), 40, 12, juce::Justification::bottomRight, false);
 
     // Grab current levels
     std::array<float, GateBandProcessor::kMaxBands> levelsDb;
@@ -356,12 +356,12 @@ void GraphicEqWidget::paint (juce::Graphics& g)
     // 6. Draw Tooltip text on top
     if (tooltipText.isNotEmpty())
     {
-        g.setFont (FontHelper::getFont (10.0f));
+        g.setFont (FontHelper::getFont (12.0f));
         g.setColour (kTextColor);
         
         // simple multi-line draw
         juce::StringArray lines = juce::StringArray::fromLines (tooltipText);
-        float th = 12.0f; // line height
+        float th = 14.0f; // line height
         float totalH = lines.size() * th;
         
         float txtY = tooltipPos.y - totalH;
