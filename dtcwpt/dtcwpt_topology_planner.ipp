@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <stdexcept>
 
 namespace dtcwpt {
 
@@ -40,6 +41,10 @@ void TopologyPlanner::buildTopology() {
     // Mark destination and all ancestors active
     for (const auto& path : destPaths_) {
         int idx = pathToIndex(path);
+        if (idx < 0 || static_cast<std::size_t>(idx) >= topology_limits::kPlannerArraySize) {
+            throw std::invalid_argument("Destination path exceeds supported topology depth");
+        }
+
         isActive_[static_cast<size_t>(idx)] = true;
 
         int node = idx;
@@ -51,10 +56,10 @@ void TopologyPlanner::buildTopology() {
 
     // Build analysisOrder: forward linear scan over node indices; include inner nodes only
     analysisOrder.clear();
-    for (size_t i = 1; i < MAX_SIZE; ++i) {
+    for (std::size_t i = 1; i < topology_limits::kPlannerArraySize; ++i) {
         if (isActive_[i]) {
-            size_t leftChild = i << 1;
-            if (leftChild < MAX_SIZE && isActive_[leftChild]) {
+            const std::size_t leftChild = i << 1;
+            if (leftChild < topology_limits::kPlannerArraySize && isActive_[leftChild]) {
                 analysisOrder.push_back(static_cast<int>(i));
             }
         }
@@ -64,10 +69,10 @@ void TopologyPlanner::buildTopology() {
     // Iterate from MAX_SIZE-1 down to 1
     // Include only nodes that have active leftChild (inner nodes)
     synthesisOrder.clear();
-    for (int i = static_cast<int>(MAX_SIZE) - 1; i > 0; --i) {
+    for (int i = static_cast<int>(topology_limits::kPlannerArraySize) - 1; i > 0; --i) {
         if (isActive_[static_cast<size_t>(i)]) {
-            size_t leftChild = static_cast<size_t>(i) << 1;  // i * 2
-            if (leftChild < MAX_SIZE && isActive_[leftChild]) {
+            const std::size_t leftChild = static_cast<std::size_t>(i) << 1;
+            if (leftChild < topology_limits::kPlannerArraySize && isActive_[leftChild]) {
                 synthesisOrder.push_back(i);
             }
         }

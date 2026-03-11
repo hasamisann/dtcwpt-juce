@@ -28,5 +28,6 @@ endif()
 juce_add_module(../dtcwpt)
 
 # Add plugin subdirectories
+add_subdirectory(../tests tests)
 add_subdirectory(dtcwpt-morph)
 add_subdirectory(dtcwpt-gate)

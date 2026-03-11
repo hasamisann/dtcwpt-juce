@@ -1,5 +1,7 @@
 #pragma once
 
+#include "dtcwpt_topology_limits.h"
+
 #include <cstddef>
 #include <string>
 #include <utility>
@@ -14,12 +16,12 @@ namespace dtcwpt {
  * node indices for analysis and synthesis processing. Uses 1-based indexing
  * where root = 1, left child = 2*i, right child = 2*i + 1.
  * 
- * Supports tree depths up to 8 (256 leaves at depth 8).
+ * Supports tree depths up to 12 (4096 leaves at depth 12).
  */
 class TopologyPlanner {
 public:
-    /// Maximum array size (2^10 = 1024)
-    static constexpr size_t MAX_SIZE = 1024;
+    /// Compatibility alias for supported node-addressable planner storage.
+    static constexpr std::size_t MAX_SIZE = topology_limits::kPlannerArraySize;
     
     /// Analysis processing order (parents before children)
     std::vector<int> analysisOrder;
@@ -32,6 +34,9 @@ public:
 
     /**
      * @brief Constructs a TopologyPlanner from destination path strings.
+     *
+     * Throws std::invalid_argument if any path implies a node index outside the
+     * supported depth-12 planner storage.
      */
     TopologyPlanner(const std::vector<std::string>& destPaths);
 

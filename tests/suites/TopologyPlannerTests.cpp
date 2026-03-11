@@ -26,6 +26,12 @@ public:
 
         beginTest("Generator validation");
         testGeneratorValidation();
+
+        beginTest("Depth-12 full tree accepted");
+        testDepth12FullTreeAccepted();
+
+        beginTest("Out-of-range path rejected");
+        testOutOfRangePathRejected();
     }
 
 private:
@@ -110,8 +116,8 @@ private:
     }
 
     void testGeneratorValidation() {
-        // Validate all generators produce valid leaf sets at depths 1-8
-        for (int depth = 1; depth <= 8; ++depth) {
+        // Validate all generators produce valid leaf sets at depths 1-12
+        for (int depth = 1; depth <= 12; ++depth) {
             // Full packet destinations
             auto fullPacket = TestUtils::getFullPacketDestinations(depth);
             expect(TestUtils::validateDestinations(fullPacket),
@@ -127,6 +133,33 @@ private:
             expect(TestUtils::validateDestinations(randomPacket),
                    "Random packet destinations should be valid at depth " + juce::String(depth));
         }
+    }
+
+    void testDepth12FullTreeAccepted() {
+        const auto destinations = TestUtils::getFullPacketDestinations(12);
+
+        dtcwpt::TopologyPlanner planner(destinations);
+        const auto [analysisOrder, synthesisOrder] = planner.getPlan();
+
+        expectEquals(planner.destinations.size(), static_cast<size_t>(4096),
+                     "Depth-12 full packet should have 4096 destinations");
+        expect(!analysisOrder.empty(), "Depth-12 analysis order should not be empty");
+        expect(!synthesisOrder.empty(), "Depth-12 synthesis order should not be empty");
+    }
+
+    void testOutOfRangePathRejected() {
+        const std::vector<std::string> invalidDestinations = {"LLLLLLLLLLLLL"};
+        bool threwInvalidArgument = false;
+
+        try {
+            dtcwpt::TopologyPlanner planner(invalidDestinations);
+        } catch (const std::invalid_argument&) {
+            threwInvalidArgument = true;
+        } catch (...) {
+        }
+
+        expect(threwInvalidArgument,
+               "Depth-13 path should be rejected before planner indexing");
     }
 };
 

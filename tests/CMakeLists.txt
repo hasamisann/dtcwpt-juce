@@ -10,11 +10,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # 1. System-installed JUCE (via find_package)
 # 2. Local submodule at ../JUCE
 # 3. Auto-download via FetchContent
-if(NOT DEFINED JUCE_FOUND)
+if(NOT DEFINED JUCE_FOUND AND NOT TARGET juce::juce_core)
     find_package(JUCE QUIET)
 endif()
 
-if(NOT JUCE_FOUND)
+if(NOT TARGET juce::juce_core AND NOT JUCE_FOUND)
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../JUCE/CMakeLists.txt)
         message(STATUS "Using JUCE from local submodule at ../JUCE")
         add_subdirectory(../JUCE JUCE_build)
@@ -34,12 +34,27 @@ else()
 endif()
 
 # Add dtcwpt module from parent directory
-juce_add_module(../dtcwpt)
+if(NOT TARGET dtcwpt)
+    juce_add_module(../dtcwpt)
+endif()
 
 # Test executable
 juce_add_console_app(dtcwpt_tests
     PRODUCT_NAME "DT-CWPT Tests"
 )
+
+set_target_properties(dtcwpt_tests PROPERTIES
+    INTERMEDIATE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/dtcwpt_tests.dir"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/tests/Release"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/tests/Debug"
+)
+
+if(TARGET dtcwpt_tests_rc_lib)
+    set_target_properties(dtcwpt_tests_rc_lib PROPERTIES
+        INTERMEDIATE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/dtcwpt_tests_rc_lib.dir"
+    )
+endif()
 
 target_sources(dtcwpt_tests
     PRIVATE
@@ -86,6 +101,10 @@ target_compile_definitions(dtcwpt_tests
         JucePlugin_ProducesMidiOutput=0
         JucePlugin_IsMidiEffect=0
 )
+
+if(MSVC)
+    target_compile_options(dtcwpt_tests PRIVATE /utf-8)
+endif()
 
 target_link_libraries(dtcwpt_tests
     PRIVATE

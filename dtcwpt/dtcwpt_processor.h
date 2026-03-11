@@ -3,6 +3,7 @@
 #include "dtcwpt_analysis_node.h"
 #include "dtcwpt_synthesis_node.h"
 #include "dtcwpt_delay_buffer.h"
+#include "dtcwpt_topology_limits.h"
 #include "dtcwpt_topology_planner.h"
 #include "dtcwpt_band_processor.h"
 #include "dtcwpt_filter_structs.h"
@@ -22,7 +23,7 @@ namespace dtcwpt {
  */
 struct TopologyConfig {
     std::vector<std::string> destinations;  ///< Destination path strings (e.g., "LLL", "LH")
-    int maxDepth = 8;                        ///< Maximum tree depth (up to 8)
+    int maxDepth = topology_limits::kSupportedMaxDepth;  ///< Maximum tree depth (up to 12)
 };
 
 /**
