@@ -64,7 +64,7 @@ dtcwpt::DTCWPTProcessor processor;
 // Configure topology
 dtcwpt::TopologyConfig config;
 config.destinations = {"LLL", "LLH", "LHL", "LHH", "HLL", "HLH", "HHL", "HHH"};
-config.maxDepth = 7;
+config.maxDepth = 12; // Optional: defaults to the supported limit
 
 // Initialize
 processor.prepareToPlay(sampleRate, maxBlockSize, config, numChannels);
@@ -168,20 +168,23 @@ The build system will automatically locate JUCE in the following order:
 
 ### Depth Limitation
 
-- Maximum tree depth: 8 (maximum 256 leaf bands at full depth)
+- Maximum supported tree depth: 12 (maximum 4096 leaf bands at full depth)
+- `TopologyConfig::maxDepth` defaults to that supported limit
+- `prepareToPlay()` rejects configurations where the deepest destination path (`actualDepth`) exceeds `maxDepth`
 
 ### Topology (Destinations) Rules
 
 `TopologyConfig::destinations` defines the leaf nodes of a binary wavelet packet tree.
 Each destination is a path string of `'L'` (low-pass) and `'H'` (high-pass) characters, where the string length equals the node depth.
 
-The destinations must form the complete leaf set of a valid binary tree where every node has either 0 or 2 children, and the tree height does not exceed `maxDepth + 1`.
+The destinations must form the complete leaf set of a valid binary tree where every node has either 0 or 2 children.
+`prepareToPlay()` computes `actualDepth` as the deepest destination path length and requires `actualDepth <= maxDepth`.
 
 In other words:
 
 - If a node is split (has children), both its L-child and H-child must exist in the tree
 - Leaf nodes (destinations) have no children
-- No path may be longer than `maxDepth` characters
+- No path may be longer than `maxDepth` characters at prepare time
 
 #### Path String Encoding
 
@@ -263,7 +266,7 @@ Invalid 3: Incomplete leaves -- Internal node L has children LL and LH, but only
 destinations = {"LL", "H"}    INVALID -- LH is missing (L must have both children)
 ```
 
-The production library performs only minimal validation on destinations (checks for non-empty list). Providing an invalid topology will result in undefined behavior. Validate your topology before passing it to `prepareToPlay()`.
+`prepareToPlay()` rejects empty destination lists, `maxDepth` values outside `1..12`, and any topology whose deepest destination path exceeds the configured `maxDepth`. Shape validation beyond those depth-related checks remains minimal, so invalid tree structures can still lead to undefined behavior. Validate your topology before passing it to `prepareToPlay()`.
 
 ### Double Precision
 
@@ -461,11 +464,11 @@ Feeds sidechain audio for parallel CWPT analysis. Must be called with the same s
 ```cpp
 struct TopologyConfig {
     std::vector<std::string> destinations;  // Path strings (e.g., "LLL", "LH")
-    int maxDepth = 8;                       // Maximum tree depth (1-8)
+    int maxDepth = 12;                      // Supported maximum tree depth by default (1-12)
 };
 ```
 
-Defines the wavelet packet tree structure. See [Topology (Destinations) Rules](#topology-destinations-rules) for validity constraints.
+Defines the wavelet packet tree structure. `maxDepth` defaults to the supported limit, and `prepareToPlay()` requires `actualDepth <= maxDepth`. See [Topology (Destinations) Rules](#topology-destinations-rules) for validity constraints.
 
 ---
 

@@ -64,7 +64,7 @@ dtcwpt::DTCWPTProcessor processor;
 // トポロジーを設定
 dtcwpt::TopologyConfig config;
 config.destinations = {"LLL", "LLH", "LHL", "LHH", "HLL", "HLH", "HHL", "HHH"};
-config.maxDepth = 7;
+config.maxDepth = 12; // 任意指定。既定値はサポート上限
 
 // 初期化
 processor.prepareToPlay(sampleRate, maxBlockSize, config, numChannels);
@@ -168,20 +168,23 @@ ctest --test-dir build -C Release --output-on-failure
 
 ### 深度制限
 
-- 最大ツリー深度: 8（フル深度で最大 256 リーフバンド）
+- サポートされる最大ツリー深度: 12（フル深度で最大 4096 リーフバンド）
+- `TopologyConfig::maxDepth` の既定値はこのサポート上限です
+- `prepareToPlay()` は最も深いデスティネーションパス長 (`actualDepth`) が `maxDepth` を超える構成を拒否します
 
 ### トポロジー（デスティネーション）ルール
 
 `TopologyConfig::destinations` は二分ウェーブレットパケットツリーのリーフノードを定義します。
 各デスティネーションは `'L'`（ローパス）と `'H'`（ハイパス）の文字で構成されるパス文字列で、文字列の長さはノードの深度に等しくなります。
 
-デスティネーションは、すべてのノードが 0 個または 2 個の子を持つ有効な二分木の完全なリーフセットを形成しなければならず、ツリーの高さは `maxDepth + 1` を超えてはなりません。
+デスティネーションは、すべてのノードが 0 個または 2 個の子を持つ有効な二分木の完全なリーフセットを形成しなければなりません。
+`prepareToPlay()` は最も深いデスティネーションのパス長を `actualDepth` として計算し、`actualDepth <= maxDepth` を要求します。
 
 つまり:
 
 - ノードが分割される（子を持つ）場合、L の子と H の子の両方がツリーに存在しなければなりません
 - リーフノード（デスティネーション）は子を持ちません
-- パスの長さは `maxDepth` 文字を超えてはなりません
+- `prepareToPlay()` 実行時に、パスの長さは `maxDepth` 文字を超えてはなりません
 
 #### パス文字列のエンコーディング
 
@@ -263,7 +266,7 @@ destinations = {"L", "LL", "LH", "H"}    無効 -- L はリーフと親の両方
 destinations = {"LL", "H"}    無効 -- LH が欠落（L は両方の子を持たなければならない）
 ```
 
-本番ライブラリはデスティネーションに対して最小限のバリデーション（空でないリストかどうかのチェック）のみを行います。無効なトポロジーを提供すると未定義動作になります。`prepareToPlay()` に渡す前にトポロジーを検証してください。
+`prepareToPlay()` は、空のデスティネーションリスト、`1..12` の範囲外の `maxDepth`、および最も深いデスティネーションパス長が設定済み `maxDepth` を超えるトポロジーを拒否します。これらの深度関連チェック以外の形状バリデーションは引き続き最小限のため、不正なツリー構造は未定義動作につながる可能性があります。`prepareToPlay()` に渡す前にトポロジーを検証してください。
 
 ### 倍精度浮動小数点
 
@@ -461,11 +464,11 @@ void processSidechain(juce::AudioBuffer<double>& sidechainBuffer);
 ```cpp
 struct TopologyConfig {
     std::vector<std::string> destinations;  // パス文字列（例: "LLL", "LH"）
-    int maxDepth = 8;                       // 最大ツリー深度（1-8）
+    int maxDepth = 12;                      // 既定でサポート上限の最大ツリー深度（1-12）
 };
 ```
 
-ウェーブレットパケットツリーの構造を定義します。有効性の制約については[トポロジー（デスティネーション）ルール](#トポロジーデスティネーションルール)を参照してください。
+ウェーブレットパケットツリーの構造を定義します。`maxDepth` の既定値はサポート上限であり、`prepareToPlay()` は `actualDepth <= maxDepth` を要求します。有効性の制約については[トポロジー（デスティネーション）ルール](#トポロジーデスティネーションルール)を参照してください。
 
 ---
 
