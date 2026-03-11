@@ -378,11 +378,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout MorphAudioProcessor::createP
         juce::NormalisableRange<float> (0.0f, 1.0f),
         0.7f));
 
-    // threshold: -60→0 dB, default -20 dB
+    // threshold: -200→0 dB, default -20 dB
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { ParamID::Threshold, 1 },
         "Threshold",
-        juce::NormalisableRange<float> (-60.0f, 0.0f),
+        juce::NormalisableRange<float> (-200.0f, 0.0f),
         -20.0f));
 
     // bypassLow: bool, default true

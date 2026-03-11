@@ -217,7 +217,7 @@ public:
      * Parameters:
      *  - magnitude:  NormalisableRange<float>(0, 1),    default 0.0
      *  - phase:      NormalisableRange<float>(0, 1),    default 0.7
-     *  - threshold:  NormalisableRange<float>(-60, 0),  default -20.0 [dB]
+     *  - threshold:  NormalisableRange<float>(-200, 0),  default -20.0 [dB]
      *  - bypassLow:  AudioParameterBool,                default true
      *  - bypassHigh: AudioParameterBool,                default false
      *
