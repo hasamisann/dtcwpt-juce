@@ -9,7 +9,7 @@
  *
  * Features (per SPEC.md US-006):
  *  - Display wavelet tree horizontally (depth left→right, frequency bottom→top).
- *  - Click leaf → split into L/H children (if depth < maxDepth 8).
+ *  - Click leaf -> split into L/H children while within the supported depth limit.
  *  - Click splitter node → merge descendants (collapse subtree to leaf).
  *  - Hover tooltip: path string, node type, frequency range in Hz.
  *  - Pan (drag) and zoom (scroll wheel/pinch).
@@ -22,6 +22,8 @@
 #include "FontHelper.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
+
+#include <dtcwpt/dtcwpt_topology_limits.h>
 
 #include <functional>
 #include <string>
@@ -219,7 +221,7 @@ private:
     int assignSlots (int nodeId, int nextSlot);
 
     /**
-     * @brief Splits a leaf node into L/H children (if depth < kMaxDepth).
+     * @brief Splits a leaf node into L/H children while within the supported depth limit.
      *
      * @param nodeId  ID of the leaf to split.
      */
@@ -281,7 +283,7 @@ private:
      * A DWT of depth N produces N+1 leaves: "H", "LH", "LLH", ..., "L...LH", "L...L".
      * The low-frequency band is recursively split at each level.
      *
-     * @param depth  Number of decomposition levels (1–8).
+     * @param depth  Number of decomposition levels up to the supported maximum depth.
      * @return       Vector of destination path strings in frequency order.
      */
     static std::vector<std::string> generateDWT (int depth);
@@ -294,7 +296,7 @@ private:
      * so the highest-frequency leaf receives slot 0 (top of canvas), matching
      * DWT display convention.
      *
-     * @param depth  Number of decomposition levels (1–8).
+     * @param depth  Number of decomposition levels up to the supported maximum depth.
      * @return       Vector of destination path strings in DFS order.
      */
     static std::vector<std::string> generateFullTree (int depth);
@@ -304,7 +306,7 @@ private:
     //==============================================================================
 
     /** Maximum allowed decomposition depth. */
-    static constexpr int kMaxDepth = 8;
+    static constexpr int kMaxDepth = dtcwpt::topology_limits::kSupportedMaxDepth;
 
     /** Node bounding box size (before zoom). */
     static constexpr float kNodeWidth  = 24.0f;
@@ -346,7 +348,7 @@ private:
     /** Preset type selector: "DWT" or "Full". */
     juce::ComboBox typeCombo_;
 
-    /** Preset depth selector: 1–8. */
+    /** Preset depth selector: 1 through the supported maximum depth. */
     juce::ComboBox depthCombo_;
 
     /** Callback for back-button click. */

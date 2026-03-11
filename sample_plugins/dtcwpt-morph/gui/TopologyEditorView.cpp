@@ -70,9 +70,9 @@ TopologyEditorView::TopologyEditorView (TopologyState& topoState, double sampleR
     typeCombo_.addItem ("Full", 2);
     typeCombo_.setTextWhenNothingSelected ("Type");
 
-    // Depth ComboBox: 1–8
+    // Depth ComboBox: 1 through the supported maximum depth
     depthCombo_.setLookAndFeel (&buttonLnf_);
-    for (int d = 1; d <= 8; ++d)
+    for (int d = 1; d <= kMaxDepth; ++d)
         depthCombo_.addItem (juce::String (d), d);
     depthCombo_.setTextWhenNothingSelected ("Depth");
 
