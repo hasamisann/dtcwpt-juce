@@ -120,7 +120,7 @@ void MorphBandProcessor::processAllBands (dtcwpt::BandData& data)
                 double effPhase = ph;
                 if (scM < thr && thr > 0.0)
                 {
-                    effPhase *= (scM * 0.9 / thr);
+                    effPhase *= (scM * 0.5 / thr);
                     effPhase  = std::clamp (effPhase, 0.0, ph);
                 }
 
