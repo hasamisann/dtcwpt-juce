@@ -12,6 +12,153 @@
 
 namespace dtcwpt {
 
+namespace {
+
+struct TopologyValidationResult {
+    int actualDepth = 0;
+    int configuredMaxDepth = 0;
+    int supportedMaxDepth = topology_limits::kSupportedMaxDepth;
+    int maxNodeIndex = 0;
+};
+
+struct PreparedProcessorState {
+    std::unique_ptr<TopologyPlanner> topology;
+    std::vector<int> analysisOrder;
+    std::vector<int> synthesisOrder;
+    std::vector<int> destinations;
+
+    std::vector<AnalysisNodeGroup> analysisNodesRe;
+    std::vector<AnalysisNodeGroup> analysisNodesIm;
+    std::vector<SynthesisNodeGroup> synthesisNodesRe;
+    std::vector<SynthesisNodeGroup> synthesisNodesIm;
+    std::vector<int> analysisNodeIds;
+    std::vector<int> synthesisNodeIds;
+    std::vector<std::vector<DelayBuffer>> delayBuffersRe;
+    std::vector<std::vector<DelayBuffer>> delayBuffersIm;
+
+    std::vector<double> analysisWorkBuffer;
+    std::vector<char> analysisActiveFlags;
+    std::vector<std::vector<std::vector<double>>> resultsRe;
+    std::vector<std::vector<std::vector<double>>> resultsIm;
+    std::vector<std::vector<size_t>> cursorsRe;
+    std::vector<std::vector<size_t>> cursorsIm;
+    std::vector<std::vector<double>> delayTempBuffer;
+    std::vector<double> inputBlockBuffer;
+    std::vector<double> delaySliceBuffer;
+
+    int maxDelay = 0;
+    size_t alignUnit = 1;
+    size_t internalBlockSize = 0;
+    std::vector<std::vector<double>> inputFifo;
+    std::vector<size_t> inputFifoFill;
+    std::vector<std::vector<double>> outputFifo;
+    std::vector<size_t> outputFifoFill;
+    std::vector<size_t> outputFifoRead;
+
+    std::vector<AnalysisNodeGroup> scAnalysisNodesRe;
+    std::vector<AnalysisNodeGroup> scAnalysisNodesIm;
+    std::vector<std::vector<DelayBuffer>> scDelayBuffersRe;
+    std::vector<std::vector<DelayBuffer>> scDelayBuffersIm;
+    std::vector<std::vector<std::vector<double>>> scResultsRe;
+    std::vector<std::vector<std::vector<double>>> scResultsIm;
+    std::vector<std::vector<size_t>> scCursorsRe;
+    std::vector<std::vector<size_t>> scCursorsIm;
+    std::vector<double> scAnalysisWorkBuffer;
+    std::vector<char> scAnalysisActiveFlags;
+    std::vector<std::vector<double>> scDelayTempBuffer;
+    std::vector<double> scInputBlockBuffer;
+    std::vector<double> scDelaySliceBuffer;
+    std::vector<std::vector<double>> scInputFifo;
+    std::vector<size_t> scInputFifoFill;
+    bool sidechainActive = false;
+    bool sidechainProcessedThisBlock = false;
+    int expectedSidechainSamples = 0;
+    std::vector<std::vector<double>> scAdjustedChannels;
+
+    std::vector<std::vector<double>> alignedInputBuffers;
+    std::vector<std::vector<double>> alignedSidechainBuffers;
+    juce::AudioBuffer<double> alignedOutputBuffer;
+    BandData cachedBandData;
+    std::vector<char> channelHasData;
+    std::vector<char> scChannelHasData;
+};
+
+int getNodeLevelFromId(int nodeId) {
+    if (nodeId <= 0) {
+        return -1;
+    }
+
+    int level = 0;
+    int temp = nodeId;
+    while (temp > 1) {
+        temp >>= 1;
+        ++level;
+    }
+
+    return level;
+}
+
+int pathToNodeIndex(const std::string& path) noexcept {
+    int index = 1;
+    for (const char c : path) {
+        index = (index << 1) | (c == 'H' ? 1 : 0);
+    }
+    return index;
+}
+
+TopologyValidationResult validateTopologyConfig(const TopologyConfig& config) {
+    if (config.destinations.empty()) {
+        throw std::invalid_argument("At least one destination required");
+    }
+
+    if (config.maxDepth < 1 || config.maxDepth > topology_limits::kSupportedMaxDepth) {
+        throw std::invalid_argument("maxDepth must be within supported bounds");
+    }
+
+    TopologyValidationResult result;
+    result.configuredMaxDepth = config.maxDepth;
+
+    for (const auto& path : config.destinations) {
+        result.actualDepth = std::max(result.actualDepth, static_cast<int>(path.size()));
+
+        const int nodeIndex = pathToNodeIndex(path);
+        result.maxNodeIndex = std::max(result.maxNodeIndex, nodeIndex);
+    }
+
+    if (result.actualDepth > result.configuredMaxDepth) {
+        throw std::invalid_argument("Topology depth exceeds configured maxDepth");
+    }
+
+    if (result.actualDepth > result.supportedMaxDepth) {
+        throw std::invalid_argument("Topology depth exceeds supported limit");
+    }
+
+    if (result.maxNodeIndex < 0 ||
+        static_cast<std::size_t>(result.maxNodeIndex) >= topology_limits::kPlannerArraySize) {
+        throw std::invalid_argument("Destination path exceeds supported topology depth");
+    }
+
+    return result;
+}
+
+int calculateMaxSamplesPerBand(const std::vector<int>& destinations, size_t internalBlockSize) {
+    size_t minDepth = static_cast<size_t>(getNodeLevelFromId(destinations.front()));
+
+    for (const int dest : destinations) {
+        const size_t depth = static_cast<size_t>(getNodeLevelFromId(dest));
+        minDepth = std::min(minDepth, depth);
+    }
+
+    int maxSamplesPerBand = static_cast<int>(internalBlockSize >> minDepth);
+    if (maxSamplesPerBand < 1) {
+        maxSamplesPerBand = 1;
+    }
+
+    return maxSamplesPerBand;
+}
+
+} // namespace
+
 DTCWPTProcessor::DTCWPTProcessor()
     : sampleRate_(0.0)
     , maxBlockSize_(0)
@@ -69,7 +216,6 @@ DTCWPTProcessor::DTCWPTProcessor()
 
 void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
                                     const TopologyConfig& config, int channelNum) {
-    // Validate parameters
     if (sampleRate <= 0.0) {
         throw std::invalid_argument("Sample rate must be positive");
     }
@@ -79,408 +225,340 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
     if (channelNum < 1 || channelNum > 2) {
         throw std::invalid_argument("Channel count must be 1 or 2");
     }
-    if (config.destinations.empty()) {
-        throw std::invalid_argument("At least one destination required");
+    const TopologyValidationResult validation = validateTopologyConfig(config);
+
+    PreparedProcessorState candidate;
+    candidate.topology = std::make_unique<TopologyPlanner>(config.destinations);
+    auto plan = candidate.topology->getPlan();
+    candidate.analysisOrder = std::move(plan.first);
+    candidate.synthesisOrder = std::move(plan.second);
+    candidate.destinations = candidate.topology->destinations;
+
+    candidate.analysisNodesRe.resize(static_cast<size_t>(channelNum));
+    candidate.analysisNodesIm.resize(static_cast<size_t>(channelNum));
+    candidate.synthesisNodesRe.resize(static_cast<size_t>(channelNum));
+    candidate.synthesisNodesIm.resize(static_cast<size_t>(channelNum));
+    candidate.delayBuffersRe.resize(static_cast<size_t>(channelNum));
+    candidate.delayBuffersIm.resize(static_cast<size_t>(channelNum));
+
+    for (int ch = 0; ch < channelNum; ++ch) {
+        AnalysisNode nodeRe(filters::CDF_RE, true);
+        AnalysisNode nodeIm(filters::CDF_IM, true);
+        candidate.analysisNodesRe[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeRe));
+        candidate.analysisNodesIm[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeIm));
+    }
+    candidate.analysisNodeIds.push_back(1);
+
+    for (const int idx : candidate.analysisOrder) {
+        if (idx == 1) {
+            continue;
+        }
+
+        candidate.analysisNodeIds.push_back(idx);
+
+        for (int ch = 0; ch < channelNum; ++ch) {
+            if (idx % 2 == 1) {
+                AnalysisNode nodeRe(filters::PACKET, false);
+                AnalysisNode nodeIm(filters::PACKET, false);
+                candidate.analysisNodesRe[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeRe));
+                candidate.analysisNodesIm[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeIm));
+            } else {
+                AnalysisNode nodeRe(filters::QSHIFT14_RE, false);
+                AnalysisNode nodeIm(filters::QSHIFT14_IM, false);
+                candidate.analysisNodesRe[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeRe));
+                candidate.analysisNodesIm[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeIm));
+            }
+        }
     }
 
-    // Store configuration
+    for (int ch = 0; ch < channelNum; ++ch) {
+        candidate.analysisNodesRe[static_cast<size_t>(ch)].ids = candidate.analysisNodeIds;
+        candidate.analysisNodesIm[static_cast<size_t>(ch)].ids = candidate.analysisNodeIds;
+    }
+
+    for (const int idx : candidate.synthesisOrder) {
+        candidate.synthesisNodeIds.push_back(idx);
+
+        for (int ch = 0; ch < channelNum; ++ch) {
+            if (idx == 1) {
+                SynthesisNode nodeRe(filters::CDF_RE, true);
+                SynthesisNode nodeIm(filters::CDF_IM, true);
+                candidate.synthesisNodesRe[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeRe));
+                candidate.synthesisNodesIm[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeIm));
+            } else if (idx % 2 == 1) {
+                SynthesisNode nodeRe(filters::PACKET, false);
+                SynthesisNode nodeIm(filters::PACKET, false);
+                candidate.synthesisNodesRe[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeRe));
+                candidate.synthesisNodesIm[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeIm));
+            } else {
+                SynthesisNode nodeRe(filters::QSHIFT14_RE, false);
+                SynthesisNode nodeIm(filters::QSHIFT14_IM, false);
+                candidate.synthesisNodesRe[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeRe));
+                candidate.synthesisNodesIm[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeIm));
+            }
+        }
+    }
+
+    for (int ch = 0; ch < channelNum; ++ch) {
+        candidate.synthesisNodesRe[static_cast<size_t>(ch)].ids = candidate.synthesisNodeIds;
+        candidate.synthesisNodesIm[static_cast<size_t>(ch)].ids = candidate.synthesisNodeIds;
+    }
+
+    std::vector<int> pathDelaysRe(candidate.destinations.size());
+    std::vector<int> pathDelaysIm(candidate.destinations.size());
+    for (size_t i = 0; i < candidate.destinations.size(); ++i) {
+        const int dest = candidate.destinations[i];
+        const int delayRe = calculateDelayForNode(dest, candidate.synthesisNodesRe[0]);
+        const int delayIm = calculateDelayForNode(dest, candidate.synthesisNodesIm[0]);
+        pathDelaysRe[i] = delayRe;
+        pathDelaysIm[i] = delayIm;
+        candidate.maxDelay = std::max(candidate.maxDelay, std::max(delayRe, delayIm));
+    }
+
+    for (size_t i = 0; i < candidate.destinations.size(); ++i) {
+        const int dest = candidate.destinations[i];
+        const int depth = getNodeLevel(dest);
+        const int rateFactor = 1 << depth;
+        const int diffReSubband = (candidate.maxDelay - pathDelaysRe[i]) / rateFactor;
+        const int diffImSubband = (candidate.maxDelay - pathDelaysIm[i]) / rateFactor;
+
+        for (int ch = 0; ch < channelNum; ++ch) {
+            candidate.delayBuffersRe[static_cast<size_t>(ch)].emplace_back(diffReSubband, maxBlockSize);
+            candidate.delayBuffersIm[static_cast<size_t>(ch)].emplace_back(diffImSubband, maxBlockSize);
+        }
+    }
+
+    candidate.alignUnit = static_cast<size_t>(1) << static_cast<size_t>(validation.actualDepth);
+    const size_t maxBlockSizeValue = static_cast<size_t>(maxBlockSize);
+    candidate.internalBlockSize = ((maxBlockSizeValue + candidate.alignUnit - 1) / candidate.alignUnit)
+        * candidate.alignUnit;
+
+    const size_t maxNodeId = TopologyPlanner::MAX_SIZE;
+
+    candidate.resultsRe.resize(static_cast<size_t>(channelNum));
+    candidate.resultsIm.resize(static_cast<size_t>(channelNum));
+    candidate.cursorsRe.resize(static_cast<size_t>(channelNum));
+    candidate.cursorsIm.resize(static_cast<size_t>(channelNum));
+    for (int ch = 0; ch < channelNum; ++ch) {
+        candidate.resultsRe[static_cast<size_t>(ch)].resize(maxNodeId);
+        candidate.resultsIm[static_cast<size_t>(ch)].resize(maxNodeId);
+        candidate.cursorsRe[static_cast<size_t>(ch)].assign(maxNodeId, 0);
+        candidate.cursorsIm[static_cast<size_t>(ch)].assign(maxNodeId, 0);
+
+        for (const int target : candidate.analysisOrder) {
+            const int depth = getNodeLevel(target);
+            size_t outputSize = candidate.internalBlockSize >> static_cast<size_t>(depth);
+            if (outputSize < 1) {
+                outputSize = 1;
+            }
+
+            candidate.resultsRe[static_cast<size_t>(ch)][static_cast<size_t>(target)].assign(outputSize, 0.0);
+            candidate.resultsIm[static_cast<size_t>(ch)][static_cast<size_t>(target)].assign(outputSize, 0.0);
+        }
+
+        for (const int target : candidate.destinations) {
+            const int depth = getNodeLevel(target);
+            size_t outputSize = candidate.internalBlockSize >> static_cast<size_t>(depth);
+            if (outputSize < 1) {
+                outputSize = 1;
+            }
+
+            candidate.resultsRe[static_cast<size_t>(ch)][static_cast<size_t>(target)].assign(outputSize, 0.0);
+            candidate.resultsIm[static_cast<size_t>(ch)][static_cast<size_t>(target)].assign(outputSize, 0.0);
+        }
+    }
+
+    candidate.analysisWorkBuffer.assign(maxNodeId, 0.0);
+    candidate.analysisActiveFlags.assign(maxNodeId, 0);
+    candidate.delayTempBuffer.resize(static_cast<size_t>(channelNum));
+    for (int ch = 0; ch < channelNum; ++ch) {
+        candidate.delayTempBuffer[static_cast<size_t>(ch)].resize(candidate.internalBlockSize);
+    }
+    candidate.inputBlockBuffer.resize(candidate.internalBlockSize);
+    candidate.delaySliceBuffer.resize(candidate.internalBlockSize);
+
+    const size_t inputFifoSize = candidate.internalBlockSize * 2;
+    const size_t outputFifoSize = static_cast<size_t>(candidate.maxDelay) + candidate.internalBlockSize * 4;
+    candidate.inputFifo.assign(static_cast<size_t>(channelNum), std::vector<double>(inputFifoSize, 0.0));
+    candidate.outputFifo.assign(static_cast<size_t>(channelNum), std::vector<double>(outputFifoSize, 0.0));
+    candidate.inputFifoFill.assign(static_cast<size_t>(channelNum), 0);
+    candidate.outputFifoFill.assign(static_cast<size_t>(channelNum), 0);
+    candidate.outputFifoRead.assign(static_cast<size_t>(channelNum), 0);
+    for (int ch = 0; ch < channelNum; ++ch) {
+        candidate.outputFifoFill[static_cast<size_t>(ch)] = candidate.internalBlockSize;
+    }
+
+    candidate.scAnalysisNodesRe.resize(static_cast<size_t>(channelNum));
+    candidate.scAnalysisNodesIm.resize(static_cast<size_t>(channelNum));
+    candidate.scDelayBuffersRe.resize(static_cast<size_t>(channelNum));
+    candidate.scDelayBuffersIm.resize(static_cast<size_t>(channelNum));
+    for (int ch = 0; ch < channelNum; ++ch) {
+        AnalysisNode nodeRe(filters::CDF_RE, true);
+        AnalysisNode nodeIm(filters::CDF_IM, true);
+        candidate.scAnalysisNodesRe[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeRe));
+        candidate.scAnalysisNodesIm[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeIm));
+    }
+
+    for (const int idx : candidate.analysisOrder) {
+        if (idx == 1) {
+            continue;
+        }
+
+        for (int ch = 0; ch < channelNum; ++ch) {
+            if (idx % 2 == 1) {
+                AnalysisNode nodeRe(filters::PACKET, false);
+                AnalysisNode nodeIm(filters::PACKET, false);
+                candidate.scAnalysisNodesRe[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeRe));
+                candidate.scAnalysisNodesIm[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeIm));
+            } else {
+                AnalysisNode nodeRe(filters::QSHIFT14_RE, false);
+                AnalysisNode nodeIm(filters::QSHIFT14_IM, false);
+                candidate.scAnalysisNodesRe[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeRe));
+                candidate.scAnalysisNodesIm[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeIm));
+            }
+        }
+    }
+
+    for (int ch = 0; ch < channelNum; ++ch) {
+        candidate.scAnalysisNodesRe[static_cast<size_t>(ch)].ids = candidate.analysisNodeIds;
+        candidate.scAnalysisNodesIm[static_cast<size_t>(ch)].ids = candidate.analysisNodeIds;
+    }
+
+    for (size_t i = 0; i < candidate.destinations.size(); ++i) {
+        const int dest = candidate.destinations[i];
+        const int depth = getNodeLevel(dest);
+        const int rateFactor = 1 << depth;
+        const int diffReSubband = (candidate.maxDelay - pathDelaysRe[i]) / rateFactor;
+        const int diffImSubband = (candidate.maxDelay - pathDelaysIm[i]) / rateFactor;
+
+        for (int ch = 0; ch < channelNum; ++ch) {
+            candidate.scDelayBuffersRe[static_cast<size_t>(ch)].emplace_back(diffReSubband, maxBlockSize);
+            candidate.scDelayBuffersIm[static_cast<size_t>(ch)].emplace_back(diffImSubband, maxBlockSize);
+        }
+    }
+
+    candidate.scResultsRe.resize(static_cast<size_t>(channelNum));
+    candidate.scResultsIm.resize(static_cast<size_t>(channelNum));
+    candidate.scCursorsRe.resize(static_cast<size_t>(channelNum));
+    candidate.scCursorsIm.resize(static_cast<size_t>(channelNum));
+    for (int ch = 0; ch < channelNum; ++ch) {
+        candidate.scResultsRe[static_cast<size_t>(ch)].resize(maxNodeId);
+        candidate.scResultsIm[static_cast<size_t>(ch)].resize(maxNodeId);
+        candidate.scCursorsRe[static_cast<size_t>(ch)].assign(maxNodeId, 0);
+        candidate.scCursorsIm[static_cast<size_t>(ch)].assign(maxNodeId, 0);
+
+        for (const int target : candidate.analysisOrder) {
+            const int depth = getNodeLevel(target);
+            size_t outputSize = candidate.internalBlockSize >> static_cast<size_t>(depth);
+            if (outputSize < 1) {
+                outputSize = 1;
+            }
+
+            candidate.scResultsRe[static_cast<size_t>(ch)][static_cast<size_t>(target)].assign(outputSize, 0.0);
+            candidate.scResultsIm[static_cast<size_t>(ch)][static_cast<size_t>(target)].assign(outputSize, 0.0);
+        }
+
+        for (const int target : candidate.destinations) {
+            const int depth = getNodeLevel(target);
+            size_t outputSize = candidate.internalBlockSize >> static_cast<size_t>(depth);
+            if (outputSize < 1) {
+                outputSize = 1;
+            }
+
+            candidate.scResultsRe[static_cast<size_t>(ch)][static_cast<size_t>(target)].assign(outputSize, 0.0);
+            candidate.scResultsIm[static_cast<size_t>(ch)][static_cast<size_t>(target)].assign(outputSize, 0.0);
+        }
+    }
+
+    candidate.scAnalysisWorkBuffer.assign(maxNodeId, 0.0);
+    candidate.scAnalysisActiveFlags.assign(maxNodeId, 0);
+    candidate.scDelayTempBuffer.resize(static_cast<size_t>(channelNum));
+    for (int ch = 0; ch < channelNum; ++ch) {
+        candidate.scDelayTempBuffer[static_cast<size_t>(ch)].resize(candidate.internalBlockSize);
+    }
+    candidate.scInputBlockBuffer.resize(candidate.internalBlockSize);
+    candidate.scDelaySliceBuffer.resize(candidate.internalBlockSize);
+    candidate.scInputFifo.assign(static_cast<size_t>(channelNum),
+                                 std::vector<double>(candidate.internalBlockSize * 2, 0.0));
+    candidate.scInputFifoFill.assign(static_cast<size_t>(channelNum), 0);
+
+    candidate.scAdjustedChannels.resize(static_cast<size_t>(channelNum));
+    candidate.alignedInputBuffers.resize(static_cast<size_t>(channelNum));
+    candidate.alignedSidechainBuffers.resize(static_cast<size_t>(channelNum));
+    for (int ch = 0; ch < channelNum; ++ch) {
+        candidate.scAdjustedChannels[static_cast<size_t>(ch)].resize(candidate.internalBlockSize);
+        candidate.alignedInputBuffers[static_cast<size_t>(ch)].resize(candidate.internalBlockSize);
+        candidate.alignedSidechainBuffers[static_cast<size_t>(ch)].resize(candidate.internalBlockSize);
+    }
+    candidate.alignedOutputBuffer.setSize(1, static_cast<int>(candidate.internalBlockSize));
+
+    candidate.cachedBandData.bands.resize(static_cast<size_t>(channelNum));
+    candidate.cachedBandData.sidechainBands.resize(static_cast<size_t>(channelNum));
+    for (int ch = 0; ch < channelNum; ++ch) {
+        candidate.cachedBandData.bands[static_cast<size_t>(ch)].resize(candidate.destinations.size());
+        candidate.cachedBandData.sidechainBands[static_cast<size_t>(ch)].resize(candidate.destinations.size());
+    }
+
+    candidate.channelHasData.resize(static_cast<size_t>(channelNum));
+    candidate.scChannelHasData.resize(static_cast<size_t>(channelNum));
+
     sampleRate_ = sampleRate;
     maxBlockSize_ = maxBlockSize;
     channelNum_ = channelNum;
-    // Create topology planner
-    topology_ = std::make_unique<TopologyPlanner>(config.destinations);
-    auto plan = topology_->getPlan();
-    analysisOrder_ = std::move(plan.first);
-    synthesisOrder_ = std::move(plan.second);
-    destinations_ = topology_->destinations;
-
-    // Clear all per-channel data
-    analysisNodesRe_.clear();
-    analysisNodesIm_.clear();
-    synthesisNodesRe_.clear();
-    synthesisNodesIm_.clear();
-    analysisNodeIds_.clear();
-    synthesisNodeIds_.clear();
-    delayBuffersRe_.clear();
-    delayBuffersIm_.clear();
-
-    // Resize per-channel data structures
-    analysisNodesRe_.resize(static_cast<size_t>(channelNum));
-    analysisNodesIm_.resize(static_cast<size_t>(channelNum));
-    synthesisNodesRe_.resize(static_cast<size_t>(channelNum));
-    synthesisNodesIm_.resize(static_cast<size_t>(channelNum));
-    delayBuffersRe_.resize(static_cast<size_t>(channelNum));
-    delayBuffersIm_.resize(static_cast<size_t>(channelNum));
-
-    // =========================================================================
-    // 1. Analysis Nodes Initialization
-    // =========================================================================
-
-    // Root node (idx=1)
-    for (int ch = 0; ch < channelNum; ++ch) {
-        AnalysisNode nodeRe(filters::CDF_RE, true);
-        AnalysisNode nodeIm(filters::CDF_IM, true);
-        analysisNodesRe_[ch].nodes.push_back(std::move(nodeRe));
-        analysisNodesIm_[ch].nodes.push_back(std::move(nodeIm));
-    }
-    analysisNodeIds_.push_back(1);
-
-    // Non-root analysis nodes
-    for (int idx : analysisOrder_) {
-        if (idx == 1) continue;
-        analysisNodeIds_.push_back(idx);
-
-        if (idx % 2 == 1) {
-            // Odd: PACKET filters (same for Re and Im)
-            for (int ch = 0; ch < channelNum; ++ch) {
-                AnalysisNode nodeRe(filters::PACKET, false);
-                AnalysisNode nodeIm(filters::PACKET, false);
-                analysisNodesRe_[ch].nodes.push_back(std::move(nodeRe));
-                analysisNodesIm_[ch].nodes.push_back(std::move(nodeIm));
-            }
-        } else {
-            // Even: QSHIFT14 (Re vs Im differ)
-            for (int ch = 0; ch < channelNum; ++ch) {
-                AnalysisNode nodeRe(filters::QSHIFT14_RE, false);
-                AnalysisNode nodeIm(filters::QSHIFT14_IM, false);
-                analysisNodesRe_[ch].nodes.push_back(std::move(nodeRe));
-                analysisNodesIm_[ch].nodes.push_back(std::move(nodeIm));
-            }
-        }
-    }
-
-    // Set IDs for each channel's node group
-    for (int ch = 0; ch < channelNum; ++ch) {
-        analysisNodesRe_[ch].ids = analysisNodeIds_;
-        analysisNodesIm_[ch].ids = analysisNodeIds_;
-    }
-
-    // =========================================================================
-    // 2. Synthesis Nodes Initialization
-    // =========================================================================
-    for (int idx : synthesisOrder_) {
-        synthesisNodeIds_.push_back(idx);
-
-        if (idx == 1) {
-            // Root: CDF synthesis filters
-            for (int ch = 0; ch < channelNum; ++ch) {
-                SynthesisNode nodeRe(filters::CDF_RE, true);
-                SynthesisNode nodeIm(filters::CDF_IM, true);
-                synthesisNodesRe_[ch].nodes.push_back(std::move(nodeRe));
-                synthesisNodesIm_[ch].nodes.push_back(std::move(nodeIm));
-            }
-        } else if (idx % 2 == 1) {
-            // Odd: PACKET synthesis filters
-            for (int ch = 0; ch < channelNum; ++ch) {
-                SynthesisNode nodeRe(filters::PACKET, false);
-                SynthesisNode nodeIm(filters::PACKET, false);
-                synthesisNodesRe_[ch].nodes.push_back(std::move(nodeRe));
-                synthesisNodesIm_[ch].nodes.push_back(std::move(nodeIm));
-            }
-        } else {
-            // Even: QSHIFT14 synthesis filters
-            for (int ch = 0; ch < channelNum; ++ch) {
-                SynthesisNode nodeRe(filters::QSHIFT14_RE, false);
-                SynthesisNode nodeIm(filters::QSHIFT14_IM, false);
-                synthesisNodesRe_[ch].nodes.push_back(std::move(nodeRe));
-                synthesisNodesIm_[ch].nodes.push_back(std::move(nodeIm));
-            }
-        }
-    }
-
-    for (int ch = 0; ch < channelNum; ++ch) {
-        synthesisNodesRe_[ch].ids = synthesisNodeIds_;
-        synthesisNodesIm_[ch].ids = synthesisNodeIds_;
-    }
-
-    // =========================================================================
-    // 3. Delay Buffer Initialization
-    // =========================================================================
-    maxDelay_ = 0;
-    std::vector<int> pathDelaysRe(destinations_.size());
-    std::vector<int> pathDelaysIm(destinations_.size());
-    
-    // Calculate max delay across all destination paths
-    for (size_t i = 0; i < destinations_.size(); ++i) {
-        int dest = destinations_[i];
-        int dRe = calculateDelayForNode(dest, synthesisNodesRe_[0]);
-        int dIm = calculateDelayForNode(dest, synthesisNodesIm_[0]);
-        pathDelaysRe[i] = dRe;
-        pathDelaysIm[i] = dIm;
-        maxDelay_ = std::max(maxDelay_, std::max(dRe, dIm));
-    }
-
-    // Create delay buffers per destination (in order)
-    for (size_t i = 0; i < destinations_.size(); ++i) {
-        int dest = destinations_[i];
-        int depth = getNodeLevel(dest);
-        int rateFactor = 1 << depth;
-
-        // Re
-        int diffReInput = maxDelay_ - pathDelaysRe[i];
-        int diffReSubband = diffReInput / rateFactor;
-
-        // Im
-        int diffImInput = maxDelay_ - pathDelaysIm[i];
-        int diffImSubband = diffImInput / rateFactor;
-
-        for (int ch = 0; ch < channelNum; ++ch) {
-            delayBuffersRe_[ch].emplace_back(diffReSubband, maxBlockSize);
-            delayBuffersIm_[ch].emplace_back(diffImSubband, maxBlockSize);
-        }
-    }
-
-    // =========================================================================
-    // 4. Result Buffers Initialization (per-channel)
-    // =========================================================================
-    // Compute internalBlockSize_ here (before result buffer allocation) so that
-    // buffers are large enough for processChannelAligned, which processes
-    // internalBlockSize_ samples, not maxBlockSize samples.
-    {
-        size_t maxDepth = 0;
-        for (int dest : destinations_)
-            maxDepth = std::max(maxDepth, static_cast<size_t>(getNodeLevel(dest)));
-        alignUnit_ = static_cast<size_t>(1) << maxDepth;
-        const size_t n = static_cast<size_t>(maxBlockSize);
-        internalBlockSize_ = ((n + alignUnit_ - 1) / alignUnit_) * alignUnit_;
-    }
-
-    const size_t MAX_NODE_ID = TopologyPlanner::MAX_SIZE;
-    
-    // Per-channel result buffers: [channel][nodeId]
-    resultsRe_.clear();
-    resultsIm_.clear();
-    resultsRe_.resize(static_cast<size_t>(channelNum));
-    resultsIm_.resize(static_cast<size_t>(channelNum));
-    cursorsRe_.resize(static_cast<size_t>(channelNum));
-    cursorsIm_.resize(static_cast<size_t>(channelNum));
-    
-    for (int ch = 0; ch < channelNum; ++ch) {
-        resultsRe_[ch].resize(MAX_NODE_ID);
-        resultsIm_[ch].resize(MAX_NODE_ID);
-        cursorsRe_[ch].assign(MAX_NODE_ID, 0);
-        cursorsIm_[ch].assign(MAX_NODE_ID, 0);
-        
-        // Allocate output size based on internalBlockSize_ (not maxBlockSize)
-        for (int target : analysisOrder_) {
-            int depth = getNodeLevel(target);
-            size_t outputSize = internalBlockSize_ >> static_cast<size_t>(depth);
-            if (outputSize < 1) outputSize = 1;
-            resultsRe_[ch][target].assign(outputSize, 0.0);
-            resultsIm_[ch][target].assign(outputSize, 0.0);
-        }
-        for (int target : destinations_) {
-            int depth = getNodeLevel(target);
-            size_t outputSize = internalBlockSize_ >> static_cast<size_t>(depth);
-            if (outputSize < 1) outputSize = 1;
-            resultsRe_[ch][target].assign(outputSize, 0.0);
-            resultsIm_[ch][target].assign(outputSize, 0.0);
-        }
-    }
-
-    // Note: synthesisOrder_ loop removed — analysisOrder == synthesisOrder (same set).
-
-    // =========================================================================
-    // 5. Work Buffers
-    // =========================================================================
-    analysisWorkBuffer_.assign(MAX_NODE_ID, 0.0);
-    analysisActiveFlags_.assign(MAX_NODE_ID, 0);
-
-    // Per-channel delay temp buffers - pre-allocate to max size for RT safety
-    delayTempBuffer_.clear();
-    delayTempBuffer_.resize(static_cast<size_t>(channelNum));
-    for (int ch = 0; ch < channelNum; ++ch) {
-        delayTempBuffer_[ch].resize(static_cast<size_t>(internalBlockSize_));
-    }
-    inputBlockBuffer_.resize(static_cast<size_t>(internalBlockSize_));
-    delaySliceBuffer_.resize(static_cast<size_t>(internalBlockSize_));
-
-    // =========================================================================
-    // 6. Block alignment ring buffers
-    // =========================================================================
-
-    // Allocate FIFOs.
-    // inputFifo : internalBlockSize_ * 2 is sufficient (1 block of headroom).
-    // outputFifo: must hold up to (maxDelay_ + 2 * internalBlockSize_) output samples,
-    //             because the host may feed up to getLatency() = maxDelay_ + internalBlockSize_
-    //             additional zero-pad samples after the signal ends, triggering up to
-    //             ceil(maxDelay_ / internalBlockSize_) + 1 extra processing blocks.
-    {
-        const size_t inputFifoSize  = internalBlockSize_ * 2;
-        const size_t outputFifoSize = static_cast<size_t>(maxDelay_) + internalBlockSize_ * 4;
-        inputFifo_.assign(static_cast<size_t>(channelNum),
-                          std::vector<double>(inputFifoSize, 0.0));
-        outputFifo_.assign(static_cast<size_t>(channelNum),
-                           std::vector<double>(outputFifoSize, 0.0));
-        inputFifoFill_.assign(static_cast<size_t>(channelNum), 0);
-        outputFifoFill_.assign(static_cast<size_t>(channelNum), 0);
-        outputFifoRead_.assign(static_cast<size_t>(channelNum), 0);
-
-        // Pre-fill output FIFO with internalBlockSize_ zeros so that the startup
-        // silence period is exactly internalBlockSize_ samples regardless of the
-        // host block size.  getLatency() = maxDelay_ + internalBlockSize_ then
-        // precisely represents the end-to-end latency.
-        for (int ch = 0; ch < channelNum; ++ch) {
-            outputFifoFill_[static_cast<size_t>(ch)] = internalBlockSize_;
-        }
-    }
-
-    // =========================================================================
-    // 7. Sidechain infrastructure (pre-allocated, mirrors main input path)
-    // =========================================================================
-
-    // Clear and resize per-channel sidechain data structures
-    scAnalysisNodesRe_.clear();
-    scAnalysisNodesIm_.clear();
-    scAnalysisNodesRe_.resize(static_cast<size_t>(channelNum));
-    scAnalysisNodesIm_.resize(static_cast<size_t>(channelNum));
-    scDelayBuffersRe_.clear();
-    scDelayBuffersIm_.clear();
-    scDelayBuffersRe_.resize(static_cast<size_t>(channelNum));
-    scDelayBuffersIm_.resize(static_cast<size_t>(channelNum));
-
-    // Initialize sidechain analysis nodes (same as main)
-    // Root node (idx=1)
-    for (int ch = 0; ch < channelNum; ++ch) {
-        AnalysisNode nodeRe(filters::CDF_RE, true);
-        AnalysisNode nodeIm(filters::CDF_IM, true);
-        scAnalysisNodesRe_[ch].nodes.push_back(std::move(nodeRe));
-        scAnalysisNodesIm_[ch].nodes.push_back(std::move(nodeIm));
-    }
-    scAnalysisNodesRe_[0].ids.push_back(1);
-    scAnalysisNodesIm_[0].ids.push_back(1);
-
-    // Non-root analysis nodes (same logic as main)
-    for (int idx : analysisOrder_) {
-        if (idx == 1) continue;
-
-        if (idx % 2 == 1) {
-            // Odd: PACKET filters
-            for (int ch = 0; ch < channelNum; ++ch) {
-                AnalysisNode nodeRe(filters::PACKET, false);
-                AnalysisNode nodeIm(filters::PACKET, false);
-                scAnalysisNodesRe_[ch].nodes.push_back(std::move(nodeRe));
-                scAnalysisNodesIm_[ch].nodes.push_back(std::move(nodeIm));
-            }
-        } else {
-            // Even: QSHIFT14 (Re vs Im differ)
-            for (int ch = 0; ch < channelNum; ++ch) {
-                AnalysisNode nodeRe(filters::QSHIFT14_RE, false);
-                AnalysisNode nodeIm(filters::QSHIFT14_IM, false);
-                scAnalysisNodesRe_[ch].nodes.push_back(std::move(nodeRe));
-                scAnalysisNodesIm_[ch].nodes.push_back(std::move(nodeIm));
-            }
-        }
-    }
-
-    // Set IDs for each channel's sidechain node group
-    for (int ch = 0; ch < channelNum; ++ch) {
-        scAnalysisNodesRe_[ch].ids = analysisNodeIds_;
-        scAnalysisNodesIm_[ch].ids = analysisNodeIds_;
-    }
-
-    // Initialize sidechain delay buffers (same delays as main)
-    for (size_t i = 0; i < destinations_.size(); ++i) {
-        int dest = destinations_[i];
-        int depth = getNodeLevel(dest);
-        int rateFactor = 1 << depth;
-
-        int diffReInput = maxDelay_ - pathDelaysRe[i];
-        int diffReSubband = diffReInput / rateFactor;
-        int diffImInput = maxDelay_ - pathDelaysIm[i];
-        int diffImSubband = diffImInput / rateFactor;
-
-        for (int ch = 0; ch < channelNum; ++ch) {
-            scDelayBuffersRe_[ch].emplace_back(diffReSubband, maxBlockSize);
-            scDelayBuffersIm_[ch].emplace_back(diffImSubband, maxBlockSize);
-        }
-    }
-
-    // Initialize per-channel sidechain result buffers [channel][nodeId]
-    scResultsRe_.clear();
-    scResultsIm_.clear();
-    scResultsRe_.resize(static_cast<size_t>(channelNum));
-    scResultsIm_.resize(static_cast<size_t>(channelNum));
-    scCursorsRe_.resize(static_cast<size_t>(channelNum));
-    scCursorsIm_.resize(static_cast<size_t>(channelNum));
-
-    for (int ch = 0; ch < channelNum; ++ch) {
-        scResultsRe_[ch].resize(MAX_NODE_ID);
-        scResultsIm_[ch].resize(MAX_NODE_ID);
-        scCursorsRe_[ch].assign(MAX_NODE_ID, 0);
-        scCursorsIm_[ch].assign(MAX_NODE_ID, 0);
-        
-        for (int target : analysisOrder_) {
-            int depth = getNodeLevel(target);
-            size_t outputSize = internalBlockSize_ >> static_cast<size_t>(depth);
-            if (outputSize < 1) outputSize = 1;
-            scResultsRe_[ch][target].assign(outputSize, 0.0);
-            scResultsIm_[ch][target].assign(outputSize, 0.0);
-        }
-        for (int target : destinations_) {
-            int depth = getNodeLevel(target);
-            size_t outputSize = internalBlockSize_ >> static_cast<size_t>(depth);
-            if (outputSize < 1) outputSize = 1;
-            scResultsRe_[ch][target].assign(outputSize, 0.0);
-            scResultsIm_[ch][target].assign(outputSize, 0.0);
-        }
-    }
-
-    // Initialize sidechain work buffers
-    scAnalysisWorkBuffer_.assign(MAX_NODE_ID, 0.0);
-    scAnalysisActiveFlags_.assign(MAX_NODE_ID, 0);
-    scDelayTempBuffer_.clear();
-    scDelayTempBuffer_.resize(static_cast<size_t>(channelNum));
-    for (int ch = 0; ch < channelNum; ++ch) {
-        scDelayTempBuffer_[ch].resize(static_cast<size_t>(internalBlockSize_));
-    }
-    scInputBlockBuffer_.resize(static_cast<size_t>(internalBlockSize_));
-    scDelaySliceBuffer_.resize(static_cast<size_t>(internalBlockSize_));
-
-    // Initialize sidechain FIFO
-    scInputFifo_.assign(static_cast<size_t>(channelNum),
-                        std::vector<double>(internalBlockSize_ * 2, 0.0));
-    scInputFifoFill_.assign(static_cast<size_t>(channelNum), 0);
-
-    // Reset sidechain state
-    sidechainActive_ = false;
-    sidechainProcessedThisBlock_ = false;
-    expectedSidechainSamples_ = 0;
-
-    // =========================================================================
-    // 8. Pre-allocate sidechain adjusted channels buffer
-    // =========================================================================
-    scAdjustedChannels_.resize(static_cast<size_t>(channelNum_));
-    for (int ch = 0; ch < channelNum_; ++ch) {
-        scAdjustedChannels_[ch].resize(static_cast<size_t>(internalBlockSize_));
-    }
-
-    // =========================================================================
-    // 9. Pre-allocate processBlock internal buffers
-    // =========================================================================
-    alignedInputBuffers_.resize(static_cast<size_t>(channelNum_));
-    alignedSidechainBuffers_.resize(static_cast<size_t>(channelNum_));
-    for (int i = 0; i < channelNum_; ++i) {
-        alignedInputBuffers_[i].resize(internalBlockSize_);
-        alignedSidechainBuffers_[i].resize(internalBlockSize_);
-    }
-    alignedOutputBuffer_.setSize(1, static_cast<int>(internalBlockSize_));
-
-    // =========================================================================
-    // 10. Pre-allocate BandData buffer
-    // =========================================================================
-    cachedBandData_.bands.resize(static_cast<size_t>(channelNum_));
-    cachedBandData_.sidechainBands.resize(static_cast<size_t>(channelNum_));
-    for (int i = 0; i < channelNum_; ++i) {
-        cachedBandData_.bands[i].resize(destinations_.size());
-        cachedBandData_.sidechainBands[i].resize(destinations_.size());
-    }
-
-    // =========================================================================
-    // 11. Pre-allocate channel tracking buffer (RT-safe)
-    // =========================================================================
-    channelHasData_.resize(static_cast<size_t>(channelNum_));
-    scChannelHasData_.resize(static_cast<size_t>(channelNum_));
+    topology_ = std::move(candidate.topology);
+    analysisOrder_ = std::move(candidate.analysisOrder);
+    synthesisOrder_ = std::move(candidate.synthesisOrder);
+    destinations_ = std::move(candidate.destinations);
+    analysisNodesRe_ = std::move(candidate.analysisNodesRe);
+    analysisNodesIm_ = std::move(candidate.analysisNodesIm);
+    synthesisNodesRe_ = std::move(candidate.synthesisNodesRe);
+    synthesisNodesIm_ = std::move(candidate.synthesisNodesIm);
+    analysisNodeIds_ = std::move(candidate.analysisNodeIds);
+    synthesisNodeIds_ = std::move(candidate.synthesisNodeIds);
+    delayBuffersRe_ = std::move(candidate.delayBuffersRe);
+    delayBuffersIm_ = std::move(candidate.delayBuffersIm);
+    analysisWorkBuffer_ = std::move(candidate.analysisWorkBuffer);
+    analysisActiveFlags_ = std::move(candidate.analysisActiveFlags);
+    resultsRe_ = std::move(candidate.resultsRe);
+    resultsIm_ = std::move(candidate.resultsIm);
+    cursorsRe_ = std::move(candidate.cursorsRe);
+    cursorsIm_ = std::move(candidate.cursorsIm);
+    delayTempBuffer_ = std::move(candidate.delayTempBuffer);
+    inputBlockBuffer_ = std::move(candidate.inputBlockBuffer);
+    delaySliceBuffer_ = std::move(candidate.delaySliceBuffer);
+    maxDelay_ = candidate.maxDelay;
+    alignUnit_ = candidate.alignUnit;
+    internalBlockSize_ = candidate.internalBlockSize;
+    inputFifo_ = std::move(candidate.inputFifo);
+    inputFifoFill_ = std::move(candidate.inputFifoFill);
+    outputFifo_ = std::move(candidate.outputFifo);
+    outputFifoFill_ = std::move(candidate.outputFifoFill);
+    outputFifoRead_ = std::move(candidate.outputFifoRead);
+    scAnalysisNodesRe_ = std::move(candidate.scAnalysisNodesRe);
+    scAnalysisNodesIm_ = std::move(candidate.scAnalysisNodesIm);
+    scDelayBuffersRe_ = std::move(candidate.scDelayBuffersRe);
+    scDelayBuffersIm_ = std::move(candidate.scDelayBuffersIm);
+    scResultsRe_ = std::move(candidate.scResultsRe);
+    scResultsIm_ = std::move(candidate.scResultsIm);
+    scCursorsRe_ = std::move(candidate.scCursorsRe);
+    scCursorsIm_ = std::move(candidate.scCursorsIm);
+    scAnalysisWorkBuffer_ = std::move(candidate.scAnalysisWorkBuffer);
+    scAnalysisActiveFlags_ = std::move(candidate.scAnalysisActiveFlags);
+    scDelayTempBuffer_ = std::move(candidate.scDelayTempBuffer);
+    scInputBlockBuffer_ = std::move(candidate.scInputBlockBuffer);
+    scDelaySliceBuffer_ = std::move(candidate.scDelaySliceBuffer);
+    scInputFifo_ = std::move(candidate.scInputFifo);
+    scInputFifoFill_ = std::move(candidate.scInputFifoFill);
+    sidechainActive_ = candidate.sidechainActive;
+    sidechainProcessedThisBlock_ = candidate.sidechainProcessedThisBlock;
+    expectedSidechainSamples_ = candidate.expectedSidechainSamples;
+    scAdjustedChannels_ = std::move(candidate.scAdjustedChannels);
+    alignedInputBuffers_ = std::move(candidate.alignedInputBuffers);
+    alignedSidechainBuffers_ = std::move(candidate.alignedSidechainBuffers);
+    alignedOutputBuffer_ = std::move(candidate.alignedOutputBuffer);
+    cachedBandData_ = std::move(candidate.cachedBandData);
+    channelHasData_ = std::move(candidate.channelHasData);
+    scChannelHasData_ = std::move(candidate.scChannelHasData);
 
     // Reset band processor if exists (lifecycle hook)
     if (bandProcessor_) {
@@ -492,14 +570,7 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
 
     // If BandProcessor was set before prepareToPlay(), prepare it now
     if (bandProcessor_) {
-        size_t minDepth = static_cast<size_t>(getNodeLevel(destinations_[0]));
-        for (int dest : destinations_) {
-            const size_t d = static_cast<size_t>(getNodeLevel(dest));
-            if (d < minDepth) minDepth = d;
-        }
-        int maxSamplesPerBand = static_cast<int>(internalBlockSize_ >> minDepth);
-        if (maxSamplesPerBand < 1) maxSamplesPerBand = 1;
-
+        const int maxSamplesPerBand = calculateMaxSamplesPerBand(destinations_, internalBlockSize_);
         bandProcessor_->prepare(sampleRate_, maxSamplesPerBand,
                                 static_cast<int>(destinations_.size()), channelNum_);
     }
@@ -515,16 +586,7 @@ void DTCWPTProcessor::setBandProcessor(std::unique_ptr<BandProcessor> processor)
 
     // If already prepared, prepare the processor immediately
     if (prepared_ && bandProcessor_) {
-        // Compute maxSamplesPerBand from internalBlockSize_ and MIN depth.
-        // See comment above (prepareToPlay) for why minDepth is correct here.
-        size_t minDepth = static_cast<size_t>(getNodeLevel(destinations_[0]));
-        for (int dest : destinations_) {
-            const size_t d = static_cast<size_t>(getNodeLevel(dest));
-            if (d < minDepth) minDepth = d;
-        }
-        int maxSamplesPerBand = static_cast<int>(internalBlockSize_ >> minDepth);
-        if (maxSamplesPerBand < 1) maxSamplesPerBand = 1;
-
+        const int maxSamplesPerBand = calculateMaxSamplesPerBand(destinations_, internalBlockSize_);
         bandProcessor_->prepare(sampleRate_, maxSamplesPerBand,
                                 static_cast<int>(destinations_.size()), channelNum_);
     }

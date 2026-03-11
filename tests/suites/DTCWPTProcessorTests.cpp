@@ -10,6 +10,8 @@
 #include <juce_core/juce_core.h>
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <cmath>
+#include <functional>
+#include <stdexcept>
 #include <vector>
 #include <memory>
 
@@ -51,14 +53,93 @@ public:
 
         beginTest("Random topology depth-8 reconstruction");
         testRandomTopologyDepth8();
+
+        beginTest("Full depth-12 reconstruction");
+        testFullDepth12();
+
+        beginTest("Configured maxDepth boundaries");
+        testConfiguredMaxDepthBoundaries();
+
+        beginTest("actualDepth greater than maxDepth rejected");
+        testActualDepthGreaterThanMaxDepthRejected();
+
+        beginTest("Failed re-prepare preserves prior state");
+        testFailedRepreparePreservesPriorState();
     }
 
 private:
-    dtcwpt::TopologyConfig createConfig(const std::vector<std::string>& dests, int maxDepth = 8) {
+    static constexpr int kDefaultMaxDepth = dtcwpt::topology_limits::kSupportedMaxDepth;
+
+    dtcwpt::TopologyConfig createConfig(const std::vector<std::string>& dests, int maxDepth = kDefaultMaxDepth) {
         dtcwpt::TopologyConfig config;
         config.destinations = dests;
         config.maxDepth = maxDepth;
         return config;
+    }
+
+    std::vector<double> processSignal(dtcwpt::DTCWPTProcessor& processor,
+                                      const std::vector<double>& input,
+                                      int latency,
+                                      int blockSize = 512) {
+        std::vector<double> output;
+        output.reserve(input.size() + static_cast<size_t>(latency + blockSize));
+
+        int cursor = 0;
+        while (cursor < static_cast<int>(input.size())) {
+            const int currentBlockSize = std::min(blockSize, static_cast<int>(input.size()) - cursor);
+
+            juce::AudioBuffer<double> buffer(1, currentBlockSize);
+            auto* data = buffer.getWritePointer(0);
+
+            for (int i = 0; i < currentBlockSize; ++i) {
+                data[i] = input[static_cast<size_t>(cursor + i)];
+            }
+
+            processor.processBlock(buffer);
+
+            const auto* outData = buffer.getReadPointer(0);
+            for (int i = 0; i < currentBlockSize; ++i) {
+                output.push_back(outData[i]);
+            }
+
+            cursor += currentBlockSize;
+        }
+
+        for (int i = 0; i < latency; i += blockSize) {
+            const int currentBlockSize = std::min(blockSize, latency - i);
+            juce::AudioBuffer<double> buffer(1, currentBlockSize);
+            buffer.clear();
+            processor.processBlock(buffer);
+
+            const auto* outData = buffer.getReadPointer(0);
+            for (int j = 0; j < currentBlockSize; ++j) {
+                output.push_back(outData[j]);
+            }
+        }
+
+        return output;
+    }
+
+    void expectReconstructionBelowThreshold(const std::vector<double>& input,
+                                            const std::vector<double>& output,
+                                            int latency,
+                                            const juce::String& label) {
+        const double mseDb = TestUtils::calculateMSEdB(input, output, latency);
+        expect(mseDb < TestUtils::TestConfig::MSE_THRESHOLD_DB,
+               label + " should be <= -80 dB, got " + juce::String(mseDb) + " dB");
+    }
+
+    void expectInvalidArgument(const std::function<void()>& action, const juce::String& message) {
+        bool threwInvalidArgument = false;
+
+        try {
+            action();
+        } catch (const std::invalid_argument&) {
+            threwInvalidArgument = true;
+        } catch (...) {
+        }
+
+        expect(threwInvalidArgument, message);
     }
 
     void testPassthroughReconstruction() {
@@ -339,6 +420,68 @@ private:
         
         expect(mseDb < TestUtils::TestConfig::MSE_THRESHOLD_DB,
                "Random depth-8 MSE should be <= -80 dB, got " + juce::String(mseDb) + " dB");
+    }
+
+    void testFullDepth12() {
+        auto config = createConfig(TestUtils::getFullPacketDestinations(12), kDefaultMaxDepth);
+
+        dtcwpt::DTCWPTProcessor processor;
+        processor.setBandProcessor(std::make_unique<PassthroughProcessor>());
+        processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 512, config, 1);
+
+        const int latency = processor.getLatency();
+        const auto input = TestUtils::generateNoise(0.5, TestUtils::TestConfig::SAMPLE_RATE, 99U);
+        const auto output = processSignal(processor, input, latency);
+
+        expectReconstructionBelowThreshold(input, output, latency, "Full depth-12 MSE");
+    }
+
+    void testConfiguredMaxDepthBoundaries() {
+        dtcwpt::DTCWPTProcessor processor;
+        const auto destinations = TestUtils::getFullPacketDestinations(4);
+
+        expectInvalidArgument([&]() {
+            processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 512,
+                                    createConfig(destinations, 0), 1);
+        }, "maxDepth=0 should throw std::invalid_argument");
+
+        expectInvalidArgument([&]() {
+            processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 512,
+                                    createConfig(destinations, 13), 1);
+        }, "maxDepth=13 should throw std::invalid_argument");
+    }
+
+    void testActualDepthGreaterThanMaxDepthRejected() {
+        dtcwpt::DTCWPTProcessor processor;
+        const auto destinations = TestUtils::getFullPacketDestinations(6);
+
+        expectInvalidArgument([&]() {
+            processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 512,
+                                    createConfig(destinations, 5), 1);
+        }, "actualDepth > maxDepth should throw std::invalid_argument");
+    }
+
+    void testFailedRepreparePreservesPriorState() {
+        dtcwpt::DTCWPTProcessor processor;
+        processor.setBandProcessor(std::make_unique<PassthroughProcessor>());
+
+        const auto validConfig = createConfig(TestUtils::getFullPacketDestinations(4), 4);
+        processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 512, validConfig, 1);
+
+        const int latencyBeforeFailure = processor.getLatency();
+        const auto input = TestUtils::generateNoise(0.25, TestUtils::TestConfig::SAMPLE_RATE, 123U);
+
+        expectInvalidArgument([&]() {
+            processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 512,
+                                    createConfig(TestUtils::getFullPacketDestinations(6), 5), 1);
+        }, "Rejected re-prepare should throw std::invalid_argument");
+
+        expectEquals(processor.getLatency(), latencyBeforeFailure,
+                     "Latency should remain unchanged after failed re-prepare");
+
+        const auto output = processSignal(processor, input, latencyBeforeFailure);
+        expectReconstructionBelowThreshold(input, output, latencyBeforeFailure,
+                                           "Reconstruction after failed re-prepare");
     }
 };
 

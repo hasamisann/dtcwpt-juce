@@ -142,7 +142,7 @@ private:
     int maxDelay_;
 
     // --- Block alignment ring buffer ---
-    /// Alignment unit = 2^maxDepth; internal block must be a multiple of this.
+    /// Alignment unit = 2^actualDepth; internal block must be a multiple of this.
     size_t alignUnit_;
     /// Internal processing block size = ceil(maxBlockSize / alignUnit) * alignUnit
     size_t internalBlockSize_;
