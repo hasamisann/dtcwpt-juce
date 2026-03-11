@@ -7,7 +7,6 @@
  */
 
 #include "MorphAudioProcessor.h"
-#include "gui/MorphEditor.h"
 #include "../common/TopologyPersistence.h"
 
 #include <juce_core/juce_core.h>
@@ -21,6 +20,16 @@ namespace
     /** Default topology: 6-level DWT destination strings. */
     const std::vector<std::string> kDefaultTopology =
         { "H", "LH", "LLH", "LLLH", "LLLLH", "LLLLLH", "LLLLLL" };
+
+    int getTopologyDepth (const std::vector<std::string>& destinations) noexcept
+    {
+        int depth = 0;
+
+        for (const auto& destination : destinations)
+            depth = std::max (depth, static_cast<int> (destination.size()));
+
+        return depth;
+    }
 
 } // namespace
 
@@ -87,39 +96,45 @@ void MorphAudioProcessor::releaseResources()
 
 void MorphAudioProcessor::rebuildDTCWPT()
 {
-    // Build topology config from current destinations
-    dtcwpt::TopologyConfig config;
-    config.destinations = currentDestinations_;
-    config.maxDepth     = 8;
+    (void) tryApplyTopologyCandidate (currentDestinations_);
+}
 
-    // Create a fresh DTCWPTProcessor
-    auto newEngine = std::make_unique<dtcwpt::DTCWPTProcessor>();
-
-    // Create MorphBandProcessor and transfer ownership; keep raw observer pointer
-    auto mbp     = std::make_unique<MorphBandProcessor>();
-    morphProcessor_ = mbp.get();
-    newEngine->setBandProcessor (std::move (mbp));
-
-    // Prepare the engine
-    newEngine->prepareToPlay (currentSampleRate_,
-                               currentBlockSize_,
-                               config,
-                               2 /* stereo */);
-
-    // Swap in the new engine
-    dtcwptMain_ = std::move (newEngine);
-
-    // Report latency to the host
-    setLatencySamples (dtcwptMain_->getLatency());
-
-    const int analyzerDelaySamples = getLatencySamples();
-    if (analyzerDelaySamples > analyzerInputAlignerMaxDelay_)
+bool MorphAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::string>& candidateDestinations) noexcept
+{
+    try
     {
-        analyzerInputAlignerMaxDelay_ = analyzerDelaySamples;
-        analyzerInputAligner_.prepare (currentBlockSize_, analyzerInputAlignerMaxDelay_);
-    }
+        dtcwpt::TopologyConfig config;
+        config.destinations = candidateDestinations;
+        config.maxDepth = dtcwpt::topology_limits::kSupportedMaxDepth;
 
-    analyzerInputAligner_.setDelaySamples (analyzerDelaySamples);
+        auto newEngine = std::make_unique<dtcwpt::DTCWPTProcessor>();
+        auto newMorphProcessor = std::make_unique<MorphBandProcessor>();
+        auto* const observedMorphProcessor = newMorphProcessor.get();
+        newEngine->setBandProcessor (std::move (newMorphProcessor));
+        newEngine->prepareToPlay (currentSampleRate_, currentBlockSize_, config, 2);
+
+        const int newLatency = newEngine->getLatency();
+        const int newAnalyzerMaxDelay = std::max (analyzerInputAlignerMaxDelay_, newLatency);
+
+        AnalyzerLatencyAligner newAnalyzerAligner;
+        newAnalyzerAligner.prepare (currentBlockSize_, newAnalyzerMaxDelay);
+        newAnalyzerAligner.setDelaySamples (newLatency);
+
+        const auto serializedTopology = topology::serializeTopologyDestinations (candidateDestinations);
+
+        dtcwptMain_ = std::move (newEngine);
+        morphProcessor_ = observedMorphProcessor;
+        currentDestinations_ = candidateDestinations;
+        analyzerInputAligner_ = std::move (newAnalyzerAligner);
+        analyzerInputAlignerMaxDelay_ = newAnalyzerMaxDelay;
+        apvts_.state.setProperty (topology::kTopologyPropertyKey, serializedTopology, nullptr);
+        setLatencySamples (newLatency);
+        return true;
+    }
+    catch (const std::invalid_argument&)
+    {
+        return false;
+    }
 }
 
 //==============================================================================
@@ -144,12 +159,7 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     {
         std::vector<std::string> newDestinations;
         if (topoState_.tryConsume (newDestinations))
-        {
-            currentDestinations_ = newDestinations;
-
-            // Rebuild the engine on topology change.
-            rebuildDTCWPT();
-        }
+            (void) tryApplyTopologyCandidate (newDestinations);
     }
 
     // -------------------------------------------------------------------------
@@ -354,6 +364,30 @@ void MorphAudioProcessor::setStateInformation (const void* data, int sizeInBytes
 std::vector<std::string> MorphAudioProcessor::getStoredTopologyDestinations() const
 {
     return topology::resolvePersistedTopologyDestinations (apvts_.state, currentDestinations_);
+}
+
+bool MorphAudioProcessor::applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations) noexcept
+{
+    return tryApplyTopologyCandidate (candidateDestinations);
+}
+
+bool MorphAudioProcessor::rebuildPendingTopologyForTest() noexcept
+{
+    std::vector<std::string> candidateDestinations;
+    if (! topoState_.tryConsume (candidateDestinations))
+        return false;
+
+    return tryApplyTopologyCandidate (candidateDestinations);
+}
+
+juce::String MorphAudioProcessor::getPersistedTopologyStringForTest() const
+{
+    return apvts_.state.getProperty (topology::kTopologyPropertyKey).toString();
+}
+
+int MorphAudioProcessor::getCommittedTopologyDepthForTest() const noexcept
+{
+    return getTopologyDepth (currentDestinations_);
 }
 
 //==============================================================================

@@ -50,12 +50,6 @@ set_target_properties(dtcwpt_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/tests/Debug"
 )
 
-if(TARGET dtcwpt_tests_rc_lib)
-    set_target_properties(dtcwpt_tests_rc_lib PROPERTIES
-        INTERMEDIATE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/dtcwpt_tests_rc_lib.dir"
-    )
-endif()
-
 target_sources(dtcwpt_tests
     PRIVATE
         main.cpp
@@ -63,6 +57,7 @@ target_sources(dtcwpt_tests
         suites/ComplexUtilsTests.cpp
         suites/DelayBufferTests.cpp
         suites/DTCWPTProcessorTests.cpp
+        suites/MorphAudioProcessorTests.cpp
         suites/MorphBandProcessorTests.cpp
         suites/StatefulFilterTests.cpp
         suites/TopologyPlannerTests.cpp
@@ -78,6 +73,7 @@ target_sources(dtcwpt_tests
         suites/AnalyzerLatencyAlignerTests.cpp
         util/TestUtils.cpp
         stubs/MorphAudioProcessorStubs.cpp
+        ../sample_plugins/dtcwpt-morph/MorphAudioProcessor.cpp
         ../sample_plugins/dtcwpt-morph/MorphBandProcessor.cpp
         ../sample_plugins/dtcwpt-morph/SpectrumDataBridge.cpp
         ../sample_plugins/dtcwpt-gate/GateBandProcessor.cpp

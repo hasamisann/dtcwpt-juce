@@ -265,6 +265,14 @@ public:
      */
     std::vector<std::string> getStoredTopologyDestinations() const;
 
+    bool applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations) noexcept;
+    bool rebuildPendingTopologyForTest() noexcept;
+    const std::vector<std::string>& getCommittedDestinationsForTest() const noexcept { return currentDestinations_; }
+    juce::String getPersistedTopologyStringForTest() const;
+    int getCommittedTopologyDepthForTest() const noexcept;
+    const MorphBandProcessor* getObservedMorphProcessorForTest() const noexcept { return morphProcessor_; }
+    const dtcwpt::DTCWPTProcessor* getEngineIdentityForTest() const noexcept { return dtcwptMain_.get(); }
+
 private:
     //==============================================================================
     // Private helpers
@@ -278,6 +286,7 @@ private:
      * flag is set and the mutex can be briefly held.
      */
     void rebuildDTCWPT();
+    bool tryApplyTopologyCandidate (const std::vector<std::string>& candidateDestinations) noexcept;
 
     //==============================================================================
     // APVTS — owns all automatable parameters
