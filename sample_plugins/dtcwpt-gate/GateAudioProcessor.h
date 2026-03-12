@@ -173,6 +173,12 @@ public:
     /** @brief Resolves topology destinations persisted in APVTS state. */
     std::vector<std::string> getStoredTopologyDestinations() const;
 
+    bool applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations) noexcept;
+    const std::vector<std::string>& getCommittedDestinationsForTest() const noexcept { return currentDestinations_; }
+    juce::String getPersistedTopologyStringForTest() const;
+    const GateBandProcessor* getObservedGateProcessorForTest() const noexcept { return gateProcessor_; }
+    const dtcwpt::DTCWPTProcessor* getEngineIdentityForTest() const noexcept { return dtcwptMain_.get(); }
+
 private:
     //==============================================================================
     // Private helpers
@@ -182,6 +188,7 @@ private:
      * @brief (Re)creates the DTCWPTProcessor using currentDestinations_.
      */
     void rebuildDTCWPT();
+    bool tryApplyTopologyCandidate (const std::vector<std::string>& candidateDestinations) noexcept;
 
     //==============================================================================
     // APVTS — owns all automatable parameters
@@ -234,6 +241,7 @@ private:
     std::vector<std::string> currentDestinations_;
     double currentSampleRate_ { 44100.0 };
     int currentBlockSize_ { 512 };
+    bool hasCommittedValidTopology_ { false };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (GateAudioProcessor)
 };

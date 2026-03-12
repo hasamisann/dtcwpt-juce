@@ -1,5 +1,7 @@
 #include "GateAudioProcessor.h"
+#include "../common/InvalidTopologyDiagnostics.h"
 #include "../common/TopologyPersistence.h"
+
 #include <juce_core/juce_core.h>
 
 //==============================================================================
@@ -11,6 +13,8 @@ namespace
     /** Default topology: 6-level DWT destination strings. */
     const std::vector<std::string> kDefaultTopology =
         { "H", "LH", "LLH", "LLLH", "LLLLH", "LLLLLH", "LLLLLL" };
+
+    constexpr int kGateTopologyMaxDepth = 8;
 
 } // namespace
 
@@ -80,32 +84,66 @@ void GateAudioProcessor::releaseResources()
 
 void GateAudioProcessor::rebuildDTCWPT()
 {
-    dtcwpt::TopologyConfig config;
-    config.destinations = currentDestinations_;
-    config.maxDepth     = 8;
+    (void) tryApplyTopologyCandidate (currentDestinations_);
+}
 
-    auto newEngine = std::make_unique<dtcwpt::DTCWPTProcessor>();
-
-    auto proc      = std::make_unique<GateBandProcessor>();
-    gateProcessor_ = proc.get();
-    newEngine->setBandProcessor (std::move (proc));
-
-    newEngine->prepareToPlay (currentSampleRate_,
-                               currentBlockSize_,
-                               config,
-                               2 /* stereo */);
-
-    dtcwptMain_ = std::move (newEngine);
-    setLatencySamples (dtcwptMain_->getLatency());
-
-    const int analyzerDelaySamples = getLatencySamples();
-    if (analyzerDelaySamples > analyzerInputAlignerMaxDelay_)
+bool GateAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::string>& candidateDestinations) noexcept
+{
+    auto buildAndCommitTopology = [this] (const std::vector<std::string>& destinations)
     {
-        analyzerInputAlignerMaxDelay_ = analyzerDelaySamples;
-        analyzerInputAligner_.prepare (currentBlockSize_, analyzerInputAlignerMaxDelay_);
-    }
+        dtcwpt::TopologyConfig config;
+        config.destinations = destinations;
+        config.maxDepth = kGateTopologyMaxDepth;
 
-    analyzerInputAligner_.setDelaySamples (analyzerDelaySamples);
+        auto newEngine = std::make_unique<dtcwpt::DTCWPTProcessor>();
+        auto newGateProcessor = std::make_unique<GateBandProcessor>();
+        auto* const observedGateProcessor = newGateProcessor.get();
+        newEngine->setBandProcessor (std::move (newGateProcessor));
+        newEngine->prepareToPlay (currentSampleRate_, currentBlockSize_, config, 2);
+
+        const int newLatency = newEngine->getLatency();
+        const int newAnalyzerMaxDelay = std::max (currentBlockSize_ * 8, newLatency);
+
+        AnalyzerLatencyAligner newAnalyzerAligner;
+        newAnalyzerAligner.prepare (currentBlockSize_, newAnalyzerMaxDelay);
+        newAnalyzerAligner.setDelaySamples (newLatency);
+
+        dtcwptMain_ = std::move (newEngine);
+        gateProcessor_ = observedGateProcessor;
+        currentDestinations_ = destinations;
+        analyzerInputAligner_ = std::move (newAnalyzerAligner);
+        analyzerInputAlignerMaxDelay_ = newAnalyzerMaxDelay;
+        apvts_.state.setProperty (topology::kTopologyPropertyKey,
+                                  topology::serializeTopologyDestinations (destinations),
+                                  nullptr);
+        setLatencySamples (newLatency);
+        hasCommittedValidTopology_ = true;
+    };
+
+    try
+    {
+        buildAndCommitTopology (candidateDestinations);
+        return true;
+    }
+    catch (const std::invalid_argument&)
+    {
+        topology::emitInvalidTopologyDiagnostic ("Gate");
+
+        if (! hasCommittedValidTopology_)
+        {
+            try
+            {
+                buildAndCommitTopology (kDefaultTopology);
+                return true;
+            }
+            catch (const std::invalid_argument&)
+            {
+                return false;
+            }
+        }
+
+        return false;
+    }
 }
 
 //==============================================================================
@@ -130,10 +168,7 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     {
         std::vector<std::string> newDestinations;
         if (topoState_.tryConsume (newDestinations))
-        {
-            currentDestinations_ = newDestinations;
-            rebuildDTCWPT();
-        }
+            (void) tryApplyTopologyCandidate (newDestinations);
     }
 
     // 2. Read 256 threshold params → linear → set thresholds
@@ -267,12 +302,38 @@ void GateAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 void GateAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     juce::ValueTree state = juce::ValueTree::readFromData (data,
-                                                            static_cast<std::size_t> (sizeInBytes));
+                                                             static_cast<std::size_t> (sizeInBytes));
     if (state.isValid())
     {
         apvts_.replaceState (state);
 
         const auto restoredTopology = topology::resolvePersistedTopology (apvts_.state, currentDestinations_);
+
+        if (restoredTopology.persistedState == topology::PersistedTopologyState::invalid)
+        {
+            topology::emitInvalidTopologyDiagnostic ("Gate");
+
+            if (hasCommittedValidTopology_)
+            {
+                apvts_.state.setProperty (topology::kTopologyPropertyKey,
+                                          topology::serializeTopologyDestinations (currentDestinations_),
+                                          nullptr);
+                return;
+            }
+
+            currentDestinations_ = kDefaultTopology;
+            apvts_.state.setProperty (topology::kTopologyPropertyKey,
+                                      topology::serializeTopologyDestinations (kDefaultTopology),
+                                      nullptr);
+            return;
+        }
+
+        if (! hasCommittedValidTopology_)
+        {
+            currentDestinations_ = restoredTopology.destinations;
+            return;
+        }
+
         topoState_.requestChange (restoredTopology.destinations);
     }
 }
@@ -280,6 +341,16 @@ void GateAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 std::vector<std::string> GateAudioProcessor::getStoredTopologyDestinations() const
 {
     return topology::resolvePersistedTopology (apvts_.state, currentDestinations_).destinations;
+}
+
+bool GateAudioProcessor::applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations) noexcept
+{
+    return tryApplyTopologyCandidate (candidateDestinations);
+}
+
+juce::String GateAudioProcessor::getPersistedTopologyStringForTest() const
+{
+    return apvts_.state.getProperty (topology::kTopologyPropertyKey).toString();
 }
 
 //==============================================================================

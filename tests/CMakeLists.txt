@@ -58,6 +58,7 @@ target_sources(dtcwpt_tests
         suites/DelayBufferTests.cpp
         suites/DTCWPTProcessorTests.cpp
         suites/MorphAudioProcessorTests.cpp
+        suites/GateAudioProcessorTests.cpp
         suites/MorphBandProcessorTests.cpp
         suites/StatefulFilterTests.cpp
         suites/TopologyPlannerTests.cpp
@@ -74,9 +75,11 @@ target_sources(dtcwpt_tests
         suites/AnalyzerLatencyAlignerTests.cpp
         util/TestUtils.cpp
         stubs/MorphAudioProcessorStubs.cpp
+        stubs/GateAudioProcessorStubs.cpp
         ../sample_plugins/dtcwpt-morph/MorphAudioProcessor.cpp
         ../sample_plugins/dtcwpt-morph/MorphBandProcessor.cpp
-        ../sample_plugins/dtcwpt-morph/SpectrumDataBridge.cpp
+        ../sample_plugins/dtcwpt-gate/SpectrumDataBridge.cpp
+        ../sample_plugins/dtcwpt-gate/GateAudioProcessor.cpp
         ../sample_plugins/dtcwpt-gate/GateBandProcessor.cpp
         ../sample_plugins/dtcwpt-gate/gui/GateGuiFrequencyMapping.cpp
 )
