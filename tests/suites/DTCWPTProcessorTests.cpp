@@ -5,13 +5,16 @@
 
 #include <dtcwpt/dtcwpt_processor.h>
 #include <dtcwpt/dtcwpt_band_processor.h>
+#include "../util/RegressionFixtures.h"
 #include "../util/TestUtils.h"
 
 #include <juce_core/juce_core.h>
 #include <juce_audio_basics/juce_audio_basics.h>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -43,6 +46,41 @@ public:
 
     int processCalls = 0;
     std::vector<int> observedDestinationIds;
+};
+
+class ArrivalSemanticsProcessor : public dtcwpt::BandProcessor {
+public:
+    void prepare(double, int, int, int) override {
+        reset();
+    }
+
+    void processAllBands(dtcwpt::BandData& data) override {
+        ++processCalls;
+        hasSidechainHistory.push_back(data.hasSidechain ? static_cast<char>(1) : static_cast<char>(0));
+        if (data.destinationIds != nullptr) {
+            observedDestinationIds = *data.destinationIds;
+        }
+
+        if (accumulatedSamplesPerBand.empty()) {
+            accumulatedSamplesPerBand.assign(static_cast<size_t>(data.numBands), 0);
+        }
+
+        for (int bandIndex = 0; bandIndex < data.numBands; ++bandIndex) {
+            accumulatedSamplesPerBand[static_cast<size_t>(bandIndex)] += static_cast<int>(data.bands[0][static_cast<size_t>(bandIndex)].numSamples);
+        }
+    }
+
+    void reset() override {
+        processCalls = 0;
+        observedDestinationIds.clear();
+        accumulatedSamplesPerBand.clear();
+        hasSidechainHistory.clear();
+    }
+
+    int processCalls = 0;
+    std::vector<int> observedDestinationIds;
+    std::vector<int> accumulatedSamplesPerBand;
+    std::vector<char> hasSidechainHistory;
 };
 
 class DTCWPTProcessorTests : public juce::UnitTest {
@@ -92,6 +130,21 @@ public:
         beginTest("Accepted topology preserves destination order");
         testAcceptedTopologyPreservesDestinationOrder();
 
+        beginTest("Analysis arrival semantics remain stable for valid topologies");
+        testAnalysisArrivalSemanticsRemainStableForValidTopologies();
+
+        beginTest("Host block segmentation invariance is bit-exact after quantization");
+        testHostBlockSegmentationInvarianceIsBitExactAfterQuantization();
+
+        beginTest("Sidechain symmetry preserves snapshots for identical input streams");
+        testSidechainSymmetryPreservesSnapshotsForIdenticalInputStreams();
+
+        beginTest("Deterministic topology matrices reconstruct across all families");
+        testDeterministicTopologyMatricesReconstructAcrossAllFamilies();
+
+        beginTest("Audio-thread processing remains allocation-free with sidechain");
+        testAudioThreadProcessingRemainsAllocationFreeWithSidechain();
+
         beginTest("actualDepth greater than maxDepth rejected");
         testActualDepthGreaterThanMaxDepthRejected();
 
@@ -115,6 +168,39 @@ private:
         config.destinations = dests;
         config.maxDepth = maxDepth;
         return config;
+    }
+
+    static std::vector<double> makeScenarioSignal(int totalSamples)
+    {
+        std::vector<double> signal(static_cast<size_t>(totalSamples), 0.0);
+        constexpr double twoPi = 6.28318530717958647692;
+
+        for (int index = 0; index < totalSamples; ++index) {
+            const double sample = static_cast<double>(index);
+            signal[static_cast<size_t>(index)] = 0.31 * std::sin(twoPi * sample / 37.0)
+                + 0.17 * std::cos(twoPi * sample / 23.0)
+                + 0.09 * std::sin(twoPi * sample * sample / 8192.0);
+        }
+
+        return signal;
+    }
+
+    static std::vector<RegressionFixtures::SegmentationPlan> makeAlternateSegmentationPlans(int totalSamples)
+    {
+        return {
+            {"two-halves", {totalSamples / 2, totalSamples / 2}},
+            {"ragged", {1536, 512, 1024, 1024}},
+            {"sixteen-blocks", std::vector<int>(16, totalSamples / 16)},
+        };
+    }
+
+    RegressionFixtures::AnalysisSnapshotScenarioResult runSnapshotScenario(
+        const dtcwpt::TopologyConfig& config,
+        const std::vector<double>& input,
+        std::optional<std::span<const double>> sidechain,
+        const RegressionFixtures::SegmentationPlan& plan)
+    {
+        return RegressionFixtures::runAnalysisSnapshotScenario(config, input, sidechain, plan);
     }
 
     std::vector<double> processSignal(dtcwpt::DTCWPTProcessor& processor,
@@ -164,9 +250,10 @@ private:
                                             const std::vector<double>& output,
                                             int latency,
                                             const juce::String& label) {
-        const double mseDb = TestUtils::calculateMSEdB(input, output, latency);
-        expect(mseDb < TestUtils::TestConfig::MSE_THRESHOLD_DB,
-               label + " should be <= -80 dB, got " + juce::String(mseDb) + " dB");
+        const auto reconstruction = RegressionFixtures::evaluateReconstruction(input, output, latency);
+        expect(reconstruction.passesMseThreshold,
+               label + " should be <= -200 dB, got " + juce::String(reconstruction.mseDb, 6)
+                   + " dB with max abs error " + juce::String(reconstruction.maxAbsError, 12));
     }
 
     void expectInvalidArgument(const std::function<void()>& action, const juce::String& message) {
@@ -348,64 +435,21 @@ private:
     }
 
     void testFullDepth8() {
-        // Full packet depth 8 (256 leaves) -> white noise MSE <= -80 dB
+        // Full packet depth 8 (256 leaves) -> deterministic reconstruction at the c07 threshold
         auto config = createConfig(TestUtils::getFullPacketDestinations(8), 8);
         
         dtcwpt::DTCWPTProcessor processor;
         processor.setBandProcessor(std::make_unique<PassthroughProcessor>());
         processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 512, config, 1);
         
-        int latency = processor.getLatency();
-
-        auto input = TestUtils::generateNoise(0.5, TestUtils::TestConfig::SAMPLE_RATE);
-        
-        std::vector<double> output;
-        output.reserve(input.size() + latency + 512);
-
-        int cursor = 0;
-        const int blockSize = 512;
-        
-        while (cursor < static_cast<int>(input.size())) {
-            int currentBlockSize = std::min(blockSize, static_cast<int>(input.size()) - cursor);
-            
-            juce::AudioBuffer<double> buffer(1, currentBlockSize);
-            auto* data = buffer.getWritePointer(0);
-            
-            for (int i = 0; i < currentBlockSize; ++i) {
-                data[i] = input[static_cast<size_t>(cursor + i)];
-            }
-            
-            processor.processBlock(buffer);
-            
-            const auto* outData = buffer.getReadPointer(0);
-            for (int i = 0; i < currentBlockSize; ++i) {
-                output.push_back(outData[i]);
-            }
-            
-            cursor += currentBlockSize;
-        }
-
-        // Tail
-        for (int i = 0; i < latency; i += blockSize) {
-            int currentBlockSize = std::min(blockSize, latency - i);
-            juce::AudioBuffer<double> buffer(1, currentBlockSize);
-            buffer.clear();
-            processor.processBlock(buffer);
-            
-            const auto* outData = buffer.getReadPointer(0);
-            for (int j = 0; j < currentBlockSize; ++j) {
-                output.push_back(outData[j]);
-            }
-        }
-
-        double mseDb = TestUtils::calculateMSEdB(input, output, latency);
-        
-        expect(mseDb < TestUtils::TestConfig::MSE_THRESHOLD_DB,
-               "Full depth-8 MSE should be <= -80 dB, got " + juce::String(mseDb) + " dB");
+        const int latency = processor.getLatency();
+        const auto input = TestUtils::generateNoise(0.5, TestUtils::TestConfig::SAMPLE_RATE);
+        const auto output = processSignal(processor, input, latency);
+        expectReconstructionBelowThreshold(input, output, latency, "Full depth-8 reconstruction");
     }
 
     void testRandomTopologyDepth8() {
-        // Random valid topology at depth 8 -> white noise MSE <= -80 dB
+        // Random valid topology at depth 8 -> deterministic reconstruction at the c07 threshold
         auto dests = TestUtils::getRandomPacketDestinations(8, 42);
         auto config = createConfig(dests, 8);
         
@@ -413,53 +457,10 @@ private:
         processor.setBandProcessor(std::make_unique<PassthroughProcessor>());
         processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 512, config, 1);
         
-        int latency = processor.getLatency();
-
-        auto input = TestUtils::generateNoise(0.5, TestUtils::TestConfig::SAMPLE_RATE, 42);
-        
-        std::vector<double> output;
-        output.reserve(input.size() + latency + 512);
-
-        int cursor = 0;
-        const int blockSize = 512;
-        
-        while (cursor < static_cast<int>(input.size())) {
-            int currentBlockSize = std::min(blockSize, static_cast<int>(input.size()) - cursor);
-            
-            juce::AudioBuffer<double> buffer(1, currentBlockSize);
-            auto* data = buffer.getWritePointer(0);
-            
-            for (int i = 0; i < currentBlockSize; ++i) {
-                data[i] = input[static_cast<size_t>(cursor + i)];
-            }
-            
-            processor.processBlock(buffer);
-            
-            const auto* outData = buffer.getReadPointer(0);
-            for (int i = 0; i < currentBlockSize; ++i) {
-                output.push_back(outData[i]);
-            }
-            
-            cursor += currentBlockSize;
-        }
-
-        // Tail
-        for (int i = 0; i < latency; i += blockSize) {
-            int currentBlockSize = std::min(blockSize, latency - i);
-            juce::AudioBuffer<double> buffer(1, currentBlockSize);
-            buffer.clear();
-            processor.processBlock(buffer);
-            
-            const auto* outData = buffer.getReadPointer(0);
-            for (int j = 0; j < currentBlockSize; ++j) {
-                output.push_back(outData[j]);
-            }
-        }
-
-        double mseDb = TestUtils::calculateMSEdB(input, output, latency);
-        
-        expect(mseDb < TestUtils::TestConfig::MSE_THRESHOLD_DB,
-               "Random depth-8 MSE should be <= -80 dB, got " + juce::String(mseDb) + " dB");
+        const int latency = processor.getLatency();
+        const auto input = TestUtils::generateNoise(0.5, TestUtils::TestConfig::SAMPLE_RATE, 42);
+        const auto output = processSignal(processor, input, latency);
+        expectReconstructionBelowThreshold(input, output, latency, "Random depth-8 reconstruction");
     }
 
     void testFullDepth12() {
@@ -577,6 +578,157 @@ private:
                      "Observed destination count should match caller order count");
         expect(captureProcessorPtr->observedDestinationIds == expectedDestinationIds,
                "Accepted topology should preserve caller-provided destination order");
+    }
+
+    void testAnalysisArrivalSemanticsRemainStableForValidTopologies() {
+        auto captureProcessor = std::make_unique<ArrivalSemanticsProcessor>();
+        auto* captureProcessorPtr = captureProcessor.get();
+
+        const std::vector<std::string> destinations = {"H", "LL", "LH"};
+        std::vector<int> expectedDestinationIds;
+        expectedDestinationIds.reserve(destinations.size());
+        for (const auto& destination : destinations) {
+            expectedDestinationIds.push_back(pathToNodeIndex(destination));
+        }
+
+        dtcwpt::DTCWPTProcessor processor;
+        processor.setBandProcessor(std::move(captureProcessor));
+        processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 8,
+                                createConfig(destinations, 2), 1);
+
+        const auto input = makeScenarioSignal(16);
+        for (int blockOffset = 0; blockOffset < 16; blockOffset += 8) {
+            juce::AudioBuffer<double> buffer(1, 8);
+            auto* writePtr = buffer.getWritePointer(0);
+            for (int sampleIndex = 0; sampleIndex < 8; ++sampleIndex) {
+                writePtr[sampleIndex] = input[static_cast<size_t>(blockOffset + sampleIndex)];
+            }
+            processor.processBlock(buffer);
+        }
+
+        expectEquals(captureProcessorPtr->processCalls, 2,
+                     "Two host blocks should yield two deterministic analysis arrivals at maxBlockSize=8");
+        expect(captureProcessorPtr->observedDestinationIds == expectedDestinationIds,
+               "Arrival semantics should preserve destination order exactly");
+        expect(captureProcessorPtr->accumulatedSamplesPerBand == std::vector<int>({8, 4, 4}),
+               "Aggregated per-band sample counts should remain stable for the valid depth-2 topology");
+    }
+
+    void testHostBlockSegmentationInvarianceIsBitExactAfterQuantization() {
+        const int totalSamples = 4096;
+        const auto input = makeScenarioSignal(totalSamples);
+        const auto mixedCase = RegressionFixtures::buildDeterministicTopologyMatrix(
+            RegressionFixtures::TopologyFamily::mixedDepth,
+            std::array<int, 1>{6},
+            std::array<unsigned int, 1>{419U});
+        const auto config = createConfig(mixedCase.front().destinations, 6);
+        const auto reference = runSnapshotScenario(config, input, std::nullopt, {"reference", {totalSamples}});
+
+        for (const auto& plan : makeAlternateSegmentationPlans(totalSamples)) {
+            const auto alternate = runSnapshotScenario(config, input, std::nullopt, plan);
+            juce::String failureMessage;
+
+            expectEquals(alternate.bandProcessCalls, reference.bandProcessCalls,
+                         "Equivalent host segmentations should keep the same number of analysis arrivals");
+            expect(RegressionFixtures::compareSegmentationInvariantResults(reference.mainSnapshots,
+                                                                           alternate.mainSnapshots,
+                                                                           reference.quantizedOutput,
+                                                                           alternate.quantizedOutput,
+                                                                           failureMessage),
+                   juce::String("Plan '") + juce::String(plan.name) + juce::String("' should match the reference segmentation after float32 quantization: ") + failureMessage);
+        }
+    }
+
+    void testSidechainSymmetryPreservesSnapshotsForIdenticalInputStreams() {
+        const int totalSamples = 4096;
+        const auto input = makeScenarioSignal(totalSamples);
+        const auto mixedCase = RegressionFixtures::buildDeterministicTopologyMatrix(
+            RegressionFixtures::TopologyFamily::mixedDepth,
+            std::array<int, 1>{5},
+            std::array<unsigned int, 1>{557U});
+        const auto config = createConfig(mixedCase.front().destinations, 5);
+        const auto result = runSnapshotScenario(config, input, std::span<const double>(input), {"reference", {totalSamples}});
+
+        juce::String failureMessage;
+        expect(result.hasSidechainSnapshots,
+               "Sidechain-enabled scenarios should capture observable sidechain snapshots");
+        expect(result.mainSnapshots.destinationsInOrder == config.destinations,
+               "Main snapshots should preserve the configured destination order");
+        expect(result.sidechainSnapshots.destinationsInOrder == config.destinations,
+               "Sidechain snapshots should preserve the configured destination order");
+        expect(RegressionFixtures::compareSnapshotSets(result.mainSnapshots, result.sidechainSnapshots, failureMessage),
+               "Identical main and sidechain inputs should yield identical quantized snapshots: " + failureMessage);
+    }
+
+    void testDeterministicTopologyMatricesReconstructAcrossAllFamilies() {
+        const int totalSamples = 4096;
+        const auto input = makeScenarioSignal(totalSamples);
+        const auto dwtCases = RegressionFixtures::buildDeterministicTopologyMatrix(
+            RegressionFixtures::TopologyFamily::dwt,
+            std::array<int, 12>{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
+            std::array<unsigned int, 1>{101U});
+        const auto fullTreeCases = RegressionFixtures::buildDeterministicTopologyMatrix(
+            RegressionFixtures::TopologyFamily::fullTree,
+            std::array<int, 12>{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
+            std::array<unsigned int, 1>{211U});
+        const auto mixedCases = RegressionFixtures::buildDeterministicTopologyMatrix(
+            RegressionFixtures::TopologyFamily::mixedDepth,
+            std::array<int, 11>{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
+            std::array<unsigned int, 2>{307U, 401U});
+
+        expectEquals(static_cast<int>(dwtCases.size()), 12,
+                     "The default DWT matrix should include 12 deterministic cases");
+        expectEquals(static_cast<int>(fullTreeCases.size()), 12,
+                     "The default full-tree matrix should include 12 deterministic cases");
+        expect(mixedCases.size() >= 12,
+               "The default mixed-depth matrix should include at least 12 deterministic cases");
+
+        auto verifyCases = [&](const std::vector<RegressionFixtures::RandomTopologyCase>& cases,
+                               const juce::String& familyLabel,
+                               int limit) {
+            for (int index = 0; index < limit; ++index) {
+                const auto& topologyCase = cases[static_cast<size_t>(index)];
+                const auto config = createConfig(topologyCase.destinations, topologyCase.depth);
+                const auto scenario = runSnapshotScenario(config, input, std::nullopt, {"reference", {totalSamples}});
+                expectReconstructionBelowThreshold(input,
+                                                   scenario.output,
+                                                   scenario.latencySamples,
+                                                   familyLabel + " case " + juce::String(index));
+            }
+        };
+
+        verifyCases(dwtCases, "dwt", 12);
+        verifyCases(fullTreeCases, "full-tree", 12);
+        verifyCases(mixedCases, "mixed-depth", 12);
+    }
+
+    void testAudioThreadProcessingRemainsAllocationFreeWithSidechain() {
+        const auto config = createConfig({"H", "LL", "LH"}, 2);
+
+        dtcwpt::DTCWPTProcessor processor;
+        processor.setBandProcessor(std::make_unique<PassthroughProcessor>());
+        processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 256, config, 1);
+
+        juce::AudioBuffer<double> mainBuffer(1, 256);
+        juce::AudioBuffer<double> sidechainBuffer(1, 256);
+        const auto input = makeScenarioSignal(256);
+        auto* mainData = mainBuffer.getWritePointer(0);
+        auto* sidechainData = sidechainBuffer.getWritePointer(0);
+        for (int sampleIndex = 0; sampleIndex < 256; ++sampleIndex) {
+            mainData[sampleIndex] = input[static_cast<size_t>(sampleIndex)];
+            sidechainData[sampleIndex] = input[static_cast<size_t>(sampleIndex)];
+        }
+
+        TestUtils::AllocationCounter counter;
+        counter.begin();
+        for (int iteration = 0; iteration < 8; ++iteration) {
+            processor.processSidechain(sidechainBuffer);
+            processor.processBlock(mainBuffer);
+        }
+        counter.end();
+
+        expect(counter.getCount() == 0,
+               "Sidechain-enabled audio-thread processing should remain allocation-free");
     }
 
     void testActualDepthGreaterThanMaxDepthRejected() {

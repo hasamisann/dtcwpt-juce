@@ -1,9 +1,12 @@
 #include "../util/RegressionFixtures.h"
 #include "../util/TestUtils.h"
 
+#include <dtcwpt/dtcwpt_processor.h>
+
 #include <juce_core/juce_core.h>
 
 #include <array>
+#include <cmath>
 #include <vector>
 
 class RegressionFixturesTests : public juce::UnitTest {
@@ -33,6 +36,12 @@ public:
         beginTest("Segmentation invariance checks structure before output values");
         testSegmentationInvarianceChecksStructureBeforeOutputValues();
 
+        beginTest("Analysis snapshot scenarios preserve input destination order and sample metadata");
+        testAnalysisSnapshotScenariosPreserveInputDestinationOrderAndSampleMetadata();
+
+        beginTest("Analysis snapshot scenarios return quantized data ready for segmentation comparison");
+        testAnalysisSnapshotScenariosReturnQuantizedDataReadyForSegmentationComparison();
+
         beginTest("Reconstruction evaluation uses the c07 oracle threshold");
         testReconstructionEvaluationUsesTheC07OracleThreshold();
     }
@@ -43,6 +52,7 @@ private:
     using QuantizedBufferView = RegressionFixtures::QuantizedBufferView;
     using BandSnapshot = RegressionFixtures::BandSnapshot;
     using SnapshotSet = RegressionFixtures::SnapshotSet;
+    using AnalysisSnapshotScenarioResult = RegressionFixtures::AnalysisSnapshotScenarioResult;
 
     static SnapshotSet makeSnapshotSet()
     {
@@ -54,6 +64,35 @@ private:
             BandSnapshot{"H", 1, 1, QuantizedBufferView{1, 1, {0.75f}}, QuantizedBufferView{1, 1, {-0.25f}}}
         };
         return set;
+    }
+
+    static dtcwpt::TopologyConfig makeConfig(const std::vector<std::string>& destinations, int maxDepth)
+    {
+        dtcwpt::TopologyConfig config;
+        config.destinations = destinations;
+        config.maxDepth = maxDepth;
+        return config;
+    }
+
+    static std::vector<double> makeScenarioSignal(int totalSamples)
+    {
+        std::vector<double> signal(static_cast<size_t>(totalSamples), 0.0);
+        constexpr double twoPi = 6.28318530717958647692;
+
+        for (int index = 0; index < totalSamples; ++index) {
+            const double sample = static_cast<double>(index);
+            signal[static_cast<size_t>(index)] = 0.37 * std::sin(twoPi * sample / 11.0)
+                + 0.19 * std::cos(twoPi * sample / 7.0);
+        }
+
+        return signal;
+    }
+
+    static AnalysisSnapshotScenarioResult runScenario(const RegressionFixtures::SegmentationPlan& plan)
+    {
+        const auto input = makeScenarioSignal(16);
+        const auto config = makeConfig({"H", "LL", "LH"}, 2);
+        return RegressionFixtures::runAnalysisSnapshotScenario(config, input, std::nullopt, plan);
     }
 
     static void expectCasesEqual(const std::vector<RandomTopologyCase>& expected,
@@ -233,9 +272,55 @@ private:
                "Structure mismatches should short-circuit before output value comparison details");
     }
 
+    void testAnalysisSnapshotScenariosPreserveInputDestinationOrderAndSampleMetadata()
+    {
+        const auto result = runScenario({"segmented", {5, 3, 8}});
+
+        expectEquals(result.bandProcessCalls, 1,
+                     "Shared snapshot scenarios should capture one aggregated analysis arrival for the full reference window");
+        expect(result.mainSnapshots.destinationsInOrder == std::vector<std::string>({"H", "LL", "LH"}),
+               "Captured destinations should preserve the caller-provided input order");
+        expectEquals(static_cast<int>(result.mainSnapshots.samplesPerBandInOrder.size()),
+                     static_cast<int>(result.mainSnapshots.bands.size()),
+                     "Per-band sample counts should align with captured bands");
+
+        for (size_t bandIndex = 0; bandIndex < result.mainSnapshots.bands.size(); ++bandIndex) {
+            const auto& band = result.mainSnapshots.bands[bandIndex];
+            expectEquals(result.mainSnapshots.samplesPerBandInOrder[bandIndex], band.numSamples,
+                         "Per-band sample metadata should match the captured snapshot length");
+            expectEquals(band.real.numSamples, band.numSamples,
+                         "Real snapshots should track the captured band sample count");
+            expectEquals(band.imag.numSamples, band.numSamples,
+                         "Imaginary snapshots should track the captured band sample count");
+            expectEquals(static_cast<int>(band.real.interleaved.size()), band.numChannels * band.numSamples,
+                         "Real snapshots should already be interleaved and quantized");
+            expectEquals(static_cast<int>(band.imag.interleaved.size()), band.numChannels * band.numSamples,
+                         "Imaginary snapshots should already be interleaved and quantized");
+        }
+    }
+
+    void testAnalysisSnapshotScenariosReturnQuantizedDataReadyForSegmentationComparison()
+    {
+        const auto reference = runScenario({"reference", {16}});
+        const auto alternate = runScenario({"alternate", {4, 4, 4, 4}});
+
+        juce::String failureMessage;
+        expect(RegressionFixtures::compareSegmentationInvariantResults(reference.mainSnapshots,
+                                                                       alternate.mainSnapshots,
+                                                                       reference.quantizedOutput,
+                                                                       alternate.quantizedOutput,
+                                                                       failureMessage),
+               "Captured scenario data should be directly comparable without an extra quantization pass");
+        expect(failureMessage.isEmpty(),
+               "Segmentation comparison should succeed cleanly for equivalent already-quantized captures");
+    }
+
     void testReconstructionEvaluationUsesTheC07OracleThreshold()
     {
         const std::vector<double> input{1.0, -1.0};
+
+        expect(RegressionFixtures::kReconstructionMseThresholdDb != TestUtils::TestConfig::MSE_THRESHOLD_DB,
+               "The c07 reconstruction oracle must remain distinct from the legacy helper threshold");
 
         constexpr double kThresholdEdgeError = 9.9e-11;
         const std::vector<double> exactThresholdOutput{0.0, 1.0 + kThresholdEdgeError, -1.0 + kThresholdEdgeError};

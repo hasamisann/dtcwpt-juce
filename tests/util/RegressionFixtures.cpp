@@ -2,10 +2,15 @@
 
 #include "TestUtils.h"
 
+#include <dtcwpt/dtcwpt_band_processor.h>
+#include <dtcwpt/dtcwpt_processor.h>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
+#include <utility>
 
 namespace RegressionFixtures {
 
@@ -14,6 +19,22 @@ namespace {
 int getLeafDepth(const std::string& destination)
 {
     return static_cast<int>(destination.size());
+}
+
+std::string pathFromNodeId(int nodeId)
+{
+    if (nodeId <= 0) {
+        throw std::invalid_argument("Destination node ID must be positive");
+    }
+
+    std::string path;
+    while (nodeId > 1) {
+        path.push_back((nodeId & 1) != 0 ? 'H' : 'L');
+        nodeId >>= 1;
+    }
+
+    std::reverse(path.begin(), path.end());
+    return path;
 }
 
 bool hasMixedDepthShape(const std::vector<std::string>& destinations, int expectedMaxDepth)
@@ -64,6 +85,131 @@ std::vector<std::string> buildMixedDepthDestinations(int depth, unsigned int see
 
     throw std::invalid_argument("Unable to build deterministic mixed-depth topology case");
 }
+
+class SnapshotCaptureProcessor final : public dtcwpt::BandProcessor {
+public:
+    void prepare(double, int, int, int) override
+    {
+        reset();
+    }
+
+    void processAllBands(dtcwpt::BandData& data) override
+    {
+        ++bandProcessCalls;
+        appendBands(mainSnapshots, data.bands, data.numChannels, data.numBands, data.destinationIds);
+
+        if (data.hasSidechain) {
+            hasSidechainSnapshots = true;
+            appendBands(sidechainSnapshots, data.sidechainBands, data.numChannels, data.numBands, data.destinationIds);
+        }
+    }
+
+    void reset() override
+    {
+        mainSnapshots = {};
+        sidechainSnapshots = {};
+        bandProcessCalls = 0;
+        hasSidechainSnapshots = false;
+    }
+
+    AnalysisSnapshotScenarioResult buildResult(std::vector<double> output,
+                                              const QuantizedBufferView& quantizedOutput,
+                                              int latencySamples) const
+    {
+        AnalysisSnapshotScenarioResult result;
+        result.mainSnapshots = mainSnapshots;
+        result.sidechainSnapshots = sidechainSnapshots;
+        result.output = std::move(output);
+        result.quantizedOutput = quantizedOutput;
+        result.latencySamples = latencySamples;
+        result.bandProcessCalls = bandProcessCalls;
+        result.hasSidechainSnapshots = hasSidechainSnapshots;
+        return result;
+    }
+
+private:
+    static void initializeSnapshotSet(SnapshotSet& snapshotSet,
+                                      const std::vector<int>* destinationIds,
+                                      int numBands,
+                                      int numChannels)
+    {
+        if (! snapshotSet.bands.empty()) {
+            return;
+        }
+
+        if (destinationIds == nullptr) {
+            throw std::invalid_argument("Snapshot capture requires destination metadata");
+        }
+
+        snapshotSet.destinationsInOrder.reserve(static_cast<size_t>(numBands));
+        snapshotSet.samplesPerBandInOrder.assign(static_cast<size_t>(numBands), 0);
+        snapshotSet.bands.reserve(static_cast<size_t>(numBands));
+
+        for (int bandIndex = 0; bandIndex < numBands; ++bandIndex) {
+            const auto destination = pathFromNodeId(destinationIds->at(static_cast<size_t>(bandIndex)));
+            snapshotSet.destinationsInOrder.push_back(destination);
+
+            BandSnapshot bandSnapshot;
+            bandSnapshot.destination = destination;
+            bandSnapshot.numChannels = numChannels;
+            bandSnapshot.real.numChannels = numChannels;
+            bandSnapshot.imag.numChannels = numChannels;
+            snapshotSet.bands.push_back(std::move(bandSnapshot));
+        }
+    }
+
+    static void appendBands(SnapshotSet& snapshotSet,
+                            const std::vector<std::vector<dtcwpt::ChannelBandView>>& channelBands,
+                            int numChannels,
+                            int numBands,
+                            const std::vector<int>* destinationIds)
+    {
+        if (numChannels <= 0 || numBands <= 0) {
+            return;
+        }
+
+        initializeSnapshotSet(snapshotSet, destinationIds, numBands, numChannels);
+
+        for (int bandIndex = 0; bandIndex < numBands; ++bandIndex) {
+            const size_t bandOffset = static_cast<size_t>(bandIndex);
+            const size_t numSamples = channelBands.at(0).at(bandOffset).numSamples;
+
+            std::vector<double> realInterleaved;
+            std::vector<double> imagInterleaved;
+            realInterleaved.reserve(static_cast<size_t>(numChannels) * numSamples);
+            imagInterleaved.reserve(static_cast<size_t>(numChannels) * numSamples);
+
+            for (size_t sampleIndex = 0; sampleIndex < numSamples; ++sampleIndex) {
+                for (int channelIndex = 0; channelIndex < numChannels; ++channelIndex) {
+                    const auto& view = channelBands.at(static_cast<size_t>(channelIndex)).at(bandOffset);
+                    realInterleaved.push_back(view.re[sampleIndex]);
+                    imagInterleaved.push_back(view.im[sampleIndex]);
+                }
+            }
+
+            auto& bandSnapshot = snapshotSet.bands[bandOffset];
+            const int appendedSamples = static_cast<int>(numSamples);
+            bandSnapshot.numSamples += appendedSamples;
+            bandSnapshot.real.numSamples = bandSnapshot.numSamples;
+            bandSnapshot.imag.numSamples = bandSnapshot.numSamples;
+            snapshotSet.samplesPerBandInOrder[bandOffset] += appendedSamples;
+
+            const auto quantizedReal = quantizeToFloat32(realInterleaved, numChannels, appendedSamples);
+            const auto quantizedImag = quantizeToFloat32(imagInterleaved, numChannels, appendedSamples);
+            bandSnapshot.real.interleaved.insert(bandSnapshot.real.interleaved.end(),
+                                                 quantizedReal.interleaved.begin(),
+                                                 quantizedReal.interleaved.end());
+            bandSnapshot.imag.interleaved.insert(bandSnapshot.imag.interleaved.end(),
+                                                 quantizedImag.interleaved.begin(),
+                                                 quantizedImag.interleaved.end());
+        }
+    }
+
+    SnapshotSet mainSnapshots;
+    SnapshotSet sidechainSnapshots;
+    int bandProcessCalls = 0;
+    bool hasSidechainSnapshots = false;
+};
 
 } // namespace
 
@@ -301,6 +447,87 @@ ReconstructionCheck evaluateReconstruction(
 
     constexpr double kThresholdToleranceDb = 1.0e-12;
     return {mseDb, maxAbsError, mseDb <= (kReconstructionMseThresholdDb + kThresholdToleranceDb)};
+}
+
+AnalysisSnapshotScenarioResult runAnalysisSnapshotScenario(
+    const dtcwpt::TopologyConfig& config,
+    std::span<const double> input,
+    std::optional<std::span<const double>> sidechain,
+    const SegmentationPlan& plan)
+{
+    if (plan.blockSizes.empty()) {
+        throw std::invalid_argument("Segmentation plan must contain at least one block");
+    }
+
+    const int totalSamples = std::accumulate(plan.blockSizes.begin(), plan.blockSizes.end(), 0);
+    if (totalSamples <= 0) {
+        throw std::invalid_argument("Segmentation plan must sum to a positive sample count");
+    }
+
+    if (static_cast<size_t>(totalSamples) != input.size()) {
+        throw std::invalid_argument("Segmentation plan length must match the input sample count");
+    }
+
+    if (sidechain.has_value() && sidechain->size() != input.size()) {
+        throw std::invalid_argument("Sidechain sample count must match the main input");
+    }
+
+    for (const int blockSize : plan.blockSizes) {
+        if (blockSize <= 0) {
+            throw std::invalid_argument("Segmentation plan blocks must be positive");
+        }
+    }
+
+    const int maxBlockSize = totalSamples;
+
+    dtcwpt::DTCWPTProcessor processor;
+    auto captureProcessor = std::make_unique<SnapshotCaptureProcessor>();
+    auto* captureProcessorPtr = captureProcessor.get();
+    processor.setBandProcessor(std::move(captureProcessor));
+    processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, maxBlockSize, config, 1);
+
+    const int latencySamples = processor.getLatency();
+    std::vector<double> output;
+    output.reserve(input.size() + static_cast<size_t>(latencySamples + maxBlockSize));
+
+    int cursor = 0;
+    for (const int blockSize : plan.blockSizes) {
+        juce::AudioBuffer<double> buffer(1, blockSize);
+        auto* mainData = buffer.getWritePointer(0);
+
+        for (int sampleIndex = 0; sampleIndex < blockSize; ++sampleIndex) {
+            mainData[sampleIndex] = input[static_cast<size_t>(cursor + sampleIndex)];
+        }
+
+        if (sidechain.has_value()) {
+            juce::AudioBuffer<double> sidechainBuffer(1, blockSize);
+            auto* sidechainData = sidechainBuffer.getWritePointer(0);
+
+            for (int sampleIndex = 0; sampleIndex < blockSize; ++sampleIndex) {
+                sidechainData[sampleIndex] = sidechain.value()[static_cast<size_t>(cursor + sampleIndex)];
+            }
+
+            processor.processSidechain(sidechainBuffer);
+        }
+
+        processor.processBlock(buffer);
+        const auto* outputData = buffer.getReadPointer(0);
+        output.insert(output.end(), outputData, outputData + blockSize);
+        cursor += blockSize;
+    }
+
+    for (int tailOffset = 0; tailOffset < latencySamples; tailOffset += maxBlockSize) {
+        const int tailBlockSize = std::min(maxBlockSize, latencySamples - tailOffset);
+        juce::AudioBuffer<double> buffer(1, tailBlockSize);
+        buffer.clear();
+        processor.processBlock(buffer);
+
+        const auto* outputData = buffer.getReadPointer(0);
+        output.insert(output.end(), outputData, outputData + tailBlockSize);
+    }
+
+    const auto quantizedOutput = quantizeToFloat32(output, 1, static_cast<int>(output.size()));
+    return captureProcessorPtr->buildResult(std::move(output), quantizedOutput, latencySamples);
 }
 
 } // namespace RegressionFixtures

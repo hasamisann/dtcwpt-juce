@@ -2,9 +2,14 @@
 
 #include <juce_core/juce_core.h>
 
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
+
+namespace dtcwpt {
+struct TopologyConfig;
+}
 
 namespace RegressionFixtures {
 
@@ -54,6 +59,16 @@ struct ReconstructionCheck {
     bool passesMseThreshold = false;
 };
 
+struct AnalysisSnapshotScenarioResult {
+    SnapshotSet mainSnapshots;
+    SnapshotSet sidechainSnapshots;
+    std::vector<double> output;
+    QuantizedBufferView quantizedOutput;
+    int latencySamples = 0;
+    int bandProcessCalls = 0;
+    bool hasSidechainSnapshots = false;
+};
+
 std::vector<RandomTopologyCase> buildDeterministicTopologyMatrix(
     TopologyFamily family,
     std::span<const int> depths,
@@ -85,5 +100,11 @@ ReconstructionCheck evaluateReconstruction(
     std::span<const double> input,
     std::span<const double> output,
     int latencySamples);
+
+AnalysisSnapshotScenarioResult runAnalysisSnapshotScenario(
+    const dtcwpt::TopologyConfig& config,
+    std::span<const double> input,
+    std::optional<std::span<const double>> sidechain,
+    const SegmentationPlan& plan);
 
 } // namespace RegressionFixtures

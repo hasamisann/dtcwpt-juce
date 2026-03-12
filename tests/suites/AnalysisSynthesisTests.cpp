@@ -1,169 +1,219 @@
-/**
- * @file AnalysisSynthesisTests.cpp
- * @brief JUCE UnitTest suite for AnalysisNode and SynthesisNode.
- */
+#include "../util/RegressionFixtures.h"
 
 #include <dtcwpt/dtcwpt_analysis_node.h>
-#include <dtcwpt/dtcwpt_synthesis_node.h>
 #include <dtcwpt/dtcwpt_filter_coeffs.h>
-#include "../util/TestUtils.h"
+#include <dtcwpt/dtcwpt_processor.h>
+#include <dtcwpt/dtcwpt_synthesis_node.h>
 
 #include <juce_core/juce_core.h>
+
+#include <array>
 #include <cmath>
 #include <vector>
 
+namespace {
+
+constexpr int kScenarioSamples = 4096;
+const RegressionFixtures::SegmentationPlan kReferencePlan{"reference", {kScenarioSamples}};
+
+dtcwpt::TopologyConfig makeConfig(const std::vector<std::string>& destinations, int maxDepth)
+{
+    dtcwpt::TopologyConfig config;
+    config.destinations = destinations;
+    config.maxDepth = maxDepth;
+    return config;
+}
+
+std::vector<double> makeSineSignal(int totalSamples)
+{
+    std::vector<double> signal(static_cast<size_t>(totalSamples), 0.0);
+    constexpr double twoPi = 6.28318530717958647692;
+
+    for (int index = 0; index < totalSamples; ++index) {
+        signal[static_cast<size_t>(index)] = 0.45 * std::sin(twoPi * static_cast<double>(index) / 31.0);
+    }
+
+    return signal;
+}
+
+std::vector<double> makeDualToneSignal(int totalSamples)
+{
+    std::vector<double> signal(static_cast<size_t>(totalSamples), 0.0);
+    constexpr double twoPi = 6.28318530717958647692;
+
+    for (int index = 0; index < totalSamples; ++index) {
+        const double sample = static_cast<double>(index);
+        signal[static_cast<size_t>(index)] = 0.28 * std::sin(twoPi * sample / 19.0)
+            + 0.17 * std::cos(twoPi * sample / 43.0);
+    }
+
+    return signal;
+}
+
+std::vector<double> makeSweepSignal(int totalSamples)
+{
+    std::vector<double> signal(static_cast<size_t>(totalSamples), 0.0);
+    constexpr double twoPi = 6.28318530717958647692;
+
+    for (int index = 0; index < totalSamples; ++index) {
+        const double t = static_cast<double>(index) / static_cast<double>(totalSamples);
+        const double phase = twoPi * (8.0 * t + 120.0 * t * t);
+        signal[static_cast<size_t>(index)] = 0.33 * std::sin(phase);
+    }
+
+    return signal;
+}
+
+std::vector<double> makeImpulseSignal(int totalSamples)
+{
+    std::vector<double> signal(static_cast<size_t>(totalSamples), 0.0);
+    signal[static_cast<size_t>(totalSamples / 3)] = 1.0;
+    return signal;
+}
+
+struct SignalCase {
+    juce::String name;
+    std::vector<double> samples;
+};
+
+std::vector<SignalCase> buildSignalCases()
+{
+    return {
+        {"sine", makeSineSignal(kScenarioSamples)},
+        {"dual-tone", makeDualToneSignal(kScenarioSamples)},
+        {"sweep", makeSweepSignal(kScenarioSamples)},
+        {"impulse", makeImpulseSignal(kScenarioSamples)},
+    };
+}
+
+struct TopologyCase {
+    juce::String familyName;
+    dtcwpt::TopologyConfig config;
+};
+
+std::vector<TopologyCase> buildTopologyCasesForDepth(int depth)
+{
+    using TopologyFamily = RegressionFixtures::TopologyFamily;
+    const std::array<int, 1> depths{depth};
+    std::vector<TopologyCase> topologyCases;
+
+    const auto dwtCases = RegressionFixtures::buildDeterministicTopologyMatrix(TopologyFamily::dwt, depths, std::array<unsigned int, 1>{101U});
+    topologyCases.push_back({"dwt", makeConfig(dwtCases.front().destinations, depth)});
+
+    const auto fullTreeCases = RegressionFixtures::buildDeterministicTopologyMatrix(TopologyFamily::fullTree, depths, std::array<unsigned int, 1>{211U});
+    topologyCases.push_back({"full-tree", makeConfig(fullTreeCases.front().destinations, depth)});
+
+    if (depth >= 2) {
+        const unsigned int mixedSeed = static_cast<unsigned int>(307 + (depth * 17));
+        const auto mixedCases = RegressionFixtures::buildDeterministicTopologyMatrix(TopologyFamily::mixedDepth, depths, std::array<unsigned int, 1>{mixedSeed});
+        topologyCases.push_back({"mixed-depth", makeConfig(mixedCases.front().destinations, depth)});
+    }
+
+    return topologyCases;
+}
+
+} // namespace
+
 class AnalysisSynthesisTests : public juce::UnitTest {
 public:
-    AnalysisSynthesisTests() : UnitTest("AnalysisSynthesis") {}
+    AnalysisSynthesisTests()
+        : juce::UnitTest("AnalysisSynthesis")
+    {
+    }
 
-    void runTest() override {
+    void runTest() override
+    {
         beginTest("Analysis downsample");
         testAnalysisDownsample();
 
         beginTest("Synthesis upsample");
         testSynthesisUpsample();
 
-        beginTest("Perfect reconstruction");
-        testPerfectReconstruction();
+        beginTest("Perfect reconstruction matrix uses the locked c07 oracle");
+        testPerfectReconstructionMatrixUsesTheLockedC07Oracle();
     }
 
 private:
-    void testAnalysisDownsample() {
-        // 2N input samples -> N low-pass + N high-pass outputs
+    void testAnalysisDownsample()
+    {
         using namespace dtcwpt;
         using namespace dtcwpt::filters;
 
-        AnalysisNode node(CDF_RE, true);  // Level 1 with CDF coefficients
-
-        const size_t inputSize = 256;  // 2N
-        const size_t expectedOutputSize = inputSize / 2;  // N
+        AnalysisNode node(CDF_RE, true);
+        constexpr size_t inputSize = 256;
+        constexpr size_t expectedOutputSize = inputSize / 2;
 
         std::vector<double> workBuffer(inputSize * 2, 0.0);
         std::vector<char> activeFlags(inputSize * 2, 0);
+        size_t outputCount = 0;
 
-        // Process 2N samples
-        size_t lpCount = 0;
-        size_t hpCount = 0;
-
-        for (size_t i = 0; i < inputSize; ++i) {
-            double input = std::sin(2.0 * 3.14159265358979323846 * 440.0 * i / 44100.0);
-            
-            bool wroteOutput = node.updateBuffer(input, workBuffer, activeFlags, 
-                                                  static_cast<int>(i), 
-                                                  static_cast<int>(i + inputSize));
-            
-            if (wroteOutput) {
-                ++lpCount;
-                ++hpCount;
+        for (size_t index = 0; index < inputSize; ++index) {
+            const double input = std::sin(2.0 * juce::MathConstants<double>::pi * 440.0 * static_cast<double>(index) / 44100.0);
+            if (node.updateBuffer(input, workBuffer, activeFlags, static_cast<int>(index), static_cast<int>(index + inputSize))) {
+                ++outputCount;
             }
         }
 
-        // Should produce N outputs each
-        expectEquals(lpCount, expectedOutputSize,
-                     "Should produce N low-pass outputs from 2N inputs");
-        expectEquals(hpCount, expectedOutputSize,
-                     "Should produce N high-pass outputs from 2N inputs");
+        expectEquals(outputCount, expectedOutputSize,
+                     "Analysis should produce one low/high output pair for every two inputs");
     }
 
-    void testSynthesisUpsample() {
-        // N LP + N HP inputs -> 2N output samples
+    void testSynthesisUpsample()
+    {
         using namespace dtcwpt;
         using namespace dtcwpt::filters;
 
-        SynthesisNode node(CDF_RE, true);  // Level 1 with CDF coefficients
+        SynthesisNode node(CDF_RE, true);
+        constexpr size_t inputSize = 128;
+        constexpr size_t expectedOutputSize = inputSize * 2;
 
-        const size_t inputSize = 128;  // N
-        const size_t expectedOutputSize = inputSize * 2;  // 2N
+        std::vector<double> lowBuffer(inputSize, 0.1);
+        std::vector<double> highBuffer(inputSize, 0.0);
+        std::vector<double> outputBuffer(expectedOutputSize * 2, 0.0);
+        node.synthesizeBlock(lowBuffer, highBuffer, outputBuffer, 0, inputSize);
 
-        std::vector<double> lowBuf(inputSize, 0.1);
-        std::vector<double> highBuf(inputSize, 0.0);
-        std::vector<double> outBuf(expectedOutputSize * 2, 0.0);
-
-        node.synthesizeBlock(lowBuf, highBuf, outBuf, 0, inputSize);
-
-        // Verify output size is 2N (samples are written to positions 0, 2, 4, ...)
-        // Actually synthesizeBlock fills 2*numSamples samples
-        // Check that we have non-zero output in the expected range
         size_t nonZeroCount = 0;
-        for (size_t i = 0; i < expectedOutputSize; ++i) {
-            if (std::abs(outBuf[i]) > 1e-10) {
+        for (size_t index = 0; index < expectedOutputSize; ++index) {
+            if (std::abs(outputBuffer[index]) > 1.0e-10) {
                 ++nonZeroCount;
             }
         }
 
-        expect(nonZeroCount > 0, "Synthesis should produce non-zero outputs");
+        expect(nonZeroCount > 0, "Synthesis should write reconstructed samples into the output buffer");
     }
 
-    void testPerfectReconstruction() {
-        // Matched analysis/synthesis pair reproduces input with ε ≤ 1e-9, shifted by d0 samples
-        using namespace dtcwpt;
-        using namespace dtcwpt::filters;
+    void testPerfectReconstructionMatrixUsesTheLockedC07Oracle()
+    {
+        const auto signals = buildSignalCases();
 
-        // Create matched analysis and synthesis nodes
-        AnalysisNode analysisNode(CDF_RE, true);
-        SynthesisNode synthesisNode(CDF_RE, true);
+        for (int depth = 1; depth <= 12; ++depth) {
+            const auto topologyCases = buildTopologyCasesForDepth(depth);
 
-        const size_t blockSize = 256;
-        const size_t numBlocks = 4;
+            for (const auto& topologyCase : topologyCases) {
+                for (const auto& signalCase : signals) {
+                    const auto scenario = RegressionFixtures::runAnalysisSnapshotScenario(topologyCase.config,
+                                                                                          signalCase.samples,
+                                                                                          std::nullopt,
+                                                                                          kReferencePlan);
+                    const auto reconstruction = RegressionFixtures::evaluateReconstruction(signalCase.samples,
+                                                                                           scenario.output,
+                                                                                           scenario.latencySamples);
 
-        // Generate test signal
-        std::vector<double> inputSignal(blockSize * numBlocks);
-        for (size_t i = 0; i < inputSignal.size(); ++i) {
-            inputSignal[i] = std::sin(2.0 * 3.14159265358979323846 * 1000.0 * i / 44100.0) * 0.5;
-        }
+                    const juce::String label = "depth " + juce::String(depth)
+                        + " " + topologyCase.familyName
+                        + " " + signalCase.name;
 
-        // Analysis buffers
-        std::vector<double> workBuffer(blockSize * 4, 0.0);
-        std::vector<char> activeFlags(blockSize * 4, 0);
-
-        // Output buffers
-        std::vector<double> outputSignal(blockSize * numBlocks * 2, 0.0);
-        size_t outputCursor = 0;
-
-        for (size_t block = 0; block < numBlocks; ++block) {
-            // Analysis: 2N -> N
-            std::vector<double> lowPass(blockSize / 2, 0.0);
-            std::vector<double> highPass(blockSize / 2, 0.0);
-            
-            size_t lpIdx = 0;
-            for (size_t i = 0; i < blockSize; ++i) {
-                size_t inputIdx = block * blockSize + i;
-                double sample = (inputIdx < inputSignal.size()) ? inputSignal[inputIdx] : 0.0;
-                
-                bool wrote = analysisNode.updateBuffer(sample, workBuffer, activeFlags,
-                                                        static_cast<int>(lpIdx),
-                                                        static_cast<int>(blockSize / 2 + lpIdx));
-                if (wrote && lpIdx < blockSize / 2) {
-                    lowPass[lpIdx] = workBuffer[lpIdx];
-                    highPass[lpIdx] = workBuffer[blockSize / 2 + lpIdx];
-                    ++lpIdx;
+                    expect(scenario.bandProcessCalls > 0,
+                           label + " should exercise at least one analysis snapshot arrival");
+                    expect(reconstruction.passesMseThreshold,
+                           label + " should reconstruct at <= -200 dB MSE, got "
+                               + juce::String(reconstruction.mseDb, 6)
+                               + " dB with max abs error "
+                               + juce::String(reconstruction.maxAbsError, 12));
                 }
             }
-
-            // Synthesis: N + N -> 2N
-            synthesisNode.synthesizeBlock(lowPass, highPass, outputSignal, outputCursor, blockSize / 2);
-            outputCursor += blockSize;
-        }
-
-        // Get filter delay
-        int delay = synthesisNode.getFilterLowDelay();
-
-        // Verify reconstruction (accounting for delay)
-        // The output should match input shifted by delay samples
-        size_t validSamples = std::min(inputSignal.size(), outputSignal.size() - static_cast<size_t>(delay));
-        
-        if (validSamples > static_cast<size_t>(delay)) {
-            double maxError = 0.0;
-            for (size_t i = 0; i < validSamples - static_cast<size_t>(delay); ++i) {
-                double error = std::abs(inputSignal[i] - outputSignal[i + static_cast<size_t>(delay)]);
-                maxError = std::max(maxError, error);
-            }
-            
-            expect(maxError < 1e-9, 
-                   "Perfect reconstruction error should be < 1e-9, got " + juce::String(maxError));
         }
     }
 };
 
-// Static registration
 static AnalysisSynthesisTests analysisSynthesisTests;
