@@ -287,6 +287,7 @@ private:
      */
     void rebuildDTCWPT();
     bool tryApplyTopologyCandidate (const std::vector<std::string>& candidateDestinations) noexcept;
+    bool tryApplyPendingTopologyCandidate() noexcept;
 
     //==============================================================================
     // APVTS — owns all automatable parameters
@@ -367,6 +368,9 @@ private:
 
     /** Current maximum block size (cached from prepareToPlay). */
     int currentBlockSize_ { 512 };
+
+    /** Tracks whether a valid topology has already been committed into the engine. */
+    bool hasCommittedValidTopology_ { false };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MorphAudioProcessor)
 };

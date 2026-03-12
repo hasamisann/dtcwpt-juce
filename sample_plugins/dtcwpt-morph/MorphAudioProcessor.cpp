@@ -7,6 +7,7 @@
  */
 
 #include "MorphAudioProcessor.h"
+#include "../common/InvalidTopologyDiagnostics.h"
 #include "../common/TopologyPersistence.h"
 
 #include <juce_core/juce_core.h>
@@ -96,7 +97,8 @@ void MorphAudioProcessor::releaseResources()
 
 void MorphAudioProcessor::rebuildDTCWPT()
 {
-    (void) tryApplyTopologyCandidate (currentDestinations_);
+    if (! tryApplyPendingTopologyCandidate())
+        (void) tryApplyTopologyCandidate (currentDestinations_);
 }
 
 bool MorphAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::string>& candidateDestinations) noexcept
@@ -129,12 +131,27 @@ bool MorphAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::stri
         analyzerInputAlignerMaxDelay_ = newAnalyzerMaxDelay;
         apvts_.state.setProperty (topology::kTopologyPropertyKey, serializedTopology, nullptr);
         setLatencySamples (newLatency);
+        hasCommittedValidTopology_ = true;
         return true;
     }
     catch (const std::invalid_argument&)
     {
+        topology::emitInvalidTopologyDiagnostic ("Morph");
+
+        if (! hasCommittedValidTopology_)
+            return tryApplyTopologyCandidate (kDefaultTopology);
+
         return false;
     }
+}
+
+bool MorphAudioProcessor::tryApplyPendingTopologyCandidate() noexcept
+{
+    std::vector<std::string> candidateDestinations;
+    if (! topoState_.tryConsume (candidateDestinations))
+        return false;
+
+    return tryApplyTopologyCandidate (candidateDestinations);
 }
 
 //==============================================================================
@@ -156,11 +173,7 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // -------------------------------------------------------------------------
     // 1. Topology dirty check — rebuild if the GUI has requested a change
     // -------------------------------------------------------------------------
-    {
-        std::vector<std::string> newDestinations;
-        if (topoState_.tryConsume (newDestinations))
-            (void) tryApplyTopologyCandidate (newDestinations);
-    }
+    (void) tryApplyPendingTopologyCandidate();
 
     // -------------------------------------------------------------------------
     // 2. Read APVTS atomic float parameters → set targets on MorphBandProcessor
@@ -356,7 +369,17 @@ void MorphAudioProcessor::setStateInformation (const void* data, int sizeInBytes
         apvts_.replaceState (state);
 
         const auto restoredTopology = topology::resolvePersistedTopology (apvts_.state, currentDestinations_);
-        topoState_.requestChange (restoredTopology.destinations);
+        if (restoredTopology.persistedState != topology::PersistedTopologyState::valid)
+        {
+            apvts_.state.setProperty (topology::kTopologyPropertyKey,
+                                      topology::serializeTopologyDestinations (currentDestinations_),
+                                      nullptr);
+        }
+
+        if (restoredTopology.persistedState == topology::PersistedTopologyState::invalid)
+            topoState_.requestChange ({});
+        else
+            topoState_.requestChange (restoredTopology.destinations);
     }
 }
 
@@ -372,11 +395,7 @@ bool MorphAudioProcessor::applyTopologyCandidateForTest (const std::vector<std::
 
 bool MorphAudioProcessor::rebuildPendingTopologyForTest() noexcept
 {
-    std::vector<std::string> candidateDestinations;
-    if (! topoState_.tryConsume (candidateDestinations))
-        return false;
-
-    return tryApplyTopologyCandidate (candidateDestinations);
+    return tryApplyPendingTopologyCandidate();
 }
 
 juce::String MorphAudioProcessor::getPersistedTopologyStringForTest() const

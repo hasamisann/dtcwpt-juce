@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 project(dtcwpt_sample_plugins VERSION 0.1.0 LANGUAGES CXX)
 
+enable_testing()
+
 # C++20 required
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
