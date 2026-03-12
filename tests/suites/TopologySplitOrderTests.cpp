@@ -1,6 +1,10 @@
 #include "../../sample_plugins/common/TopologySplitOrder.h"
 
+#include <dtcwpt/dtcwpt_topology_planner.h>
+
 #include <juce_core/juce_core.h>
+
+#include <vector>
 
 class TopologySplitOrderTests : public juce::UnitTest
 {
@@ -27,6 +31,20 @@ public:
             expectEquals (children.highChild.path, std::string { "LLH" });
             expectEquals (children.lowChild.nodeId, 8);
             expectEquals (children.lowChild.path, std::string { "LLL" });
+        }
+
+        beginTest ("Planner destination order stays observable for shuffled valid leaves");
+        {
+            const std::vector<std::string> ordered { "LL", "LH", "HL", "HH" };
+            const std::vector<std::string> shuffled { "HL", "LL", "HH", "LH" };
+
+            dtcwpt::TopologyPlanner orderedPlanner { ordered };
+            dtcwpt::TopologyPlanner shuffledPlanner { shuffled };
+
+            expect (orderedPlanner.analysisOrder == shuffledPlanner.analysisOrder);
+            expect (orderedPlanner.synthesisOrder == shuffledPlanner.synthesisOrder);
+            expect (orderedPlanner.destinations != shuffledPlanner.destinations);
+            expect (shuffledPlanner.destinations == std::vector<int> ({ 6, 4, 7, 5 }));
         }
     }
 };

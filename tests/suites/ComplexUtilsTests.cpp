@@ -33,6 +33,9 @@ public:
 
         beginTest("Known values");
         testKnownValues();
+
+        beginTest("Boundary values around zero and phase wrapping");
+        testBoundaryValuesAroundZeroAndPhaseWrapping();
     }
 
 private:
@@ -160,6 +163,61 @@ private:
                                    "phase[1] should be pi/2");
         expectWithinAbsoluteError(phase[2], PI, TestUtils::TestConfig::STRICT_EPSILON,
                                    "phase[2] should be pi");
+    }
+
+    void testBoundaryValuesAroundZeroAndPhaseWrapping() {
+        const std::vector<double> magnitudes = {0.0, 1.0e-15, 1.0, 1.0, 1.0, 1.0};
+        const std::vector<double> phases = {0.0, PI, PI, -PI, 2.0 * PI, -2.0 * PI};
+        std::vector<double> re(magnitudes.size(), 0.0);
+        std::vector<double> im(magnitudes.size(), 0.0);
+
+        dtcwpt::magPhaseToComplex(magnitudes.data(), phases.data(), re.data(), im.data(), magnitudes.size());
+
+        expectWithinAbsoluteError(re[0], 0.0, TestUtils::TestConfig::STRICT_EPSILON,
+                                  "Zero magnitude should stay at zero real part");
+        expectWithinAbsoluteError(im[0], 0.0, TestUtils::TestConfig::STRICT_EPSILON,
+                                  "Zero magnitude should stay at zero imaginary part");
+        expect(re[1] < 0.0, "Tiny negative-axis magnitude should preserve sign around pi");
+        expectWithinAbsoluteError(im[1], 0.0, 1.0e-20,
+                                  "Tiny negative-axis magnitude should stay close to zero imaginary part");
+        expectWithinAbsoluteError(re[2], -1.0, TestUtils::TestConfig::STRICT_EPSILON,
+                                  "Phase +pi should map to the negative real axis");
+        expectWithinAbsoluteError(im[2], 0.0, TestUtils::TestConfig::STRICT_EPSILON,
+                                  "Phase +pi should have zero imaginary part");
+        expectWithinAbsoluteError(re[3], -1.0, TestUtils::TestConfig::STRICT_EPSILON,
+                                  "Phase -pi should map to the same negative real axis");
+        expectWithinAbsoluteError(im[3], 0.0, TestUtils::TestConfig::STRICT_EPSILON,
+                                  "Phase -pi should have zero imaginary part");
+        expectWithinAbsoluteError(re[4], 1.0, TestUtils::TestConfig::STRICT_EPSILON,
+                                  "Phase +2pi should wrap to the positive real axis");
+        expectWithinAbsoluteError(im[4], 0.0, TestUtils::TestConfig::STRICT_EPSILON,
+                                  "Phase +2pi should wrap with zero imaginary part");
+        expectWithinAbsoluteError(re[5], 1.0, TestUtils::TestConfig::STRICT_EPSILON,
+                                  "Phase -2pi should wrap to the positive real axis");
+        expectWithinAbsoluteError(im[5], 0.0, TestUtils::TestConfig::STRICT_EPSILON,
+                                  "Phase -2pi should wrap with zero imaginary part");
+
+        std::vector<double> roundTripMagnitude(magnitudes.size(), 0.0);
+        std::vector<double> roundTripPhase(magnitudes.size(), 0.0);
+        dtcwpt::complexToMagPhase(re.data(), im.data(), roundTripMagnitude.data(), roundTripPhase.data(), re.size());
+
+        for (size_t i = 0; i < magnitudes.size(); ++i) {
+            expectWithinAbsoluteError(roundTripMagnitude[i], magnitudes[i], 1.0e-12,
+                                      "Magnitude should survive wrapped roundtrip at index " + juce::String(static_cast<int>(i)));
+        }
+
+        expectWithinAbsoluteError(roundTripPhase[0], 0.0, TestUtils::TestConfig::STRICT_EPSILON,
+                                  "Zero vector phase should remain pinned at zero");
+        expectWithinAbsoluteError(std::abs(roundTripPhase[1]), PI, 1.0e-12,
+                                  "Tiny negative-axis phase should land on the pi boundary");
+        expectWithinAbsoluteError(std::abs(roundTripPhase[2]), PI, 1.0e-12,
+                                  "Positive pi should remain on the wrapped boundary");
+        expectWithinAbsoluteError(std::abs(roundTripPhase[3]), PI, 1.0e-12,
+                                  "Negative pi should remain on the wrapped boundary");
+        expectWithinAbsoluteError(roundTripPhase[4], 0.0, 1.0e-12,
+                                  "Positive 2pi should wrap back to zero phase");
+        expectWithinAbsoluteError(roundTripPhase[5], 0.0, 1.0e-12,
+                                  "Negative 2pi should wrap back to zero phase");
     }
 };
 

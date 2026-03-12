@@ -88,6 +88,11 @@ std::vector<std::string> buildMixedDepthDestinations(int depth, unsigned int see
 
 class SnapshotCaptureProcessor final : public dtcwpt::BandProcessor {
 public:
+    void setCaptureEnabled(bool shouldCapture) noexcept
+    {
+        captureEnabled = shouldCapture;
+    }
+
     void prepare(double, int, int, int) override
     {
         reset();
@@ -95,6 +100,10 @@ public:
 
     void processAllBands(dtcwpt::BandData& data) override
     {
+        if (! captureEnabled) {
+            return;
+        }
+
         ++bandProcessCalls;
         appendBands(mainSnapshots, data.bands, data.numChannels, data.numBands, data.destinationIds);
 
@@ -110,6 +119,7 @@ public:
         sidechainSnapshots = {};
         bandProcessCalls = 0;
         hasSidechainSnapshots = false;
+        captureEnabled = true;
     }
 
     AnalysisSnapshotScenarioResult buildResult(std::vector<double> output,
@@ -209,6 +219,7 @@ private:
     SnapshotSet sidechainSnapshots;
     int bandProcessCalls = 0;
     bool hasSidechainSnapshots = false;
+    bool captureEnabled = true;
 };
 
 } // namespace
@@ -515,6 +526,8 @@ AnalysisSnapshotScenarioResult runAnalysisSnapshotScenario(
         output.insert(output.end(), outputData, outputData + blockSize);
         cursor += blockSize;
     }
+
+    captureProcessorPtr->setCaptureEnabled(false);
 
     for (int tailOffset = 0; tailOffset < latencySamples; tailOffset += maxBlockSize) {
         const int tailBlockSize = std::min(maxBlockSize, latencySamples - tailOffset);

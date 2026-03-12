@@ -152,6 +152,9 @@ public:
 
         beginTest ("8. Reset snaps SmoothedValues to target");
         testReset();
+
+        beginTest ("9. Threshold boundary preserves full phase replacement");
+        testThresholdBoundaryPreservesPhaseReplacement();
     }
 
 private:
@@ -526,6 +529,37 @@ private:
             double expScMag = std::hypot (ref.scRe[0][0][s], ref.scIm[0][0][s]);
             expectWithinAbsoluteError (outMag, expScMag, tol,
                                        "After reset(), first sample should be at full morph");
+        }
+    }
+
+    void testThresholdBoundaryPreservesPhaseReplacement()
+    {
+        SynthBandData sb;
+        sb.init (1, 1, 1024, {5});
+
+        for (std::size_t s = 0; s < 1024; ++s)
+        {
+            sb.mainRe[0][0][s] = 1.0;
+            sb.mainIm[0][0][s] = 0.0;
+            sb.scRe[0][0][s] = 0.0;
+            sb.scIm[0][0][s] = 0.5;
+        }
+
+        MorphBandProcessor proc;
+        proc.prepare (44100.0, 1024, 1, 1);
+        proc.setTargets (0.0, 1.0, 0.5, false, false);
+        proc.processAllBands (sb.data);
+
+        constexpr double tol = 1.0e-5;
+        for (std::size_t s = 924; s < 1024; ++s)
+        {
+            const double outMag = std::hypot (sb.mainRe[0][0][s], sb.mainIm[0][0][s]);
+            const double outPhase = std::atan2 (sb.mainIm[0][0][s], sb.mainRe[0][0][s]);
+
+            expectWithinAbsoluteError (outMag, 1.0, tol,
+                                       "Threshold equality should preserve the main magnitude");
+            expectWithinAbsoluteError (outPhase, PI / 2.0, tol,
+                                       "Threshold equality should not attenuate sidechain phase replacement");
         }
     }
 };

@@ -47,6 +47,16 @@ public:
             expectEquals (juce::String (topology::getLastInvalidTopologyDiagnosticCategoryForTest()),
                           juce::String (topology::invalidTopologyDiagnosticCategory()));
         }
+
+        beginTest ("Reset helper clears emission count and last category after activity");
+        {
+            topology::emitInvalidTopologyDiagnostic ("Morph");
+            topology::emitInvalidTopologyDiagnostic ("Gate");
+
+            topology::resetInvalidTopologyDiagnosticsForTest();
+            expectEquals (topology::getInvalidTopologyDiagnosticEmissionCountForTest(), 0);
+            expectEquals (juce::String (topology::getLastInvalidTopologyDiagnosticCategoryForTest()), juce::String());
+        }
     }
 };
 

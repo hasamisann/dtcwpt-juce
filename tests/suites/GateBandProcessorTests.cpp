@@ -135,6 +135,58 @@ public:
             expectEquals(levels[0], -80.0f);
             expectEquals(levels[1], -80.0f);
         }
+
+        beginTest("Lowest band bypass preserves samples while higher bands still gate");
+        {
+            GateBandProcessor gate;
+            gate.prepare(44100.0, 4, 2, 1);
+            gate.setBypassLowest(true);
+
+            const double thresholds[2] = { 0.9, 0.9 };
+            gate.setThresholds(thresholds, 2);
+
+            std::vector<int> destinationIds{4, 5};
+            double lowRe[2] = { 0.25, 0.25 };
+            double lowIm[2] = { 0.0, 0.0 };
+            double highRe[2] = { 0.25, 0.25 };
+            double highIm[2] = { 0.0, 0.0 };
+
+            dtcwpt::BandData data;
+            data.numChannels = 1;
+            data.numBands = 2;
+            data.destinationIds = &destinationIds;
+            dtcwpt::ChannelBandView lowView { lowRe, lowIm, 2 };
+            dtcwpt::ChannelBandView highView { highRe, highIm, 2 };
+            data.bands = { { lowView, highView } };
+
+            gate.processAllBands(data);
+
+            expectEquals(lowRe[0], 0.25);
+            expectEquals(lowRe[1], 0.25);
+            expectEquals(highRe[0], 0.0);
+            expectEquals(highRe[1], 0.0);
+        }
+
+        beginTest("Threshold equality leaves a band open deterministically");
+        {
+            GateBandProcessor gate;
+            gate.prepare(44100.0, 2, 1, 1);
+            const double threshold[1] = { 0.25 };
+            gate.setThresholds(threshold, 1);
+
+            double re[2] = { 0.25, -0.25 };
+            double im[2] = { 0.0, 0.0 };
+            dtcwpt::BandData data;
+            data.numChannels = 1;
+            data.numBands = 1;
+            dtcwpt::ChannelBandView view { re, im, 2 };
+            data.bands = { { view } };
+
+            gate.processAllBands(data);
+
+            expectEquals(re[0], 0.25);
+            expectEquals(re[1], -0.25);
+        }
     }
 };
 

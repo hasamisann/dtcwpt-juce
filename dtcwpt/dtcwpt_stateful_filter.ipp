@@ -44,13 +44,13 @@ double StatefulFilter::filtering() {
     } else {
         idx = static_cast<int>(cursor_) - 1 + static_cast<int>(size_);
     }
-    
+
     double result = 0.0;
     for (size_t i = 0; i < kernel_.size(); ++i) {
         result += kernel_[i] * mirrorBuffer_[static_cast<size_t>(idx)];
         idx -= 1;
     }
-    
+
     return result;
 }
 

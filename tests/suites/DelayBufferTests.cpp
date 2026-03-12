@@ -26,6 +26,12 @@ public:
 
         beginTest("Allocation-free processing");
         testAllocationFree();
+
+        beginTest("Continuous short-block sequence preserves exact delay");
+        testContinuousShortBlockSequence();
+
+        beginTest("Boundary lengths allow zero and single-sample processing");
+        testBoundaryLengths();
     }
 
 private:
@@ -136,6 +142,56 @@ private:
 
         expect(counter.getCount() == 0, 
                "No allocations should occur during process() - found " + juce::String(static_cast<int>(counter.getCount())));
+    }
+
+    void testContinuousShortBlockSequence() {
+        constexpr int delaySamples = 3;
+        constexpr int blockSize = 8;
+        constexpr int chunkSize = 2;
+        dtcwpt::DelayBuffer buffer(delaySamples, blockSize);
+
+        const std::vector<double> source{1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
+        std::vector<double> blockInput(blockSize, 0.0);
+        std::vector<double> blockOutput(blockSize, -1.0);
+        std::vector<double> streamedOutput;
+
+        for (size_t offset = 0; offset < source.size(); offset += static_cast<size_t>(chunkSize)) {
+            std::fill(blockInput.begin(), blockInput.end(), 0.0);
+            std::fill(blockOutput.begin(), blockOutput.end(), -1.0);
+
+            for (int i = 0; i < chunkSize; ++i) {
+                blockInput[static_cast<size_t>(i)] = source[offset + static_cast<size_t>(i)];
+            }
+
+            buffer.process(blockInput, blockOutput, chunkSize);
+            streamedOutput.insert(streamedOutput.end(), blockOutput.begin(), blockOutput.begin() + chunkSize);
+        }
+
+        const std::vector<double> expected{0.0, 0.0, 0.0, 1.0, 2.0, 3.0};
+        expect(streamedOutput == expected,
+               "Continuous short-block processing should preserve the exact delayed sequence");
+    }
+
+    void testBoundaryLengths() {
+        dtcwpt::DelayBuffer zeroDelay(2, 4);
+        std::vector<double> input{1.0, 2.0, 3.0, 4.0};
+        std::vector<double> output{9.0, 9.0, 9.0, 9.0};
+
+        zeroDelay.process(input, output, 0);
+        expect(output == std::vector<double>({9.0, 9.0, 9.0, 9.0}),
+               "Zero-length processing should not mutate the output buffer");
+
+        zeroDelay.process(input, output, 1);
+        expectWithinAbsoluteError(output[0], 0.0, TestUtils::TestConfig::EPSILON,
+                                  "A delayed single-sample call should emit initial silence");
+
+        zeroDelay.process(input, output, 1);
+        expectWithinAbsoluteError(output[0], 0.0, TestUtils::TestConfig::EPSILON,
+                                  "Delay should still hold the sample until the full delay elapses");
+
+        zeroDelay.process(input, output, 1);
+        expectWithinAbsoluteError(output[0], 1.0, TestUtils::TestConfig::EPSILON,
+                                  "Single-sample processing should emit the delayed sample at the boundary");
     }
 };
 

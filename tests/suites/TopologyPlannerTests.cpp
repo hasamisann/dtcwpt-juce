@@ -4,9 +4,11 @@
  */
 
 #include <dtcwpt/dtcwpt_topology_planner.h>
+#include "../util/RegressionFixtures.h"
 #include "../util/TestUtils.h"
 
 #include <juce_core/juce_core.h>
+#include <array>
 #include <vector>
 #include <string>
 
@@ -35,6 +37,12 @@ public:
 
         beginTest("Representative valid order regression");
         testRepresentativeValidOrderRegression();
+
+        beginTest("Representative deterministic matrix cases stay planner-valid");
+        testRepresentativeDeterministicMatrixCases();
+
+        beginTest("Shuffled valid destinations preserve destination order");
+        testShuffledValidDestinationsPreserveOrder();
     }
 
 private:
@@ -191,6 +199,45 @@ private:
             expect(planner.destinations == std::vector<int>({8, 9, 5, 3}),
                    "Wavelet-tree topology should preserve destination node order");
         }
+    }
+
+    void testRepresentativeDeterministicMatrixCases() {
+        const auto dwtCases = RegressionFixtures::buildDeterministicTopologyMatrix(
+            RegressionFixtures::TopologyFamily::dwt,
+            std::array<int, 1>{3},
+            std::array<unsigned int, 1>{11U});
+        const auto fullTreeCases = RegressionFixtures::buildDeterministicTopologyMatrix(
+            RegressionFixtures::TopologyFamily::fullTree,
+            std::array<int, 1>{3},
+            std::array<unsigned int, 1>{13U});
+        const auto mixedCases = RegressionFixtures::buildDeterministicTopologyMatrix(
+            RegressionFixtures::TopologyFamily::mixedDepth,
+            std::array<int, 1>{4},
+            std::array<unsigned int, 1>{17U});
+
+        const std::vector<RegressionFixtures::RandomTopologyCase> cases{
+            dwtCases.front(),
+            fullTreeCases.front(),
+            mixedCases.front()
+        };
+
+        for (const auto& topologyCase : cases) {
+            dtcwpt::TopologyPlanner planner(topologyCase.destinations);
+            const auto [analysisOrder, synthesisOrder] = planner.getPlan();
+
+            expect(!analysisOrder.empty(), "Representative deterministic case should produce analysis work");
+            expect(!synthesisOrder.empty(), "Representative deterministic case should produce synthesis work");
+            expectEquals(static_cast<int>(planner.destinations.size()), static_cast<int>(topologyCase.destinations.size()),
+                         "Planner destination count should match the deterministic topology case");
+        }
+    }
+
+    void testShuffledValidDestinationsPreserveOrder() {
+        const std::vector<std::string> shuffledDestinations = {"HH", "LL", "HL", "LH"};
+        dtcwpt::TopologyPlanner planner(shuffledDestinations);
+
+        expect(planner.destinations == std::vector<int>({7, 4, 6, 5}),
+               "Planner destination node order should follow the caller-provided destination order");
     }
 };
 

@@ -26,6 +26,9 @@ public:
 
         beginTest("Extended processing beyond kernel length");
         testExtendedProcessing();
+
+        beginTest("Reported delay metadata remains stable across reset boundaries");
+        testReportedDelayMetadataRemainsStable();
     }
 
 private:
@@ -112,6 +115,22 @@ private:
             expect(std::isfinite(output), "Output should be finite");
             expect(output >= -1.0 && output <= 1.0, "Output should be in reasonable range");
         }
+    }
+
+    void testReportedDelayMetadataRemainsStable() {
+        dtcwpt::StatefulFilter filter({0.5, 0.3, 0.2}, 2);
+        expectEquals(filter.getDelay(), 2, "Configured delay metadata should be reported before processing");
+
+        for (double sample : {1.0, -0.5, 0.25, -0.125}) {
+            filter.pushSample(sample);
+            expect(std::isfinite(filter.filtering()), "Continuous processing should remain finite around reset boundaries");
+        }
+
+        filter.reset();
+        expectEquals(filter.getDelay(), 2, "Reset should not mutate the configured delay metadata");
+
+        filter.pushSample(0.75);
+        expect(std::isfinite(filter.filtering()), "Filtering should remain finite immediately after reset");
     }
 };
 
