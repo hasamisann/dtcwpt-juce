@@ -408,6 +408,18 @@ int MorphAudioProcessor::getCommittedTopologyDepthForTest() const noexcept
     return getTopologyDepth (currentDestinations_);
 }
 
+int MorphAudioProcessor::getAnalyzerInputDelaySamplesForTest() const noexcept
+{
+    return analyzerInputAligner_.getDelaySamples();
+}
+
+bool MorphAudioProcessor::consumeSpectrumSnapshotForTest (
+    std::array<float, SpectrumDataBridge::kSlotSize>& inputOut,
+    std::array<float, SpectrumDataBridge::kSlotSize>& outputOut)
+{
+    return spectrumBridge_.tryConsume (inputOut, outputOut);
+}
+
 //==============================================================================
 // Parameter layout factory
 //==============================================================================

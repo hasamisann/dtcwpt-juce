@@ -30,6 +30,7 @@
 
 // Standard library
 #include <memory>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -272,6 +273,9 @@ public:
     int getCommittedTopologyDepthForTest() const noexcept;
     const MorphBandProcessor* getObservedMorphProcessorForTest() const noexcept { return morphProcessor_; }
     const dtcwpt::DTCWPTProcessor* getEngineIdentityForTest() const noexcept { return dtcwptMain_.get(); }
+    int getAnalyzerInputDelaySamplesForTest() const noexcept;
+    bool consumeSpectrumSnapshotForTest (std::array<float, SpectrumDataBridge::kSlotSize>& inputOut,
+                                         std::array<float, SpectrumDataBridge::kSlotSize>& outputOut);
 
 private:
     //==============================================================================
