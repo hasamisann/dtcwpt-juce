@@ -182,10 +182,11 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             thresholds[i] = std::pow(10.0, db / 20.0);
         }
     }
+    lastThresholdsForTest_ = thresholds;
     gateProcessor_->setThresholds(thresholds.data(), static_cast<int>(numBands));
 
-    if (bypassLowestRaw_ != nullptr)
-        gateProcessor_->setBypassLowest(bypassLowestRaw_->load() >= 0.5f);
+    lastBypassLowestForTest_ = bypassLowestRaw_ != nullptr && bypassLowestRaw_->load() >= 0.5f;
+    gateProcessor_->setBypassLowest(lastBypassLowestForTest_);
 
     // 3. Snapshot input (mono-averaged) for spectrum
     inputMonoScratch_.clear();
@@ -351,6 +352,24 @@ bool GateAudioProcessor::applyTopologyCandidateForTest (const std::vector<std::s
 juce::String GateAudioProcessor::getPersistedTopologyStringForTest() const
 {
     return apvts_.state.getProperty (topology::kTopologyPropertyKey).toString();
+}
+
+int GateAudioProcessor::getAnalyzerInputDelaySamplesForTest() const noexcept
+{
+    return analyzerInputAligner_.getDelaySamples();
+}
+
+double GateAudioProcessor::getLastThresholdLinearForTest (int bandIndex) const noexcept
+{
+    if (bandIndex < 0 || bandIndex >= GateBandProcessor::kMaxBands)
+        return 0.0;
+
+    return lastThresholdsForTest_[static_cast<std::size_t> (bandIndex)];
+}
+
+bool GateAudioProcessor::getLastBypassLowestForTest() const noexcept
+{
+    return lastBypassLowestForTest_;
 }
 
 //==============================================================================

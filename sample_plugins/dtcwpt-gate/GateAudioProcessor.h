@@ -176,6 +176,9 @@ public:
     bool applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations) noexcept;
     const std::vector<std::string>& getCommittedDestinationsForTest() const noexcept { return currentDestinations_; }
     juce::String getPersistedTopologyStringForTest() const;
+    int getAnalyzerInputDelaySamplesForTest() const noexcept;
+    double getLastThresholdLinearForTest (int bandIndex) const noexcept;
+    bool getLastBypassLowestForTest() const noexcept;
     const GateBandProcessor* getObservedGateProcessorForTest() const noexcept { return gateProcessor_; }
     const dtcwpt::DTCWPTProcessor* getEngineIdentityForTest() const noexcept { return dtcwptMain_.get(); }
 
@@ -198,9 +201,11 @@ private:
     
     /** Cached raw pointers to the 256 threshold parameters. */
     std::array<std::atomic<float>*, 256> thresholdRaw_ {};
+    std::array<double, GateBandProcessor::kMaxBands> lastThresholdsForTest_ {};
 
     /** Cached raw pointer to the bypass lowest band parameter. */
     std::atomic<float>* bypassLowestRaw_ { nullptr };
+    bool lastBypassLowestForTest_ { false };
 
     //==============================================================================
     // DSP objects
