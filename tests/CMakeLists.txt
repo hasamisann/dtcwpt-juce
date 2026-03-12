@@ -73,6 +73,8 @@ target_sources(dtcwpt_tests
         suites/TopologyViewStateRestoreTests.cpp
         suites/InvalidTopologyDiagnosticsTests.cpp
         suites/AnalyzerLatencyAlignerTests.cpp
+        suites/RegressionFixturesTests.cpp
+        util/RegressionFixtures.cpp
         util/TestUtils.cpp
         stubs/MorphAudioProcessorStubs.cpp
         stubs/GateAudioProcessorStubs.cpp
