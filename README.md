@@ -174,6 +174,7 @@ The build system will automatically locate JUCE in the following order:
 
 ### Topology (Destinations) Rules
 
+`README.md` is the normative specification for valid `TopologyConfig::destinations` inputs.
 `TopologyConfig::destinations` defines the leaf nodes of a binary wavelet packet tree.
 Each destination is a path string of `'L'` (low-pass) and `'H'` (high-pass) characters, where the string length equals the node depth.
 
@@ -184,6 +185,10 @@ In other words:
 
 - If a node is split (has children), both its L-child and H-child must exist in the tree
 - Leaf nodes (destinations) have no children
+- Destination lists must be non-empty
+- Every destination path must be non-empty and contain only `L` or `H`
+- Destination paths must be unique
+- No destination may be an ancestor of another destination
 - No path may be longer than `maxDepth` characters at prepare time
 
 #### Path String Encoding
@@ -266,7 +271,7 @@ Invalid 3: Incomplete leaves -- Internal node L has children LL and LH, but only
 destinations = {"LL", "H"}    INVALID -- LH is missing (L must have both children)
 ```
 
-`prepareToPlay()` rejects empty destination lists, `maxDepth` values outside `1..12`, and any topology whose deepest destination path exceeds the configured `maxDepth`. Shape validation beyond those depth-related checks remains minimal, so invalid tree structures can still lead to undefined behavior. Validate your topology before passing it to `prepareToPlay()`.
+`prepareToPlay()` rejects empty destination lists, empty paths, invalid characters, duplicates, ancestor overlap, incomplete binary tree shapes, `maxDepth` values outside `1..12`, and any topology whose deepest destination path exceeds the configured `maxDepth`. Malformed tree shapes are rejected before topology planning and processor state construction, so invalid README-defined topologies do not proceed into undefined behavior.
 
 ### Double Precision
 

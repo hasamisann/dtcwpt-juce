@@ -32,6 +32,9 @@ public:
 
         beginTest("Out-of-range path rejected");
         testOutOfRangePathRejected();
+
+        beginTest("Representative valid order regression");
+        testRepresentativeValidOrderRegression();
     }
 
 private:
@@ -160,6 +163,34 @@ private:
 
         expect(threwInvalidArgument,
                "Depth-13 path should be rejected before planner indexing");
+    }
+
+    void testRepresentativeValidOrderRegression() {
+        {
+            const std::vector<std::string> destinations = {"L", "HL", "HH"};
+            dtcwpt::TopologyPlanner planner(destinations);
+            const auto [analysisOrder, synthesisOrder] = planner.getPlan();
+
+            expect(analysisOrder == std::vector<int>({1, 3}),
+                   "Mixed-depth valid topology should preserve analysis order [1, 3]");
+            expect(synthesisOrder == std::vector<int>({3, 1}),
+                   "Mixed-depth valid topology should preserve synthesis order [3, 1]");
+            expect(planner.destinations == std::vector<int>({2, 6, 7}),
+                   "Mixed-depth valid topology should preserve destination node order");
+        }
+
+        {
+            const std::vector<std::string> destinations = {"LLL", "LLH", "LH", "H"};
+            dtcwpt::TopologyPlanner planner(destinations);
+            const auto [analysisOrder, synthesisOrder] = planner.getPlan();
+
+            expect(analysisOrder == std::vector<int>({1, 2, 4}),
+                   "Wavelet-tree topology should preserve analysis order [1, 2, 4]");
+            expect(synthesisOrder == std::vector<int>({4, 2, 1}),
+                   "Wavelet-tree topology should preserve synthesis order [4, 2, 1]");
+            expect(planner.destinations == std::vector<int>({8, 9, 5, 3}),
+                   "Wavelet-tree topology should preserve destination node order");
+        }
     }
 };
 

@@ -54,6 +54,16 @@ void TopologyPlanner::buildTopology() {
         }
     }
 
+    for (std::size_t i = 1; i < topology_limits::kPlannerArraySize; ++i) {
+        const std::size_t leftChild = i << 1;
+        if (leftChild >= topology_limits::kPlannerArraySize || !isActive_[i]) {
+            continue;
+        }
+
+        assert(isActive_[leftChild] == isActive_[leftChild + 1]
+               && "TopologyPlanner expects already-validated full binary topology");
+    }
+
     // Build analysisOrder: forward linear scan over node indices; include inner nodes only
     analysisOrder.clear();
     for (std::size_t i = 1; i < topology_limits::kPlannerArraySize; ++i) {

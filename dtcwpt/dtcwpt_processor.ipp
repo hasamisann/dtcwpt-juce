@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <set>
 #include <stdexcept>
 
 namespace dtcwpt {
@@ -19,6 +20,12 @@ struct TopologyValidationResult {
     int configuredMaxDepth = 0;
     int supportedMaxDepth = topology_limits::kSupportedMaxDepth;
     int maxNodeIndex = 0;
+};
+
+struct PathShapeState {
+    bool isLeaf = false;
+    bool hasLowChild = false;
+    bool hasHighChild = false;
 };
 
 struct PreparedProcessorState {
@@ -106,6 +113,66 @@ int pathToNodeIndex(const std::string& path) noexcept {
     return index;
 }
 
+void validatePathSyntax(const std::string& path) {
+    if (path.empty()) {
+        throw std::invalid_argument("Destination paths must be non-empty");
+    }
+
+    for (const char c : path) {
+        if (c != 'L' && c != 'H') {
+            throw std::invalid_argument("Destination paths may contain only 'L' or 'H'");
+        }
+    }
+}
+
+std::map<std::string, PathShapeState> buildPathShapeStates(const std::set<std::string>& destinations) {
+    std::map<std::string, PathShapeState> states;
+
+    for (const auto& destination : destinations) {
+        states[destination].isLeaf = true;
+
+        std::string prefix;
+        prefix.reserve(destination.size());
+        for (const char c : destination) {
+            auto& state = states[prefix];
+            if (c == 'L') {
+                state.hasLowChild = true;
+            } else {
+                state.hasHighChild = true;
+            }
+            prefix.push_back(c);
+        }
+    }
+
+    return states;
+}
+
+void validateNoAncestorOverlap(const std::set<std::string>& destinations) {
+    for (const auto& destination : destinations) {
+        for (std::size_t prefixLength = 1; prefixLength < destination.size(); ++prefixLength) {
+            if (destinations.contains(destination.substr(0, prefixLength))) {
+                throw std::invalid_argument("Destination paths must not overlap ancestor leaves");
+            }
+        }
+    }
+}
+
+void validateCompleteLeafSet(const std::map<std::string, PathShapeState>& states) {
+    for (const auto& [path, state] : states) {
+        const bool hasChildren = state.hasLowChild || state.hasHighChild;
+
+        if (state.isLeaf && hasChildren) {
+            throw std::invalid_argument("Destination paths must not be both leaves and internal nodes");
+        }
+
+        if (!state.isLeaf && (!state.hasLowChild || !state.hasHighChild)) {
+            throw std::invalid_argument("Topology must form a complete binary leaf set");
+        }
+
+        (void) path;
+    }
+}
+
 TopologyValidationResult validateTopologyConfig(const TopologyConfig& config) {
     if (config.destinations.empty()) {
         throw std::invalid_argument("At least one destination required");
@@ -118,12 +185,23 @@ TopologyValidationResult validateTopologyConfig(const TopologyConfig& config) {
     TopologyValidationResult result;
     result.configuredMaxDepth = config.maxDepth;
 
+    std::set<std::string> uniqueDestinations;
+
     for (const auto& path : config.destinations) {
+        validatePathSyntax(path);
+
+        if (!uniqueDestinations.insert(path).second) {
+            throw std::invalid_argument("Destination paths must be unique");
+        }
+
         result.actualDepth = std::max(result.actualDepth, static_cast<int>(path.size()));
 
         const int nodeIndex = pathToNodeIndex(path);
         result.maxNodeIndex = std::max(result.maxNodeIndex, nodeIndex);
     }
+
+    validateNoAncestorOverlap(uniqueDestinations);
+    validateCompleteLeafSet(buildPathShapeStates(uniqueDestinations));
 
     if (result.actualDepth > result.configuredMaxDepth) {
         throw std::invalid_argument("Topology depth exceeds configured maxDepth");

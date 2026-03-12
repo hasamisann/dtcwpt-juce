@@ -11,9 +11,9 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <cmath>
 #include <functional>
+#include <memory>
 #include <stdexcept>
 #include <vector>
-#include <memory>
 
 /**
  * @brief Passthrough BandProcessor for reconstruction tests.
@@ -23,6 +23,26 @@ public:
     void prepare(double, int, int, int) override {}
     void reset() override {}
     // processBand() is no-op by default - passthrough
+};
+
+class DestinationCaptureProcessor : public dtcwpt::BandProcessor {
+public:
+    void prepare(double, int, int, int) override {}
+
+    void processAllBands(dtcwpt::BandData& data) override {
+        ++processCalls;
+        if (data.destinationIds != nullptr) {
+            observedDestinationIds = *data.destinationIds;
+        }
+    }
+
+    void reset() override {
+        processCalls = 0;
+        observedDestinationIds.clear();
+    }
+
+    int processCalls = 0;
+    std::vector<int> observedDestinationIds;
 };
 
 class DTCWPTProcessorTests : public juce::UnitTest {
@@ -60,6 +80,18 @@ public:
         beginTest("Configured maxDepth boundaries");
         testConfiguredMaxDepthBoundaries();
 
+        beginTest("Malformed topologies rejected");
+        testMalformedTopologiesRejected();
+
+        beginTest("Complete leaf set accepted at configured depth");
+        testCompleteLeafSetAcceptedAtConfiguredDepth();
+
+        beginTest("Complete leaf set accepted below configured depth");
+        testCompleteLeafSetAcceptedBelowConfiguredDepth();
+
+        beginTest("Accepted topology preserves destination order");
+        testAcceptedTopologyPreservesDestinationOrder();
+
         beginTest("actualDepth greater than maxDepth rejected");
         testActualDepthGreaterThanMaxDepthRejected();
 
@@ -69,6 +101,14 @@ public:
 
 private:
     static constexpr int kDefaultMaxDepth = dtcwpt::topology_limits::kSupportedMaxDepth;
+
+    static int pathToNodeIndex(const std::string& path) {
+        int index = 1;
+        for (const char c : path) {
+            index = (index << 1) | (c == 'H' ? 1 : 0);
+        }
+        return index;
+    }
 
     dtcwpt::TopologyConfig createConfig(const std::vector<std::string>& dests, int maxDepth = kDefaultMaxDepth) {
         dtcwpt::TopologyConfig config;
@@ -449,6 +489,94 @@ private:
             processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 512,
                                     createConfig(destinations, 13), 1);
         }, "maxDepth=13 should throw std::invalid_argument");
+    }
+
+    void testMalformedTopologiesRejected() {
+        dtcwpt::DTCWPTProcessor processor;
+
+        expectInvalidArgument([&]() {
+            processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 16, createConfig({}, 4), 1);
+        }, "Empty destination list should throw std::invalid_argument");
+
+        expectInvalidArgument([&]() {
+            processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 16,
+                                    createConfig({"LL", "", "HH"}, 4), 1);
+        }, "Empty destination path should throw std::invalid_argument");
+
+        expectInvalidArgument([&]() {
+            processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 16,
+                                    createConfig({"L", "HX"}, 4), 1);
+        }, "Non-L/H character should throw std::invalid_argument");
+
+        expectInvalidArgument([&]() {
+            processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 16,
+                                    createConfig({"L", "L", "H"}, 4), 1);
+        }, "Duplicate destination should throw std::invalid_argument");
+
+        expectInvalidArgument([&]() {
+            processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 16,
+                                    createConfig({"L", "LL", "LH", "H"}, 4), 1);
+        }, "Ancestor overlap should throw std::invalid_argument");
+
+        expectInvalidArgument([&]() {
+            processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 16,
+                                    createConfig({"L", "HL"}, 4), 1);
+        }, "Missing sibling topology {L, HL} should throw std::invalid_argument");
+
+        expectInvalidArgument([&]() {
+            processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 16,
+                                    createConfig({"LL", "H"}, 4), 1);
+        }, "Missing sibling topology {LL, H} should throw std::invalid_argument");
+    }
+
+    void testCompleteLeafSetAcceptedAtConfiguredDepth() {
+        dtcwpt::DTCWPTProcessor processor;
+        processor.setBandProcessor(std::make_unique<PassthroughProcessor>());
+
+        processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 32,
+                                createConfig(TestUtils::getFullPacketDestinations(3), 3), 1);
+
+        expect(processor.getLatency() > 0,
+               "Valid topology whose actualDepth equals maxDepth should be accepted");
+    }
+
+    void testCompleteLeafSetAcceptedBelowConfiguredDepth() {
+        dtcwpt::DTCWPTProcessor processor;
+        processor.setBandProcessor(std::make_unique<PassthroughProcessor>());
+
+        processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 32,
+                                createConfig({"LLL", "LLH", "LH", "H"}, 5), 1);
+
+        expect(processor.getLatency() > 0,
+               "Valid topology whose actualDepth is below maxDepth should be accepted");
+    }
+
+    void testAcceptedTopologyPreservesDestinationOrder() {
+        auto captureProcessor = std::make_unique<DestinationCaptureProcessor>();
+        auto* captureProcessorPtr = captureProcessor.get();
+
+        const std::vector<std::string> destinations = {"H", "LH", "LLL", "LLH"};
+        std::vector<int> expectedDestinationIds;
+        expectedDestinationIds.reserve(destinations.size());
+        for (const auto& destination : destinations) {
+            expectedDestinationIds.push_back(pathToNodeIndex(destination));
+        }
+
+        dtcwpt::DTCWPTProcessor processor;
+        processor.setBandProcessor(std::move(captureProcessor));
+        processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 16,
+                                createConfig(destinations, 5), 1);
+
+        juce::AudioBuffer<double> buffer(1, 16);
+        buffer.clear();
+        processor.processBlock(buffer);
+
+        expect(captureProcessorPtr->processCalls > 0,
+               "BandProcessor should observe at least one processed block");
+        expectEquals(captureProcessorPtr->observedDestinationIds.size(), expectedDestinationIds.size(),
+                     "Observed destination count should match caller order count");
+        expect(captureProcessorPtr->observedDestinationIds == expectedDestinationIds,
+               "Accepted topology should preserve caller-provided destination order");
     }
 
     void testActualDepthGreaterThanMaxDepthRejected() {
