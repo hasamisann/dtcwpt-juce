@@ -355,15 +355,14 @@ void MorphAudioProcessor::setStateInformation (const void* data, int sizeInBytes
     {
         apvts_.replaceState (state);
 
-        // Restore topology from the property
-        const auto resolved = getStoredTopologyDestinations();
-        topoState_.requestChange (resolved);
+        const auto restoredTopology = topology::resolvePersistedTopology (apvts_.state, currentDestinations_);
+        topoState_.requestChange (restoredTopology.destinations);
     }
 }
 
 std::vector<std::string> MorphAudioProcessor::getStoredTopologyDestinations() const
 {
-    return topology::resolvePersistedTopologyDestinations (apvts_.state, currentDestinations_);
+    return topology::resolvePersistedTopology (apvts_.state, currentDestinations_).destinations;
 }
 
 bool MorphAudioProcessor::applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations) noexcept

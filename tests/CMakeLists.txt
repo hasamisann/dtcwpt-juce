@@ -70,6 +70,7 @@ target_sources(dtcwpt_tests
         suites/BandLevelBridgeTests.cpp
         suites/GateBandProcessorTests.cpp
         suites/TopologyViewStateRestoreTests.cpp
+        suites/InvalidTopologyDiagnosticsTests.cpp
         suites/AnalyzerLatencyAlignerTests.cpp
         util/TestUtils.cpp
         stubs/MorphAudioProcessorStubs.cpp

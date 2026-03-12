@@ -15,37 +15,47 @@ public:
             const std::vector<std::string> fallback { "H", "L" };
             state.setProperty (topology::kTopologyPropertyKey, "H,LH,LLH,LLLL", nullptr);
 
-            const auto resolved = topology::resolvePersistedTopologyDestinations (state, fallback);
+            const auto resolved = topology::resolvePersistedTopology (state, fallback);
 
-            expectEquals (static_cast<int> (resolved.size()), 4);
-            expectEquals (resolved[0], std::string { "H" });
-            expectEquals (resolved[1], std::string { "LH" });
-            expectEquals (resolved[2], std::string { "LLH" });
-            expectEquals (resolved[3], std::string { "LLLL" });
+            expect (resolved.persistedState == topology::PersistedTopologyState::valid);
+            expectEquals (static_cast<int> (resolved.destinations.size()), 4);
+            expect (resolved.destinations[0] == std::string { "H" });
+            expect (resolved.destinations[1] == std::string { "LH" });
+            expect (resolved.destinations[2] == std::string { "LLH" });
+            expect (resolved.destinations[3] == std::string { "LLLL" });
         }
 
-        beginTest ("Falls back when stored topology is empty");
+        beginTest ("Reports missing persisted topology when property is absent");
         {
             juce::ValueTree state { "State" };
             const std::vector<std::string> fallback { "HH", "HL", "L" };
-            state.setProperty (topology::kTopologyPropertyKey, "", nullptr);
 
-            const auto resolved = topology::resolvePersistedTopologyDestinations (state, fallback);
-            expect (resolved == fallback);
+            const auto resolved = topology::resolvePersistedTopology (state, fallback);
+            expect (resolved.persistedState == topology::PersistedTopologyState::missing);
+            expect (resolved.destinations == fallback);
         }
 
-        beginTest ("Falls back when property is missing or non-string");
+        beginTest ("Reports invalid persisted topology when string is empty");
+        {
+            const std::vector<std::string> fallback { "HH", "HLL", "L" };
+            juce::ValueTree state { "State" };
+            state.setProperty (topology::kTopologyPropertyKey, "", nullptr);
+
+            const auto resolved = topology::resolvePersistedTopology (state, fallback);
+            expect (resolved.persistedState == topology::PersistedTopologyState::invalid);
+            expect (resolved.destinations == fallback);
+        }
+
+        beginTest ("Reports invalid persisted topology when property is non-string");
         {
             const std::vector<std::string> fallback { "HH", "HLL", "L" };
 
-            juce::ValueTree missingState { "State" };
-            const auto missingResolved = topology::resolvePersistedTopologyDestinations (missingState, fallback);
-            expect (missingResolved == fallback);
+            juce::ValueTree state { "State" };
+            state.setProperty (topology::kTopologyPropertyKey, 123, nullptr);
 
-            juce::ValueTree nonStringState { "State" };
-            nonStringState.setProperty (topology::kTopologyPropertyKey, 123, nullptr);
-            const auto nonStringResolved = topology::resolvePersistedTopologyDestinations (nonStringState, fallback);
-            expect (nonStringResolved == fallback);
+            const auto resolved = topology::resolvePersistedTopology (state, fallback);
+            expect (resolved.persistedState == topology::PersistedTopologyState::invalid);
+            expect (resolved.destinations == fallback);
         }
 
         beginTest ("Serialize then parse preserves destination order");

@@ -272,14 +272,14 @@ void GateAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
     {
         apvts_.replaceState (state);
 
-        const auto resolved = getStoredTopologyDestinations();
-        topoState_.requestChange (resolved);
+        const auto restoredTopology = topology::resolvePersistedTopology (apvts_.state, currentDestinations_);
+        topoState_.requestChange (restoredTopology.destinations);
     }
 }
 
 std::vector<std::string> GateAudioProcessor::getStoredTopologyDestinations() const
 {
-    return topology::resolvePersistedTopologyDestinations (apvts_.state, currentDestinations_);
+    return topology::resolvePersistedTopology (apvts_.state, currentDestinations_).destinations;
 }
 
 //==============================================================================

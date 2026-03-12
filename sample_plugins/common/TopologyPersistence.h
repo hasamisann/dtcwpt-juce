@@ -11,6 +11,19 @@ namespace topology
 inline constexpr const char* kTopologyPropertyKey = "topology";
 inline constexpr const char* kTopologySeparator = ",";
 
+enum class PersistedTopologyState
+{
+    missing,
+    valid,
+    invalid
+};
+
+struct PersistedTopologyResolution
+{
+    std::vector<std::string> destinations;
+    PersistedTopologyState persistedState = PersistedTopologyState::missing;
+};
+
 inline juce::String serializeTopologyDestinations (const std::vector<std::string>& destinations)
 {
     juce::StringArray destArray;
@@ -38,17 +51,25 @@ inline std::vector<std::string> parseTopologyDestinations (const juce::String& s
     return parsed;
 }
 
-inline std::vector<std::string> resolvePersistedTopologyDestinations (const juce::ValueTree& state,
-                                                                       const std::vector<std::string>& fallback)
+inline PersistedTopologyResolution resolvePersistedTopology (const juce::ValueTree& state,
+                                                             const std::vector<std::string>& fallback)
 {
+    const auto fallbackResult = [&fallback] (PersistedTopologyState persistedState)
+    {
+        return PersistedTopologyResolution { fallback, persistedState };
+    };
+
+    if (! state.hasProperty (kTopologyPropertyKey))
+        return fallbackResult (PersistedTopologyState::missing);
+
     const juce::var property = state.getProperty (kTopologyPropertyKey);
     if (!property.isString())
-        return fallback;
+        return fallbackResult (PersistedTopologyState::invalid);
 
     const auto parsed = parseTopologyDestinations (property.toString());
     if (parsed.empty())
-        return fallback;
+        return fallbackResult (PersistedTopologyState::invalid);
 
-    return parsed;
+    return PersistedTopologyResolution { parsed, PersistedTopologyState::valid };
 }
 } // namespace topology
