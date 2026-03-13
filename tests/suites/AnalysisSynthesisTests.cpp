@@ -135,6 +135,9 @@ public:
 
         beginTest("Production mixed-topology mainReal trace matches the independent baseline");
         testProductionMixedTopologyMainRealTraceMatchesIndependentBaseline();
+
+        beginTest("Scheduler equivalence scenarios cover topology families and all four analysis paths");
+        testSchedulerEquivalenceScenariosCoverTopologyFamiliesAndAllFourAnalysisPaths();
     }
 
 private:
@@ -274,6 +277,50 @@ private:
 #else
         expect(false, "DTCWPT_ENABLE_TEST_SEAMS must be enabled for mixed-topology trace comparison");
 #endif
+    }
+
+    void testSchedulerEquivalenceScenariosCoverTopologyFamiliesAndAllFourAnalysisPaths()
+    {
+        const std::vector<dtcwpt::TopologyConfig> configs{
+            makeConfig({"L", "H"}, 1),
+            makeConfig({"LL", "LH", "HL", "HH"}, 2),
+            makeConfig({"L", "HL", "HH"}, 2),
+        };
+
+        const std::vector<double> mainInput{0.25, -0.125, 0.0, 0.5};
+        const std::vector<double> sidechainInput{0.5, 0.25, -0.25, 0.0};
+        const std::array<dtcwpt::AnalysisPathId, 4> paths{
+            dtcwpt::AnalysisPathId::mainReal,
+            dtcwpt::AnalysisPathId::mainImag,
+            dtcwpt::AnalysisPathId::sidechainReal,
+            dtcwpt::AnalysisPathId::sidechainImag,
+        };
+
+        for (const auto& config : configs)
+        {
+            for (const auto path : paths)
+            {
+                const auto scenario = RegressionFixtures::runSchedulerEquivalenceScenario(
+                    config,
+                    mainInput,
+                    std::span<const double>(sidechainInput),
+                    path);
+
+                juce::String traceFailure;
+                expect(RegressionFixtures::compareAnalysisTraces(scenario.baseline.trace,
+                                                                 scenario.productionTrace,
+                                                                 traceFailure),
+                       "Production trace should match the independent baseline across topology families and paths: " + traceFailure);
+
+                juce::String outputFailure;
+                expect(RegressionFixtures::comparePerDestinationOutputs(scenario.baseline.destinationIdsInOrder,
+                                                                        scenario.baseline.perDestinationOutputs,
+                                                                        scenario.productionDestinationIdsInOrder,
+                                                                        scenario.productionPerDestinationOutputs,
+                                                                        outputFailure),
+                       "Production per-destination outputs should match the independent baseline across topology families and paths: " + outputFailure);
+            }
+        }
     }
 };
 

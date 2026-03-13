@@ -54,6 +54,12 @@ public:
 
         beginTest("Linear scan baseline uses legacy adapter expected call counts");
         testLinearScanBaselineUsesLegacyAdapterExpectedCallCounts();
+
+        beginTest("Per-destination output comparison checks structure and value tolerance");
+        testPerDestinationOutputComparisonChecksStructureAndValueTolerance();
+
+        beginTest("Scheduler equivalence scenario helper matches baseline for mixed topology");
+        testSchedulerEquivalenceScenarioHelperMatchesBaselineForMixedTopology();
     }
 
 private:
@@ -445,6 +451,69 @@ private:
             expectEquals(dtcwpt::test::getLegacyAdapterCallCount(), 3,
                          "Depth-2 full tree baseline must invoke the legacy adapter exactly for nodes 1, 2, and 3");
         }
+    }
+
+    void testPerDestinationOutputComparisonChecksStructureAndValueTolerance()
+    {
+        const std::vector<int> destinationIds{2, 6, 7};
+        const std::vector<std::vector<double>> reference{{0.25, 0.5}, {0.75}, {-0.125}};
+
+        auto tolerant = reference;
+        tolerant[0][1] += 5.0e-16;
+
+        juce::String failureMessage;
+        expect(RegressionFixtures::comparePerDestinationOutputs(destinationIds, reference,
+                                                                destinationIds, tolerant,
+                                                                failureMessage),
+               "Per-destination output comparison should tolerate <= 1e-15 numeric drift");
+        expect(failureMessage.isEmpty(),
+               "Successful per-destination output comparison should not report a failure message");
+
+        auto wrongOrder = destinationIds;
+        std::swap(wrongOrder[0], wrongOrder[1]);
+        failureMessage.clear();
+        expect(! RegressionFixtures::comparePerDestinationOutputs(destinationIds, reference,
+                                                                 wrongOrder, reference,
+                                                                 failureMessage),
+               "Per-destination output comparison should reject destination-order mismatches");
+        expect(failureMessage.contains("destination order"),
+               "Destination-order mismatch should be reported structurally");
+
+        auto wrongValue = reference;
+        wrongValue[1][0] += 1.0e-12;
+        failureMessage.clear();
+        expect(! RegressionFixtures::comparePerDestinationOutputs(destinationIds, reference,
+                                                                 destinationIds, wrongValue,
+                                                                 failureMessage),
+               "Per-destination output comparison should reject values above 1e-15 tolerance");
+        expect(failureMessage.contains("sample value"),
+               "Numeric output mismatch should report the offending sample");
+    }
+
+    void testSchedulerEquivalenceScenarioHelperMatchesBaselineForMixedTopology()
+    {
+        const auto config = makeConfig({"L", "HL", "HH"}, 2);
+        const std::vector<double> input{0.25, 0.0, 0.0, 0.0};
+
+        const auto scenario = RegressionFixtures::runSchedulerEquivalenceScenario(
+            config,
+            input,
+            std::span<const double>(input),
+            dtcwpt::AnalysisPathId::mainReal);
+
+        juce::String traceFailure;
+        expect(RegressionFixtures::compareAnalysisTraces(scenario.baseline.trace,
+                                                         scenario.productionTrace,
+                                                         traceFailure),
+               "Scheduler equivalence helper should align production and baseline traces: " + traceFailure);
+
+        juce::String outputFailure;
+        expect(RegressionFixtures::comparePerDestinationOutputs(scenario.baseline.destinationIdsInOrder,
+                                                                scenario.baseline.perDestinationOutputs,
+                                                                scenario.productionDestinationIdsInOrder,
+                                                                scenario.productionPerDestinationOutputs,
+                                                                outputFailure),
+               "Scheduler equivalence helper should align production and baseline per-destination outputs: " + outputFailure);
     }
 };
 

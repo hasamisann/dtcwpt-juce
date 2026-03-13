@@ -46,6 +46,9 @@ public:
 
         beginTest ("Committed processBlock scenarios remain allocation-free");
         testCommittedProcessBlockScenariosRemainAllocationFree();
+
+        beginTest ("Mixed-depth committed Morph topology remains deterministic under the worklist scheduler");
+        testMixedDepthCommittedMorphTopologyRemainsDeterministicUnderTheWorklistScheduler();
     }
 
 private:
@@ -549,6 +552,46 @@ private:
                 "Allocation-free no-sidechain coverage should preserve the committed topology");
         expect (duplicatedSidechainProcessor->getCommittedDestinationsForTest() == topologyCandidate,
                 "Allocation-free explicit-sidechain coverage should preserve the committed topology");
+    }
+
+    void testMixedDepthCommittedMorphTopologyRemainsDeterministicUnderTheWorklistScheduler()
+    {
+        const auto mixedCases = RegressionFixtures::buildDeterministicTopologyMatrix (
+            RegressionFixtures::TopologyFamily::mixedDepth,
+            std::array<int, 1> { 12 },
+            std::array<unsigned int, 1> { 701U });
+        const auto& topologyCandidate = mixedCases.front ().destinations;
+        const auto expectedPersistedTopology = topology::serializeTopologyDestinations (topologyCandidate);
+        const MorphParameterState parameterState { 0.51f, 0.33f, -58.0f, false, true };
+        const auto mainSignal = makeSignal (kBlockSize, 287.0, 987.0, 431.0, 1430.0);
+        const auto sidechainSignal = makeSignal (kBlockSize, 199.0, 631.0, 389.0, 1217.0);
+
+        auto firstProcessor = createPreparedProcessor();
+        auto secondProcessor = createPreparedProcessor();
+
+        expect (firstProcessor->applyTopologyCandidateForTest (topologyCandidate),
+                "First processor should accept the deterministic mixed-depth topology");
+        expect (secondProcessor->applyTopologyCandidateForTest (topologyCandidate),
+                "Second processor should accept the same deterministic mixed-depth topology");
+
+        applyParameterState (*firstProcessor, parameterState);
+        applyParameterState (*secondProcessor, parameterState);
+
+        const auto firstRun = processOnce (*firstProcessor, mainSignal, sidechainSignal);
+        const auto secondRun = processOnce (*secondProcessor, mainSignal, sidechainSignal);
+
+        expectQuantizedOutputsEqual (firstRun.output, secondRun.output,
+                                     "Mixed-depth committed Morph runs should remain deterministic under the worklist scheduler");
+        expect (firstRun.committedDestinations == topologyCandidate,
+                "First Morph processor should preserve the committed mixed-depth topology");
+        expect (secondRun.committedDestinations == topologyCandidate,
+                "Second Morph processor should preserve the committed mixed-depth topology");
+        expectEquals (firstRun.persistedTopology, expectedPersistedTopology,
+                      "First Morph processor should persist the mixed-depth topology string");
+        expectEquals (secondRun.persistedTopology, expectedPersistedTopology,
+                      "Second Morph processor should persist the mixed-depth topology string");
+        expectEquals (firstRun.latencySamples, secondRun.latencySamples,
+                      "Mixed-depth committed Morph runs should preserve latency deterministically");
     }
 };
 

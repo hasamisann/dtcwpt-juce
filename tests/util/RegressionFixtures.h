@@ -77,6 +77,13 @@ struct SchedulerBaselineResult {
     std::vector<std::vector<double>> perDestinationOutputs;
 };
 
+struct SchedulerEquivalenceScenarioResult {
+    std::vector<dtcwpt::AnalysisTraceEvent> productionTrace;
+    std::vector<int> productionDestinationIdsInOrder;
+    std::vector<std::vector<double>> productionPerDestinationOutputs;
+    SchedulerBaselineResult baseline;
+};
+
 std::vector<RandomTopologyCase> buildDeterministicTopologyMatrix(
     TopologyFamily family,
     std::span<const int> depths,
@@ -120,9 +127,22 @@ bool compareAnalysisTraces(
     std::span<const dtcwpt::AnalysisTraceEvent> actual,
     juce::String& failureMessage);
 
+bool comparePerDestinationOutputs(
+    std::span<const int> expectedDestinationIds,
+    std::span<const std::vector<double>> expectedOutputs,
+    std::span<const int> actualDestinationIds,
+    std::span<const std::vector<double>> actualOutputs,
+    juce::String& failureMessage);
+
 SchedulerBaselineResult runLinearScanBaseline(
     const dtcwpt::TopologyConfig& config,
     std::span<const double> input,
+    dtcwpt::AnalysisPathId path);
+
+SchedulerEquivalenceScenarioResult runSchedulerEquivalenceScenario(
+    const dtcwpt::TopologyConfig& config,
+    std::span<const double> input,
+    std::optional<std::span<const double>> sidechain,
     dtcwpt::AnalysisPathId path);
 
 } // namespace RegressionFixtures

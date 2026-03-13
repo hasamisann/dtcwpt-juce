@@ -6,7 +6,10 @@
 
 #include <dtcwpt/dtcwpt_analysis_node_factory.h>
 #include <dtcwpt/dtcwpt_band_processor.h>
+#include <dtcwpt/dtcwpt_delay_buffer.h>
+#include <dtcwpt/dtcwpt_filter_coeffs.h>
 #include <dtcwpt/dtcwpt_processor.h>
+#include <dtcwpt/dtcwpt_synthesis_node.h>
 #include <dtcwpt/dtcwpt_topology_planner.h>
 
 #include <algorithm>
@@ -248,6 +251,190 @@ struct LinearBaselineTraceSink final : public dtcwpt::AnalysisTraceSink {
 
     std::vector<dtcwpt::AnalysisTraceEvent> events;
 };
+
+class SchedulerCaptureProcessor final : public dtcwpt::BandProcessor {
+public:
+    explicit SchedulerCaptureProcessor(dtcwpt::AnalysisPathId capturePath)
+        : path(capturePath)
+    {
+    }
+
+    void prepare(double, int, int, int) override
+    {
+        reset();
+    }
+
+    void processAllBands(dtcwpt::BandData& data) override
+    {
+        const bool captureSidechain = path == dtcwpt::AnalysisPathId::sidechainReal
+            || path == dtcwpt::AnalysisPathId::sidechainImag;
+        if (captureSidechain && !data.hasSidechain) {
+            return;
+        }
+
+        if (destinationIdsInOrder.empty() && data.destinationIds != nullptr) {
+            destinationIdsInOrder = *data.destinationIds;
+            outputs.resize(static_cast<std::size_t>(data.numBands));
+        }
+
+        if (destinationIdsInOrder.empty()) {
+            return;
+        }
+
+        const auto& sourceBands = captureSidechain ? data.sidechainBands : data.bands;
+        const bool captureImag = path == dtcwpt::AnalysisPathId::mainImag
+            || path == dtcwpt::AnalysisPathId::sidechainImag;
+
+        for (int bandIndex = 0; bandIndex < data.numBands; ++bandIndex) {
+            const auto& view = sourceBands[0][static_cast<std::size_t>(bandIndex)];
+            const double* src = captureImag ? view.im : view.re;
+            outputs[static_cast<std::size_t>(bandIndex)].insert(
+                outputs[static_cast<std::size_t>(bandIndex)].end(),
+                src,
+                src + view.numSamples);
+        }
+    }
+
+    void reset() override
+    {
+        destinationIdsInOrder.clear();
+        outputs.clear();
+    }
+
+    dtcwpt::AnalysisPathId path;
+    std::vector<int> destinationIdsInOrder;
+    std::vector<std::vector<double>> outputs;
+};
+
+std::vector<dtcwpt::AnalysisTraceEvent> filterTraceByPath(
+    std::span<const dtcwpt::AnalysisTraceEvent> trace,
+    dtcwpt::AnalysisPathId path)
+{
+    std::vector<dtcwpt::AnalysisTraceEvent> filtered;
+    for (const auto& event : trace) {
+        if (event.path == path) {
+            filtered.push_back(event);
+        }
+    }
+    return filtered;
+}
+
+dtcwpt::SynthesisNode makeSynthesisNodeForId(int nodeId, dtcwpt::AnalysisTreeKind treeKind)
+{
+    if (nodeId == 1) {
+        return treeKind == dtcwpt::AnalysisTreeKind::real
+            ? dtcwpt::SynthesisNode(dtcwpt::filters::CDF_RE, true)
+            : dtcwpt::SynthesisNode(dtcwpt::filters::CDF_IM, true);
+    }
+
+    if ((nodeId & 1) != 0) {
+        return dtcwpt::SynthesisNode(dtcwpt::filters::PACKET, false);
+    }
+
+    return treeKind == dtcwpt::AnalysisTreeKind::real
+        ? dtcwpt::SynthesisNode(dtcwpt::filters::QSHIFT14_RE, false)
+        : dtcwpt::SynthesisNode(dtcwpt::filters::QSHIFT14_IM, false);
+}
+
+int getNodeLevel(int nodeId) noexcept
+{
+    int level = 0;
+    while (nodeId > 1) {
+        nodeId >>= 1;
+        ++level;
+    }
+    return level;
+}
+
+int calculateDelayForNode(int targetIdx, const dtcwpt::SynthesisNodeGroup& nodeGroup)
+{
+    std::map<int, std::size_t> idToIdx;
+    for (std::size_t i = 0; i < nodeGroup.ids.size(); ++i) {
+        idToIdx[nodeGroup.ids[i]] = i;
+    }
+
+    int totalDelay = 0;
+    int coef = 1;
+    int currentIdx = 1;
+
+    int numBits = 0;
+    int temp = targetIdx;
+    while (temp > 0) {
+        temp >>= 1;
+        ++numBits;
+    }
+
+    for (int bitPos = numBits - 2; bitPos >= 0; --bitPos) {
+        const int direction = (targetIdx >> bitPos) & 1;
+        int delay = 0;
+        auto it = idToIdx.find(currentIdx);
+        if (it != idToIdx.end()) {
+            const auto& node = nodeGroup.nodes[it->second];
+            if (direction == 0) {
+                delay = node.getFilterLowDelay();
+                currentIdx <<= 1;
+            } else {
+                delay = node.getFilterHighDelay();
+                currentIdx = (currentIdx << 1) | 1;
+            }
+        } else {
+            currentIdx = direction == 0 ? (currentIdx << 1) : ((currentIdx << 1) | 1);
+        }
+
+        totalDelay += delay * coef;
+        coef <<= 1;
+    }
+
+    return totalDelay;
+}
+
+void applyBaselineDelayCompensation(const dtcwpt::TopologyPlanner& planner,
+                                    dtcwpt::AnalysisTreeKind treeKind,
+                                    int maxBlockSize,
+                                    std::vector<std::vector<double>>& perDestinationOutputs)
+{
+    std::vector<int> synthesisNodeIds = planner.synthesisOrder;
+    dtcwpt::SynthesisNodeGroup synthesisNodeGroup;
+    synthesisNodeGroup.ids = synthesisNodeIds;
+    synthesisNodeGroup.nodes.reserve(synthesisNodeIds.size());
+    for (const int nodeId : synthesisNodeIds) {
+        synthesisNodeGroup.nodes.push_back(makeSynthesisNodeForId(nodeId, treeKind));
+    }
+
+    std::vector<int> pathDelays(planner.destinations.size(), 0);
+    int maxDelay = 0;
+    for (std::size_t index = 0; index < planner.destinations.size(); ++index) {
+        const int destinationId = planner.destinations[index];
+        const int delay = calculateDelayForNode(destinationId, synthesisNodeGroup);
+        pathDelays[index] = delay;
+        maxDelay = std::max(maxDelay, delay);
+    }
+
+    std::vector<dtcwpt::DelayBuffer> delayBuffers;
+    delayBuffers.reserve(planner.destinations.size());
+    for (std::size_t index = 0; index < planner.destinations.size(); ++index) {
+        const int destinationId = planner.destinations[index];
+        const int depth = getNodeLevel(destinationId);
+        const int rateFactor = 1 << depth;
+        const int diffSubband = (maxDelay - pathDelays[index]) / rateFactor;
+        delayBuffers.emplace_back(diffSubband, maxBlockSize);
+    }
+
+    std::vector<double> tempBuffer(static_cast<std::size_t>(maxBlockSize), 0.0);
+    std::vector<double> sliceBuffer(static_cast<std::size_t>(maxBlockSize), 0.0);
+    for (std::size_t index = 0; index < perDestinationOutputs.size(); ++index) {
+        const std::size_t subbandLen = perDestinationOutputs[index].size();
+        if (subbandLen == 0) {
+            continue;
+        }
+
+        std::copy(perDestinationOutputs[index].begin(),
+                  perDestinationOutputs[index].end(),
+                  sliceBuffer.begin());
+        delayBuffers[index].process(sliceBuffer, tempBuffer, subbandLen);
+        std::copy_n(tempBuffer.begin(), static_cast<std::ptrdiff_t>(subbandLen), perDestinationOutputs[index].begin());
+    }
+}
 
 } // namespace
 
@@ -504,6 +691,49 @@ bool compareAnalysisTraces(
     return true;
 }
 
+bool comparePerDestinationOutputs(
+    std::span<const int> expectedDestinationIds,
+    std::span<const std::vector<double>> expectedOutputs,
+    std::span<const int> actualDestinationIds,
+    std::span<const std::vector<double>> actualOutputs,
+    juce::String& failureMessage)
+{
+    failureMessage.clear();
+
+    if (expectedDestinationIds.size() != actualDestinationIds.size()) {
+        failureMessage = "destination count mismatch";
+        return false;
+    }
+    if (expectedOutputs.size() != actualOutputs.size()) {
+        failureMessage = "output band count mismatch";
+        return false;
+    }
+
+    constexpr double kOutputTolerance = 1.0e-15;
+    for (std::size_t index = 0; index < expectedDestinationIds.size(); ++index) {
+        if (expectedDestinationIds[index] != actualDestinationIds[index]) {
+            failureMessage = "destination order mismatch at band index " + juce::String(static_cast<int>(index));
+            return false;
+        }
+        if (expectedOutputs[index].size() != actualOutputs[index].size()) {
+            failureMessage = "sample count mismatch at band index " + juce::String(static_cast<int>(index));
+            return false;
+        }
+
+        for (std::size_t sampleIndex = 0; sampleIndex < expectedOutputs[index].size(); ++sampleIndex) {
+            if (std::abs(expectedOutputs[index][sampleIndex] - actualOutputs[index][sampleIndex]) > kOutputTolerance) {
+                failureMessage = "sample value mismatch at band index "
+                    + juce::String(static_cast<int>(index))
+                    + ", sample "
+                    + juce::String(static_cast<int>(sampleIndex));
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 ReconstructionCheck evaluateReconstruction(
     std::span<const double> input,
     std::span<const double> output,
@@ -635,6 +865,7 @@ SchedulerBaselineResult runLinearScanBaseline(
 {
     dtcwpt::TopologyPlanner planner(config.destinations);
     const auto treeKind = treeKindFromPath(path);
+    const int maxBlockSize = static_cast<int>(input.size());
 
     std::vector<int> internalNodeIds;
     internalNodeIds.push_back(1);
@@ -744,10 +975,63 @@ SchedulerBaselineResult runLinearScanBaseline(
         }
     }
 
+    applyBaselineDelayCompensation(planner, treeKind, maxBlockSize, perDestinationOutputs);
+
     SchedulerBaselineResult result;
     result.trace = std::move(traceSink.events);
     result.destinationIdsInOrder = planner.destinations;
     result.perDestinationOutputs = std::move(perDestinationOutputs);
+    return result;
+}
+
+SchedulerEquivalenceScenarioResult runSchedulerEquivalenceScenario(
+    const dtcwpt::TopologyConfig& config,
+    std::span<const double> input,
+    std::optional<std::span<const double>> sidechain,
+    dtcwpt::AnalysisPathId path)
+{
+    const bool needsSidechain = path == dtcwpt::AnalysisPathId::sidechainReal
+        || path == dtcwpt::AnalysisPathId::sidechainImag;
+    if (needsSidechain && !sidechain.has_value()) {
+        throw std::invalid_argument("Sidechain path equivalence requires sidechain input");
+    }
+
+    LinearBaselineTraceSink traceSink;
+    auto captureProcessor = std::make_unique<SchedulerCaptureProcessor>(path);
+    auto* captureProcessorPtr = captureProcessor.get();
+
+    dtcwpt::DTCWPTProcessor processor;
+#if DTCWPT_ENABLE_TEST_SEAMS
+    processor.setAnalysisTraceSinkForTesting(&traceSink);
+#endif
+    processor.setBandProcessor(std::move(captureProcessor));
+    processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE,
+                            static_cast<int>(input.size()),
+                            config,
+                            1);
+
+    if (sidechain.has_value()) {
+        juce::AudioBuffer<double> sidechainBuffer(1, static_cast<int>(sidechain->size()));
+        auto* sidechainWrite = sidechainBuffer.getWritePointer(0);
+        for (int index = 0; index < static_cast<int>(sidechain->size()); ++index) {
+            sidechainWrite[index] = sidechain.value()[static_cast<std::size_t>(index)];
+        }
+        processor.processSidechain(sidechainBuffer);
+    }
+
+    juce::AudioBuffer<double> buffer(1, static_cast<int>(input.size()));
+    auto* writePtr = buffer.getWritePointer(0);
+    for (int index = 0; index < static_cast<int>(input.size()); ++index) {
+        writePtr[index] = input[static_cast<std::size_t>(index)];
+    }
+    processor.processBlock(buffer);
+
+    const auto baselineInput = needsSidechain ? sidechain.value() : input;
+    SchedulerEquivalenceScenarioResult result;
+    result.productionTrace = filterTraceByPath(traceSink.events, path);
+    result.productionDestinationIdsInOrder = captureProcessorPtr->destinationIdsInOrder;
+    result.productionPerDestinationOutputs = captureProcessorPtr->outputs;
+    result.baseline = runLinearScanBaseline(config, baselineInput, path);
     return result;
 }
 

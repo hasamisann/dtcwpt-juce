@@ -38,6 +38,9 @@ public:
         beginTest ("Fresh Gate processors remain deterministic from identical starting state");
         testFreshProcessorsRemainDeterministic();
 
+        beginTest ("Mixed-depth committed Gate topology remains deterministic under the worklist scheduler");
+        testMixedDepthCommittedGateTopologyRemainsDeterministicUnderTheWorklistScheduler();
+
         beginTest ("Gate rejects valid core topology beyond depth-8 limit");
         testGateRejectsValidCoreTopologyBeyondDepthEightLimit();
     }
@@ -553,6 +556,46 @@ private:
                       "Fresh processors should expose the same band-level bridge width");
         expect (firstLevels == secondLevels,
                 "Fresh processors should expose identical band-level bridge values for the same signal");
+    }
+
+    void testMixedDepthCommittedGateTopologyRemainsDeterministicUnderTheWorklistScheduler()
+    {
+        const auto mixedCases = RegressionFixtures::buildDeterministicTopologyMatrix (
+            RegressionFixtures::TopologyFamily::mixedDepth,
+            std::array<int, 1> { 8 },
+            std::array<unsigned int, 1> { 809U });
+        const auto& topology = mixedCases.front ().destinations;
+        const std::vector<float> thresholds { -10.0f, -16.0f, -22.0f, -28.0f, -34.0f };
+        const auto signal = makeDeterministicSignal (kDefaultBlockSize);
+
+        auto first = createPreparedProcessor();
+        auto second = createPreparedProcessor();
+
+        expect (first->applyTopologyCandidateForTest (topology));
+        expect (second->applyTopologyCandidateForTest (topology));
+
+        setThresholdsDb (*first, thresholds);
+        setThresholdsDb (*second, thresholds);
+        setBypassLowestBand (*first, false);
+        setBypassLowestBand (*second, false);
+
+        const auto firstOutput = processMonoSignal (*first, signal);
+        const auto secondOutput = processMonoSignal (*second, signal);
+
+        const auto firstObservation = captureObservation (*first);
+        const auto secondObservation = captureObservation (*second);
+
+        expect (firstObservation.committedDestinations == topology,
+                "First Gate processor should preserve the committed mixed-depth topology");
+        expect (secondObservation.committedDestinations == topology,
+                "Second Gate processor should preserve the committed mixed-depth topology");
+        expectEquals (firstObservation.persistedTopology, secondObservation.persistedTopology,
+                      "Mixed-depth Gate processors should persist the same topology string");
+        expectEquals (firstObservation.latencySamples, secondObservation.latencySamples,
+                      "Mixed-depth Gate processors should preserve latency deterministically");
+
+        expectQuantizedOutputsMatch (firstOutput, secondOutput,
+                                     "Mixed-depth committed Gate runs should remain deterministic under the worklist scheduler");
     }
 
     void testGateRejectsValidCoreTopologyBeyondDepthEightLimit()

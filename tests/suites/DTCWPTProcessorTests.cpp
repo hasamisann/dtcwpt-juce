@@ -165,6 +165,12 @@ public:
         beginTest("All four analysis paths emit trace independently");
         testAllFourAnalysisPathsEmitTraceIndependently();
 
+        beginTest("Scheduler equivalence scenarios keep depth-12 frontier within documented capacity");
+        testSchedulerEquivalenceScenariosKeepDepth12FrontierWithinDocumentedCapacity();
+
+        beginTest("Scheduler equivalence scenarios preserve mixed and sparse ordering behaviors");
+        testSchedulerEquivalenceScenariosPreserveMixedAndSparseOrderingBehaviors();
+
         beginTest("Malformed topologies rejected");
         testMalformedTopologiesRejected();
 
@@ -952,6 +958,68 @@ private:
 #else
         expect(false, "DTCWPT_ENABLE_TEST_SEAMS must be enabled for four-path trace coverage");
 #endif
+    }
+
+    void testSchedulerEquivalenceScenariosKeepDepth12FrontierWithinDocumentedCapacity() {
+        const auto config = createConfig(TestUtils::getFullPacketDestinations(12), kDefaultMaxDepth);
+        const auto input = makeScenarioSignal(4096);
+
+        const auto scenario = RegressionFixtures::runSchedulerEquivalenceScenario(
+            config,
+            input,
+            std::span<const double>(input),
+            dtcwpt::AnalysisPathId::mainReal);
+
+        const auto metadata = buildMetadataFromDestinations(config.destinations);
+        expectEquals(static_cast<int>(metadata.frontierCapacity),
+                     static_cast<int>(metadata.internalNodeIdsInOrder.size()),
+                     "Depth-12 frontier capacity should remain the documented safe bound");
+
+        juce::String traceFailure;
+        expect(RegressionFixtures::compareAnalysisTraces(scenario.baseline.trace,
+                                                         scenario.productionTrace,
+                                                         traceFailure),
+               "Depth-12 production trace should match the independent baseline without overflow or dropped arrivals: " + traceFailure);
+
+        juce::String outputFailure;
+        expect(RegressionFixtures::comparePerDestinationOutputs(scenario.baseline.destinationIdsInOrder,
+                                                                scenario.baseline.perDestinationOutputs,
+                                                                scenario.productionDestinationIdsInOrder,
+                                                                scenario.productionPerDestinationOutputs,
+                                                                outputFailure),
+               "Depth-12 production outputs should match the independent baseline without dropped arrivals: " + outputFailure);
+    }
+
+    void testSchedulerEquivalenceScenariosPreserveMixedAndSparseOrderingBehaviors() {
+        const std::vector<dtcwpt::TopologyConfig> configs{
+            createConfig({"L", "HL", "HH"}, 2),
+            createConfig({"LL", "LH", "H"}, 2),
+            createConfig({"H", "LL", "LH"}, 2),
+        };
+        const std::vector<double> mainInput{0.25, 0.0, -0.5, 0.0};
+        const std::vector<double> sidechainInput{0.0, 0.5, 0.0, -0.25};
+        const std::array<dtcwpt::AnalysisPathId, 4> paths{
+            dtcwpt::AnalysisPathId::mainReal,
+            dtcwpt::AnalysisPathId::mainImag,
+            dtcwpt::AnalysisPathId::sidechainReal,
+            dtcwpt::AnalysisPathId::sidechainImag,
+        };
+
+        for (const auto& config : configs) {
+            for (const auto path : paths) {
+                const auto scenario = RegressionFixtures::runSchedulerEquivalenceScenario(
+                    config,
+                    mainInput,
+                    std::span<const double>(sidechainInput),
+                    path);
+
+                juce::String traceFailure;
+                expect(RegressionFixtures::compareAnalysisTraces(scenario.baseline.trace,
+                                                                 scenario.productionTrace,
+                                                                 traceFailure),
+                       "Mixed/sparse scenario trace should match the independent baseline for every path: " + traceFailure);
+            }
+        }
     }
 
     void testMalformedTopologiesRejected() {
