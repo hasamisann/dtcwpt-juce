@@ -33,4 +33,23 @@ bool AnalysisNode::updateBuffer(double x,
     }
 }
 
+bool AnalysisNode::processArrival(double sampleValue, AnalysisChildOutputs& outputs) noexcept {
+    // Push sample to both filters
+    filterLow_.pushSample(sampleValue);
+    filterHigh_.pushSample(sampleValue);
+
+    // Check parity for 2:1 downsampling
+    if (parity_) {
+        // Odd sample: skip calculation, toggle parity
+        parity_ = false;
+        return false;
+    } else {
+        // Even sample: calculate and write outputs
+        outputs.low = filterLow_.filtering();
+        outputs.high = filterHigh_.filtering();
+        parity_ = true;
+        return true;
+    }
+}
+
 } // namespace dtcwpt

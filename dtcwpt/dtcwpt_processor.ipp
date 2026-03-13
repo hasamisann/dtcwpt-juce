@@ -2,6 +2,7 @@
 
 #include "dtcwpt_topology_planner.h"
 #include "dtcwpt_filter_coeffs.h"
+#include "dtcwpt_analysis_node_factory.h"
 
 #include <algorithm>
 #include <cassert>
@@ -320,8 +321,8 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
     candidate.delayBuffersIm.resize(static_cast<size_t>(channelNum));
 
     for (int ch = 0; ch < channelNum; ++ch) {
-        AnalysisNode nodeRe(filters::CDF_RE, true);
-        AnalysisNode nodeIm(filters::CDF_IM, true);
+        AnalysisNode nodeRe(createAnalysisNodeForId(1, AnalysisTreeKind::real));
+        AnalysisNode nodeIm(createAnalysisNodeForId(1, AnalysisTreeKind::imag));
         candidate.analysisNodesRe[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeRe));
         candidate.analysisNodesIm[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeIm));
     }
@@ -335,17 +336,10 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
         candidate.analysisNodeIds.push_back(idx);
 
         for (int ch = 0; ch < channelNum; ++ch) {
-            if (idx % 2 == 1) {
-                AnalysisNode nodeRe(filters::PACKET, false);
-                AnalysisNode nodeIm(filters::PACKET, false);
-                candidate.analysisNodesRe[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeRe));
-                candidate.analysisNodesIm[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeIm));
-            } else {
-                AnalysisNode nodeRe(filters::QSHIFT14_RE, false);
-                AnalysisNode nodeIm(filters::QSHIFT14_IM, false);
-                candidate.analysisNodesRe[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeRe));
-                candidate.analysisNodesIm[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeIm));
-            }
+            AnalysisNode nodeRe(createAnalysisNodeForId(idx, AnalysisTreeKind::real));
+            AnalysisNode nodeIm(createAnalysisNodeForId(idx, AnalysisTreeKind::imag));
+            candidate.analysisNodesRe[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeRe));
+            candidate.analysisNodesIm[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeIm));
         }
     }
 

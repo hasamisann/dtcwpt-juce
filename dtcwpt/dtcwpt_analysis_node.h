@@ -9,6 +9,14 @@
 namespace dtcwpt {
 
 /**
+ * @brief Child outputs from one analysis arrival.
+ */
+struct AnalysisChildOutputs {
+    double low = 0.0;
+    double high = 0.0;
+};
+
+/**
  * @brief Analysis node for DT-CWPT decomposition.
  *
  * Each analysis node performs:
@@ -59,6 +67,22 @@ public:
                       std::vector<char>& activeFlags,
                       int lowIdx,
                       int highIdx);
+
+    /**
+     * @brief Direct-return arrival processing API for c08 worklist scheduler.
+     *
+     * Processes one arrived sample and returns low/high child outputs directly
+     * without requiring planner-array-sized scratch buffers.
+     *
+     * Contract: On emitting arrivals (parity=false), writes low/high outputs
+     * to the provided struct and returns true. On non-emitting arrivals
+     * (parity=true), returns false and leaves outputs unchanged.
+     *
+     * @param sampleValue The transported input sample value
+     * @param outputs Output struct to receive low/high child values
+     * @return true if the node emitted children on this arrival, false if suppressed
+     */
+    bool processArrival(double sampleValue, AnalysisChildOutputs& outputs) noexcept;
 
 private:
     StatefulFilter filterLow_;   ///< Low-pass analysis filter

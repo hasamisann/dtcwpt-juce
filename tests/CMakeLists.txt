@@ -53,6 +53,7 @@ set_target_properties(dtcwpt_tests PROPERTIES
 target_sources(dtcwpt_tests
     PRIVATE
         main.cpp
+        suites/AnalysisNodeTests.cpp
         suites/AnalysisSynthesisTests.cpp
         suites/ComplexUtilsTests.cpp
         suites/DelayBufferTests.cpp
@@ -74,6 +75,7 @@ target_sources(dtcwpt_tests
         suites/InvalidTopologyDiagnosticsTests.cpp
         suites/AnalyzerLatencyAlignerTests.cpp
         suites/RegressionFixturesTests.cpp
+        util/AnalysisArrivalOracle.cpp
         util/RegressionFixtures.cpp
         util/TestUtils.cpp
         stubs/MorphAudioProcessorStubs.cpp
