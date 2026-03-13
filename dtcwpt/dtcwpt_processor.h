@@ -237,14 +237,13 @@ private:
     void processChannelSynthesisAndAverage(int ch, juce::AudioBuffer<double>& output);
 
     void analysisProcess(const std::vector<double>& inputBlock,
-                            AnalysisNodeGroup& nodeGroup,
-                            const std::vector<int>& nodeIds,
-                            std::vector<std::vector<double>>& results,
-                            std::vector<size_t>& cursors,
-                            std::vector<double>& workBuffer,
-                            std::vector<char>& activeFlags,
-                            AnalysisPathId path,
-                            int channel);
+                         AnalysisNodeGroup& nodeGroup,
+                         const AnalysisSchedulerMetadata& metadata,
+                         std::vector<std::vector<double>>& results,
+                         std::vector<size_t>& cursors,
+                         AnalysisRuntimeState& runtime,
+                         AnalysisPathId path,
+                         int channel);
 
     void synthesisProcess(std::vector<std::vector<double>>& analysedData,
                           SynthesisNodeGroup& nodeGroup,

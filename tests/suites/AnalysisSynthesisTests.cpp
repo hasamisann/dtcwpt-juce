@@ -1,4 +1,5 @@
 #include "../util/RegressionFixtures.h"
+#include "../util/TestUtils.h"
 
 #include <dtcwpt/dtcwpt_analysis_node.h>
 #include <dtcwpt/dtcwpt_filter_coeffs.h>
@@ -131,9 +132,35 @@ public:
 
         beginTest("Perfect reconstruction matrix uses the locked c07 oracle");
         testPerfectReconstructionMatrixUsesTheLockedC07Oracle();
+
+        beginTest("Production mixed-topology mainReal trace matches the independent baseline");
+        testProductionMixedTopologyMainRealTraceMatchesIndependentBaseline();
     }
 
 private:
+    class LocalTraceSink final : public dtcwpt::AnalysisTraceSink {
+    public:
+        void record(const dtcwpt::AnalysisTraceEvent& event) noexcept override
+        {
+            events.push_back(event);
+        }
+
+        std::vector<dtcwpt::AnalysisTraceEvent> events;
+    };
+
+    static std::vector<dtcwpt::AnalysisTraceEvent> filterTraceByPath(
+        std::span<const dtcwpt::AnalysisTraceEvent> trace,
+        dtcwpt::AnalysisPathId path)
+    {
+        std::vector<dtcwpt::AnalysisTraceEvent> filtered;
+        for (const auto& event : trace) {
+            if (event.path == path) {
+                filtered.push_back(event);
+            }
+        }
+        return filtered;
+    }
+
     void testAnalysisDownsample()
     {
         using namespace dtcwpt;
@@ -213,6 +240,40 @@ private:
                 }
             }
         }
+    }
+
+    void testProductionMixedTopologyMainRealTraceMatchesIndependentBaseline()
+    {
+#if DTCWPT_ENABLE_TEST_SEAMS
+        const auto config = makeConfig({"L", "HL", "HH"}, 2);
+        const std::array<double, 4> input{0.25, 0.0, 0.0, 0.0};
+
+        LocalTraceSink sink;
+        dtcwpt::DTCWPTProcessor processor;
+        processor.setAnalysisTraceSinkForTesting(&sink);
+        processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 4, config, 1);
+
+        juce::AudioBuffer<double> buffer(1, 4);
+        auto* writePtr = buffer.getWritePointer(0);
+        for (int index = 0; index < 4; ++index) {
+            writePtr[index] = input[static_cast<std::size_t>(index)];
+        }
+        processor.processBlock(buffer);
+
+        const auto productionMainReal = filterTraceByPath(sink.events, dtcwpt::AnalysisPathId::mainReal);
+        const auto baseline = RegressionFixtures::runLinearScanBaseline(
+            config,
+            input,
+            dtcwpt::AnalysisPathId::mainReal);
+
+        juce::String failureMessage;
+        expect(RegressionFixtures::compareAnalysisTraces(productionMainReal, baseline.trace, failureMessage),
+               "Production mainReal trace should match the independent baseline for the mixed topology: " + failureMessage);
+        expect(baseline.destinationIdsInOrder == std::vector<int>({2, 6, 7}),
+               "Baseline should preserve destination order for the mixed topology");
+#else
+        expect(false, "DTCWPT_ENABLE_TEST_SEAMS must be enabled for mixed-topology trace comparison");
+#endif
     }
 };
 

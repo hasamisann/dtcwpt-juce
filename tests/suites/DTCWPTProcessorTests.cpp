@@ -150,6 +150,21 @@ public:
         beginTest("Analysis trace sink is instance scoped");
         testAnalysisTraceSinkIsInstanceScoped();
 
+        beginTest("Mixed topology keeps root before internal H while leaf L never enters frontier");
+        testMixedTopologyKeepsRootBeforeInternalHWhileLeafLNeverEntersFrontier();
+
+        beginTest("Same-sample grandchild propagation completes within one sample");
+        testSameSampleGrandchildPropagationCompletesWithinOneSample();
+
+        beginTest("Zero-valued arrivals remain visible to the worklist trace");
+        testZeroValuedArrivalsRemainVisibleToTheWorklistTrace();
+
+        beginTest("Destination writes remain sample-end commits in caller order");
+        testDestinationWritesRemainSampleEndCommitsInCallerOrder();
+
+        beginTest("All four analysis paths emit trace independently");
+        testAllFourAnalysisPathsEmitTraceIndependently();
+
         beginTest("Malformed topologies rejected");
         testMalformedTopologiesRejected();
 
@@ -217,6 +232,32 @@ private:
             internalNodeIds,
             planner.destinations,
             static_cast<int>(dtcwpt::TopologyPlanner::MAX_SIZE));
+    }
+
+    static std::vector<dtcwpt::AnalysisTraceEvent> filterTraceByPath(
+        std::span<const dtcwpt::AnalysisTraceEvent> trace,
+        dtcwpt::AnalysisPathId path)
+    {
+        std::vector<dtcwpt::AnalysisTraceEvent> filtered;
+        for (const auto& event : trace) {
+            if (event.path == path) {
+                filtered.push_back(event);
+            }
+        }
+        return filtered;
+    }
+
+    static std::vector<dtcwpt::AnalysisTraceEvent> filterTraceBySample(
+        std::span<const dtcwpt::AnalysisTraceEvent> trace,
+        int sampleIndex)
+    {
+        std::vector<dtcwpt::AnalysisTraceEvent> filtered;
+        for (const auto& event : trace) {
+            if (event.sampleIndex == sampleIndex) {
+                filtered.push_back(event);
+            }
+        }
+        return filtered;
     }
 
     dtcwpt::TopologyConfig createConfig(const std::vector<std::string>& dests, int maxDepth = kDefaultMaxDepth) {
@@ -300,6 +341,44 @@ private:
         }
 
         return output;
+    }
+
+    std::vector<dtcwpt::AnalysisTraceEvent> runTraceScenario(
+        const dtcwpt::TopologyConfig& config,
+        std::span<const double> input,
+        std::optional<std::span<const double>> sidechain)
+    {
+#if DTCWPT_ENABLE_TEST_SEAMS
+        CaptureTraceSink sink;
+        dtcwpt::DTCWPTProcessor processor;
+        processor.setAnalysisTraceSinkForTesting(&sink);
+        processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE,
+                                static_cast<int>(input.size()),
+                                config,
+                                1);
+
+        if (sidechain.has_value()) {
+            juce::AudioBuffer<double> sidechainBuffer(1, static_cast<int>(sidechain->size()));
+            auto* sidechainWrite = sidechainBuffer.getWritePointer(0);
+            for (int index = 0; index < static_cast<int>(sidechain->size()); ++index) {
+                sidechainWrite[index] = sidechain.value()[static_cast<std::size_t>(index)];
+            }
+            processor.processSidechain(sidechainBuffer);
+        }
+
+        juce::AudioBuffer<double> buffer(1, static_cast<int>(input.size()));
+        auto* writePtr = buffer.getWritePointer(0);
+        for (int index = 0; index < static_cast<int>(input.size()); ++index) {
+            writePtr[index] = input[static_cast<std::size_t>(index)];
+        }
+        processor.processBlock(buffer);
+        return sink.events;
+#else
+        (void) config;
+        (void) input;
+        (void) sidechain;
+        return {};
+#endif
     }
 
     void expectReconstructionBelowThreshold(const std::vector<double>& input,
@@ -757,6 +836,121 @@ private:
                      "Processor without the sink attached must not write into another processor's trace sink");
 #else
         expect(false, "DTCWPT_ENABLE_TEST_SEAMS must be enabled for trace seam coverage");
+#endif
+    }
+
+    void testMixedTopologyKeepsRootBeforeInternalHWhileLeafLNeverEntersFrontier() {
+#if DTCWPT_ENABLE_TEST_SEAMS
+        const auto trace = runTraceScenario(createConfig({"L", "HL", "HH"}, 2),
+                                            std::array<double, 4>{0.25, 0.0, 0.0, 0.0},
+                                            std::nullopt);
+        const auto mainRealTrace = filterTraceByPath(trace, dtcwpt::AnalysisPathId::mainReal);
+        const auto sampleZeroTrace = filterTraceBySample(mainRealTrace, 0);
+
+        expectEquals(static_cast<int>(sampleZeroTrace.size()), 9,
+                     "Mixed topology first sample should emit deterministic dequeue, child-arrival, and destination-write events");
+        expect(sampleZeroTrace[0].kind == dtcwpt::AnalysisTraceEventKind::dequeue && sampleZeroTrace[0].nodeId == 1,
+               "Root dequeue must occur first");
+        expect(sampleZeroTrace[1].kind == dtcwpt::AnalysisTraceEventKind::childArrivalRecorded
+                   && sampleZeroTrace[1].relatedNodeId == 2
+                   && !sampleZeroTrace[1].enteredFrontier,
+               "Leaf L arrival should be recorded immediately after root without entering the frontier");
+        expect(sampleZeroTrace[2].kind == dtcwpt::AnalysisTraceEventKind::childArrivalRecorded
+                   && sampleZeroTrace[2].relatedNodeId == 3
+                   && sampleZeroTrace[2].enteredFrontier,
+               "Internal H arrival should be recorded after L and enter the frontier");
+        expect(sampleZeroTrace[3].kind == dtcwpt::AnalysisTraceEventKind::dequeue && sampleZeroTrace[3].nodeId == 3,
+               "Internal H dequeue must occur next after root child arrivals");
+#else
+        expect(false, "DTCWPT_ENABLE_TEST_SEAMS must be enabled for worklist trace coverage");
+#endif
+    }
+
+    void testSameSampleGrandchildPropagationCompletesWithinOneSample() {
+#if DTCWPT_ENABLE_TEST_SEAMS
+        const auto trace = runTraceScenario(createConfig({"LL", "LH", "H"}, 2),
+                                            std::array<double, 4>{0.25, 0.0, 0.0, 0.0},
+                                            std::nullopt);
+        const auto mainRealTrace = filterTraceByPath(trace, dtcwpt::AnalysisPathId::mainReal);
+        const auto sampleZeroTrace = filterTraceBySample(mainRealTrace, 0);
+
+        expect(sampleZeroTrace.size() >= 9,
+               "Grandchild scenario should emit same-sample trace events for the root, child, and destination writes");
+        expect(sampleZeroTrace[0].kind == dtcwpt::AnalysisTraceEventKind::dequeue && sampleZeroTrace[0].nodeId == 1,
+               "Root dequeue must occur first in the grandchild scenario");
+        expect(sampleZeroTrace[3].kind == dtcwpt::AnalysisTraceEventKind::dequeue && sampleZeroTrace[3].nodeId == 2,
+               "Internal left child must dequeue in the same sample as the root");
+        expect(sampleZeroTrace[4].kind == dtcwpt::AnalysisTraceEventKind::childArrivalRecorded
+                   && sampleZeroTrace[4].relatedNodeId == 4,
+               "Grandchild LL arrival must be recorded in the same sample");
+        expect(sampleZeroTrace[5].kind == dtcwpt::AnalysisTraceEventKind::childArrivalRecorded
+                   && sampleZeroTrace[5].relatedNodeId == 5,
+               "Grandchild LH arrival must be recorded in the same sample");
+#else
+        expect(false, "DTCWPT_ENABLE_TEST_SEAMS must be enabled for grandchild trace coverage");
+#endif
+    }
+
+    void testZeroValuedArrivalsRemainVisibleToTheWorklistTrace() {
+#if DTCWPT_ENABLE_TEST_SEAMS
+        const auto trace = runTraceScenario(createConfig({"L", "H"}, 1),
+                                            std::array<double, 2>{0.0, 0.0},
+                                            std::nullopt);
+        const auto mainRealTrace = filterTraceByPath(trace, dtcwpt::AnalysisPathId::mainReal);
+        const auto sampleZeroTrace = filterTraceBySample(mainRealTrace, 0);
+
+        expect(sampleZeroTrace.size() >= 5,
+               "Zero-valued first sample should still produce dequeue, child-arrival, and destination-write trace events");
+        expect(sampleZeroTrace[0].sampleValue == 0.0,
+               "Root dequeue should preserve the zero transported value");
+        expect(sampleZeroTrace[3].kind == dtcwpt::AnalysisTraceEventKind::destinationWrite,
+               "Zero-valued arrivals should still lead to destination writes on emitting samples");
+        expect(sampleZeroTrace[3].sampleValue == 0.0,
+               "Destination writes for zero-valued arrivals should preserve the zero transported value");
+#else
+        expect(false, "DTCWPT_ENABLE_TEST_SEAMS must be enabled for zero-arrival trace coverage");
+#endif
+    }
+
+    void testDestinationWritesRemainSampleEndCommitsInCallerOrder() {
+#if DTCWPT_ENABLE_TEST_SEAMS
+        const auto trace = runTraceScenario(createConfig({"LH", "H", "LL"}, 2),
+                                            std::array<double, 4>{0.5, 0.0, 0.0, 0.0},
+                                            std::nullopt);
+        const auto mainRealTrace = filterTraceByPath(trace, dtcwpt::AnalysisPathId::mainReal);
+        const auto sampleZeroTrace = filterTraceBySample(mainRealTrace, 0);
+
+        std::vector<int> destinationWriteOrder;
+        for (const auto& event : sampleZeroTrace) {
+            if (event.kind == dtcwpt::AnalysisTraceEventKind::destinationWrite) {
+                destinationWriteOrder.push_back(event.nodeId);
+            }
+        }
+
+        expect(destinationWriteOrder == std::vector<int>({5, 3, 4}),
+               "Destination writes must occur at sample end in exact caller destination order");
+        expect(sampleZeroTrace.back().kind == dtcwpt::AnalysisTraceEventKind::destinationWrite,
+               "Destination writes must occur after all dequeue and child-arrival work for the sample");
+#else
+        expect(false, "DTCWPT_ENABLE_TEST_SEAMS must be enabled for destination-order trace coverage");
+#endif
+    }
+
+    void testAllFourAnalysisPathsEmitTraceIndependently() {
+#if DTCWPT_ENABLE_TEST_SEAMS
+        const std::array<double, 4> input{0.25, 0.0, 0.0, 0.0};
+        const auto trace = runTraceScenario(createConfig({"L", "H"}, 1), input, input);
+
+        expect(! filterTraceByPath(trace, dtcwpt::AnalysisPathId::mainReal).empty(),
+               "mainReal trace should be present");
+        expect(! filterTraceByPath(trace, dtcwpt::AnalysisPathId::mainImag).empty(),
+               "mainImag trace should be present");
+        expect(! filterTraceByPath(trace, dtcwpt::AnalysisPathId::sidechainReal).empty(),
+               "sidechainReal trace should be present");
+        expect(! filterTraceByPath(trace, dtcwpt::AnalysisPathId::sidechainImag).empty(),
+               "sidechainImag trace should be present");
+#else
+        expect(false, "DTCWPT_ENABLE_TEST_SEAMS must be enabled for four-path trace coverage");
 #endif
     }
 

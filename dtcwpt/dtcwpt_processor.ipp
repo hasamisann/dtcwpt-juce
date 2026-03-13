@@ -831,10 +831,10 @@ void DTCWPTProcessor::processChannelAnalysisAndDelay(int ch, const std::vector<d
     }
 
     // Analysis for both trees (pass per-channel results/cursors and shared work buffers)
-    analysisProcess(inputBlock, analysisNodesRe_[ch], analysisNodeIds_, resultsRe_[ch], cursorsRe_[ch],
-                    analysisWorkBuffer_, analysisActiveFlags_, AnalysisPathId::mainReal, ch);
-    analysisProcess(inputBlock, analysisNodesIm_[ch], analysisNodeIds_, resultsIm_[ch], cursorsIm_[ch],
-                    analysisWorkBuffer_, analysisActiveFlags_, AnalysisPathId::mainImag, ch);
+    analysisProcess(inputBlock, analysisNodesRe_[ch], analysisSchedulerMetadata_, resultsRe_[ch], cursorsRe_[ch],
+                    analysisRuntimeStatesRe_[static_cast<size_t>(ch)], AnalysisPathId::mainReal, ch);
+    analysisProcess(inputBlock, analysisNodesIm_[ch], analysisSchedulerMetadata_, resultsIm_[ch], cursorsIm_[ch],
+                    analysisRuntimeStatesIm_[static_cast<size_t>(ch)], AnalysisPathId::mainImag, ch);
 
     // Delay compensation — Re tree
     for (size_t di = 0; di < destinations_.size(); ++di) {
@@ -874,10 +874,10 @@ void DTCWPTProcessor::processSidechainAnalysisAndDelay(int ch, const std::vector
     }
 
     // Analysis for both trees (pass per-channel results/cursors and per-channel work buffers)
-    analysisProcess(inputBlock, scAnalysisNodesRe_[ch], analysisNodeIds_, scResultsRe_[ch], scCursorsRe_[ch],
-                    scAnalysisWorkBuffer_, scAnalysisActiveFlags_, AnalysisPathId::sidechainReal, ch);
-    analysisProcess(inputBlock, scAnalysisNodesIm_[ch], analysisNodeIds_, scResultsIm_[ch], scCursorsIm_[ch],
-                    scAnalysisWorkBuffer_, scAnalysisActiveFlags_, AnalysisPathId::sidechainImag, ch);
+    analysisProcess(inputBlock, scAnalysisNodesRe_[ch], analysisSchedulerMetadata_, scResultsRe_[ch], scCursorsRe_[ch],
+                    scAnalysisRuntimeStatesRe_[static_cast<size_t>(ch)], AnalysisPathId::sidechainReal, ch);
+    analysisProcess(inputBlock, scAnalysisNodesIm_[ch], analysisSchedulerMetadata_, scResultsIm_[ch], scCursorsIm_[ch],
+                    scAnalysisRuntimeStatesIm_[static_cast<size_t>(ch)], AnalysisPathId::sidechainImag, ch);
 
     // Delay compensation — Re tree
     for (size_t di = 0; di < destinations_.size(); ++di) {
@@ -1097,28 +1097,26 @@ void DTCWPTProcessor::processBlock(juce::AudioBuffer<double>& buffer) {
 // Performs analysis filter bank processing for a single block
 void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
                                       AnalysisNodeGroup& nodeGroup,
-                                      const std::vector<int>& nodeIds,
+                                      const AnalysisSchedulerMetadata& metadata,
                                       std::vector<std::vector<double>>& results,
                                       std::vector<size_t>& cursors,
-                                      std::vector<double>& workBuffer,
-                                      std::vector<char>& activeFlags,
+                                      AnalysisRuntimeState& runtime,
                                       AnalysisPathId path,
                                       int channel) {
     for (int sampleIndex = 0; sampleIndex < static_cast<int>(inputBlock.size()); ++sampleIndex) {
         const double x = inputBlock[static_cast<size_t>(sampleIndex)];
-        // Reset all flags at start of each sample to prevent stale state.
-        // Only the root node (index 1) is initially active.
-        std::fill(activeFlags.begin(), activeFlags.end(), static_cast<char>(0));
-        activeFlags[1] = 1;  // Root is always active
-        workBuffer[1] = x;
+        beginAnalysisSample(runtime);
+        recordArrival(runtime, 1, x);
+        runtime.frontierInternalWorkItems[0] = AnalysisWorkItem{1, x};
+        runtime.frontierHead = 0;
+        runtime.frontierSize = 1;
 
-        // Process nodes in analysis order
-        const size_t nodeCount = std::min(nodeIds.size(), nodeGroup.nodes.size());
-        for (size_t i = 0; i < nodeCount; ++i) {
-            int nodeId = nodeIds[i];
-            
-            if (!activeFlags[static_cast<size_t>(nodeId)]) {
-                continue;
+        while (runtime.frontierSize > 0) {
+            const AnalysisWorkItem workItem = dequeueInternalArrival(runtime);
+            const int nodeId = workItem.nodeId;
+            const int internalIndex = metadata.nodeIdToInternalIndex[static_cast<size_t>(nodeId)];
+            if (internalIndex < 0 || static_cast<size_t>(internalIndex) >= nodeGroup.nodes.size()) {
+                throw std::runtime_error("analysis internal node lookup failed");
             }
 
 #if DTCWPT_ENABLE_TEST_SEAMS
@@ -1131,7 +1129,7 @@ void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
                     .nodeId = nodeId,
                     .relatedNodeId = 0,
                     .cursorBeforeWrite = 0,
-                    .sampleValue = workBuffer[static_cast<size_t>(nodeId)],
+                    .sampleValue = workItem.sampleValue,
                     .enteredFrontier = true,
                 });
             }
@@ -1140,22 +1138,27 @@ void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
             int leftIdx = nodeId << 1;
             int rightIdx = (nodeId << 1) | 1;
 
-            const bool emitted = nodeGroup.nodes[i].updateBuffer(
-                workBuffer[nodeId],
-                workBuffer,
-                activeFlags,
-                leftIdx,
-                rightIdx);
+            AnalysisChildOutputs outputs{};
+            const bool emitted = nodeGroup.nodes[static_cast<size_t>(internalIndex)].processArrival(
+                workItem.sampleValue,
+                outputs);
+
+            if (!emitted) {
+                continue;
+            }
+
+            recordArrival(runtime, leftIdx, outputs.low);
+            recordArrival(runtime, rightIdx, outputs.high);
+
+            const bool leftIsInternal = leftIdx > 0
+                && leftIdx < static_cast<int>(metadata.nodeIdToInternalIndex.size())
+                && metadata.nodeIdToInternalIndex[static_cast<size_t>(leftIdx)] >= 0;
+            const bool rightIsInternal = rightIdx > 0
+                && rightIdx < static_cast<int>(metadata.nodeIdToInternalIndex.size())
+                && metadata.nodeIdToInternalIndex[static_cast<size_t>(rightIdx)] >= 0;
 
 #if DTCWPT_ENABLE_TEST_SEAMS
-            if (emitted && analysisTraceSink_ != nullptr) {
-                const bool leftIsInternal = leftIdx > 0
-                    && leftIdx < static_cast<int>(analysisSchedulerMetadata_.nodeIdToInternalIndex.size())
-                    && analysisSchedulerMetadata_.nodeIdToInternalIndex[static_cast<size_t>(leftIdx)] >= 0;
-                const bool rightIsInternal = rightIdx > 0
-                    && rightIdx < static_cast<int>(analysisSchedulerMetadata_.nodeIdToInternalIndex.size())
-                    && analysisSchedulerMetadata_.nodeIdToInternalIndex[static_cast<size_t>(rightIdx)] >= 0;
-
+            if (analysisTraceSink_ != nullptr) {
                 analysisTraceSink_->record(AnalysisTraceEvent{
                     .kind = AnalysisTraceEventKind::childArrivalRecorded,
                     .path = path,
@@ -1164,7 +1167,7 @@ void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
                     .nodeId = nodeId,
                     .relatedNodeId = leftIdx,
                     .cursorBeforeWrite = 0,
-                    .sampleValue = workBuffer[static_cast<size_t>(leftIdx)],
+                    .sampleValue = outputs.low,
                     .enteredFrontier = leftIsInternal,
                 });
                 analysisTraceSink_->record(AnalysisTraceEvent{
@@ -1175,41 +1178,48 @@ void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
                     .nodeId = nodeId,
                     .relatedNodeId = rightIdx,
                     .cursorBeforeWrite = 0,
-                    .sampleValue = workBuffer[static_cast<size_t>(rightIdx)],
+                    .sampleValue = outputs.high,
                     .enteredFrontier = rightIsInternal,
                 });
             }
 #endif
+
+            appendProcessedParentInternalChildren(
+                runtime,
+                nodeId,
+                leftIsInternal ? std::optional<AnalysisWorkItem>(AnalysisWorkItem{leftIdx, outputs.low}) : std::nullopt,
+                rightIsInternal ? std::optional<AnalysisWorkItem>(AnalysisWorkItem{rightIdx, outputs.high}) : std::nullopt);
         }
 
         // Save results for destination nodes
-        for (size_t di = 0; di < destinations_.size(); ++di) {
-            int destId = destinations_[di];
-            if (activeFlags[static_cast<size_t>(destId)]) {
-                size_t cursor = cursors[static_cast<size_t>(destId)];
-                if (cursor >= results[destId].size()) {
-                    throw std::runtime_error("analysis cursor overflow");
-                }
+        for (const int destId : metadata.destinationIdsInOrder) {
+            if (!hasCurrentSampleArrival(runtime, destId)) {
+                continue;
+            }
+
+            size_t cursor = cursors[static_cast<size_t>(destId)];
+            if (cursor >= results[destId].size()) {
+                throw std::runtime_error("analysis cursor overflow");
+            }
 
 #if DTCWPT_ENABLE_TEST_SEAMS
-                if (analysisTraceSink_ != nullptr) {
-                    analysisTraceSink_->record(AnalysisTraceEvent{
-                        .kind = AnalysisTraceEventKind::destinationWrite,
-                        .path = path,
-                        .channel = channel,
-                        .sampleIndex = sampleIndex,
-                        .nodeId = destId,
-                        .relatedNodeId = 0,
-                        .cursorBeforeWrite = cursor,
-                        .sampleValue = workBuffer[static_cast<size_t>(destId)],
-                        .enteredFrontier = false,
-                    });
-                }
+            if (analysisTraceSink_ != nullptr) {
+                analysisTraceSink_->record(AnalysisTraceEvent{
+                    .kind = AnalysisTraceEventKind::destinationWrite,
+                    .path = path,
+                    .channel = channel,
+                    .sampleIndex = sampleIndex,
+                    .nodeId = destId,
+                    .relatedNodeId = 0,
+                    .cursorBeforeWrite = cursor,
+                    .sampleValue = runtime.transportedValues[static_cast<size_t>(destId)],
+                    .enteredFrontier = false,
+                });
+            }
 #endif
 
-                results[destId][cursor] = workBuffer[destId];
-                cursors[destId] = cursor + 1;
-            }
+            results[destId][cursor] = runtime.transportedValues[static_cast<size_t>(destId)];
+            cursors[destId] = cursor + 1;
         }
     }
 }
