@@ -40,6 +40,9 @@ struct PreparedProcessorState {
     std::vector<SynthesisNodeGroup> synthesisNodesRe;
     std::vector<SynthesisNodeGroup> synthesisNodesIm;
     std::vector<int> analysisNodeIds;
+    AnalysisSchedulerMetadata analysisSchedulerMetadata;
+    std::vector<AnalysisRuntimeState> analysisRuntimeStatesRe;
+    std::vector<AnalysisRuntimeState> analysisRuntimeStatesIm;
     std::vector<int> synthesisNodeIds;
     std::vector<std::vector<DelayBuffer>> delayBuffersRe;
     std::vector<std::vector<DelayBuffer>> delayBuffersIm;
@@ -65,6 +68,8 @@ struct PreparedProcessorState {
 
     std::vector<AnalysisNodeGroup> scAnalysisNodesRe;
     std::vector<AnalysisNodeGroup> scAnalysisNodesIm;
+    std::vector<AnalysisRuntimeState> scAnalysisRuntimeStatesRe;
+    std::vector<AnalysisRuntimeState> scAnalysisRuntimeStatesIm;
     std::vector<std::vector<DelayBuffer>> scDelayBuffersRe;
     std::vector<std::vector<DelayBuffer>> scDelayBuffersIm;
     std::vector<std::vector<std::vector<double>>> scResultsRe;
@@ -251,6 +256,9 @@ DTCWPTProcessor::DTCWPTProcessor()
     , synthesisNodesRe_()
     , synthesisNodesIm_()
     , analysisNodeIds_()
+    , analysisSchedulerMetadata_()
+    , analysisRuntimeStatesRe_()
+    , analysisRuntimeStatesIm_()
     , synthesisNodeIds_()
     , delayBuffersRe_()
     , delayBuffersIm_()
@@ -275,6 +283,8 @@ DTCWPTProcessor::DTCWPTProcessor()
     , prepared_(false)
     , scAnalysisNodesRe_()
     , scAnalysisNodesIm_()
+    , scAnalysisRuntimeStatesRe_()
+    , scAnalysisRuntimeStatesIm_()
     , scDelayBuffersRe_()
     , scDelayBuffersIm_()
     , scResultsRe_()
@@ -290,8 +300,18 @@ DTCWPTProcessor::DTCWPTProcessor()
     , scInputFifoFill_()
     , sidechainActive_(false)
     , sidechainProcessedThisBlock_(false)
+#if DTCWPT_ENABLE_TEST_SEAMS
+    , prepareCandidateFailpoint_(PrepareCandidateFailpoint::none)
+#endif
     , expectedSidechainSamples_(0) {
 }
+
+#if DTCWPT_ENABLE_TEST_SEAMS
+void DTCWPTProcessor::setPrepareCandidateFailpointForTesting(PrepareCandidateFailpoint failpoint) noexcept
+{
+    prepareCandidateFailpoint_ = failpoint;
+}
+#endif
 
 void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
                                     const TopologyConfig& config, int channelNum) {
@@ -346,6 +366,25 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
     for (int ch = 0; ch < channelNum; ++ch) {
         candidate.analysisNodesRe[static_cast<size_t>(ch)].ids = candidate.analysisNodeIds;
         candidate.analysisNodesIm[static_cast<size_t>(ch)].ids = candidate.analysisNodeIds;
+    }
+
+    candidate.analysisSchedulerMetadata = buildAnalysisSchedulerMetadata(
+        candidate.analysisNodeIds,
+        candidate.destinations,
+        static_cast<int>(TopologyPlanner::MAX_SIZE));
+    candidate.analysisRuntimeStatesRe.resize(static_cast<size_t>(channelNum));
+    candidate.analysisRuntimeStatesIm.resize(static_cast<size_t>(channelNum));
+    candidate.scAnalysisRuntimeStatesRe.resize(static_cast<size_t>(channelNum));
+    candidate.scAnalysisRuntimeStatesIm.resize(static_cast<size_t>(channelNum));
+    for (int ch = 0; ch < channelNum; ++ch) {
+        candidate.analysisRuntimeStatesRe[static_cast<size_t>(ch)] =
+            buildAnalysisRuntimeState(candidate.analysisSchedulerMetadata);
+        candidate.analysisRuntimeStatesIm[static_cast<size_t>(ch)] =
+            buildAnalysisRuntimeState(candidate.analysisSchedulerMetadata);
+        candidate.scAnalysisRuntimeStatesRe[static_cast<size_t>(ch)] =
+            buildAnalysisRuntimeState(candidate.analysisSchedulerMetadata);
+        candidate.scAnalysisRuntimeStatesIm[static_cast<size_t>(ch)] =
+            buildAnalysisRuntimeState(candidate.analysisSchedulerMetadata);
     }
 
     for (const int idx : candidate.synthesisOrder) {
@@ -465,8 +504,8 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
     candidate.scDelayBuffersRe.resize(static_cast<size_t>(channelNum));
     candidate.scDelayBuffersIm.resize(static_cast<size_t>(channelNum));
     for (int ch = 0; ch < channelNum; ++ch) {
-        AnalysisNode nodeRe(filters::CDF_RE, true);
-        AnalysisNode nodeIm(filters::CDF_IM, true);
+        AnalysisNode nodeRe(createAnalysisNodeForId(1, AnalysisTreeKind::real));
+        AnalysisNode nodeIm(createAnalysisNodeForId(1, AnalysisTreeKind::imag));
         candidate.scAnalysisNodesRe[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeRe));
         candidate.scAnalysisNodesIm[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeIm));
     }
@@ -477,17 +516,10 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
         }
 
         for (int ch = 0; ch < channelNum; ++ch) {
-            if (idx % 2 == 1) {
-                AnalysisNode nodeRe(filters::PACKET, false);
-                AnalysisNode nodeIm(filters::PACKET, false);
-                candidate.scAnalysisNodesRe[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeRe));
-                candidate.scAnalysisNodesIm[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeIm));
-            } else {
-                AnalysisNode nodeRe(filters::QSHIFT14_RE, false);
-                AnalysisNode nodeIm(filters::QSHIFT14_IM, false);
-                candidate.scAnalysisNodesRe[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeRe));
-                candidate.scAnalysisNodesIm[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeIm));
-            }
+            AnalysisNode nodeRe(createAnalysisNodeForId(idx, AnalysisTreeKind::real));
+            AnalysisNode nodeIm(createAnalysisNodeForId(idx, AnalysisTreeKind::imag));
+            candidate.scAnalysisNodesRe[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeRe));
+            candidate.scAnalysisNodesIm[static_cast<size_t>(ch)].nodes.push_back(std::move(nodeIm));
         }
     }
 
@@ -574,6 +606,13 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
     candidate.channelHasData.resize(static_cast<size_t>(channelNum));
     candidate.scChannelHasData.resize(static_cast<size_t>(channelNum));
 
+#if DTCWPT_ENABLE_TEST_SEAMS
+    if (prepareCandidateFailpoint_ == PrepareCandidateFailpoint::beforeCommit) {
+        prepareCandidateFailpoint_ = PrepareCandidateFailpoint::none;
+        throw std::runtime_error("prepare candidate failpoint");
+    }
+#endif
+
     sampleRate_ = sampleRate;
     maxBlockSize_ = maxBlockSize;
     channelNum_ = channelNum;
@@ -586,6 +625,9 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
     synthesisNodesRe_ = std::move(candidate.synthesisNodesRe);
     synthesisNodesIm_ = std::move(candidate.synthesisNodesIm);
     analysisNodeIds_ = std::move(candidate.analysisNodeIds);
+    analysisSchedulerMetadata_ = std::move(candidate.analysisSchedulerMetadata);
+    analysisRuntimeStatesRe_ = std::move(candidate.analysisRuntimeStatesRe);
+    analysisRuntimeStatesIm_ = std::move(candidate.analysisRuntimeStatesIm);
     synthesisNodeIds_ = std::move(candidate.synthesisNodeIds);
     delayBuffersRe_ = std::move(candidate.delayBuffersRe);
     delayBuffersIm_ = std::move(candidate.delayBuffersIm);
@@ -608,6 +650,8 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
     outputFifoRead_ = std::move(candidate.outputFifoRead);
     scAnalysisNodesRe_ = std::move(candidate.scAnalysisNodesRe);
     scAnalysisNodesIm_ = std::move(candidate.scAnalysisNodesIm);
+    scAnalysisRuntimeStatesRe_ = std::move(candidate.scAnalysisRuntimeStatesRe);
+    scAnalysisRuntimeStatesIm_ = std::move(candidate.scAnalysisRuntimeStatesIm);
     scDelayBuffersRe_ = std::move(candidate.scDelayBuffersRe);
     scDelayBuffersIm_ = std::move(candidate.scDelayBuffersIm);
     scResultsRe_ = std::move(candidate.scResultsRe);

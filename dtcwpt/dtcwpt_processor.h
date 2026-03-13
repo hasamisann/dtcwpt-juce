@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dtcwpt_analysis_node.h"
+#include "dtcwpt_analysis_scheduler.h"
 #include "dtcwpt_synthesis_node.h"
 #include "dtcwpt_delay_buffer.h"
 #include "dtcwpt_topology_limits.h"
@@ -93,6 +94,15 @@ public:
      */
     void processSidechain(juce::AudioBuffer<double>& sidechainBuffer);
 
+#if DTCWPT_ENABLE_TEST_SEAMS
+    enum class PrepareCandidateFailpoint {
+        none,
+        beforeCommit,
+    };
+
+    void setPrepareCandidateFailpointForTesting(PrepareCandidateFailpoint failpoint) noexcept;
+#endif
+
 private:
     // Configuration
     double sampleRate_;
@@ -113,6 +123,9 @@ private:
 
     // Analysis node IDs (shared across channels)
     std::vector<int> analysisNodeIds_;
+    AnalysisSchedulerMetadata analysisSchedulerMetadata_;
+    std::vector<AnalysisRuntimeState> analysisRuntimeStatesRe_;
+    std::vector<AnalysisRuntimeState> analysisRuntimeStatesIm_;
 
     // Synthesis node IDs (shared across channels)
     std::vector<int> synthesisNodeIds_;
@@ -167,6 +180,8 @@ private:
     /// Sidechain analysis nodes per channel (mirrors main analysis nodes)
     std::vector<AnalysisNodeGroup> scAnalysisNodesRe_;
     std::vector<AnalysisNodeGroup> scAnalysisNodesIm_;
+    std::vector<AnalysisRuntimeState> scAnalysisRuntimeStatesRe_;
+    std::vector<AnalysisRuntimeState> scAnalysisRuntimeStatesIm_;
     /// Sidechain delay buffers per channel (mirrors main delay buffers)
     std::vector<std::vector<DelayBuffer>> scDelayBuffersRe_;
     std::vector<std::vector<DelayBuffer>> scDelayBuffersIm_;
@@ -204,6 +219,10 @@ private:
     // --- Pre-allocated channel tracking buffer (RT-safe, avoids per-block alloc) ---
     std::vector<char> channelHasData_;  // use char instead of bool to avoid bit-packed specialization
     std::vector<char> scChannelHasData_;  // use char instead of bool to avoid bit-packed specialization
+
+#if DTCWPT_ENABLE_TEST_SEAMS
+    PrepareCandidateFailpoint prepareCandidateFailpoint_ = PrepareCandidateFailpoint::none;
+#endif
 
     // Helper methods
     /// Analysis + delay compensation phase for one channel.

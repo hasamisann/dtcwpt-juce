@@ -4,7 +4,9 @@
  */
 
 #include <dtcwpt/dtcwpt_processor.h>
+#include <dtcwpt/dtcwpt_analysis_scheduler.h>
 #include <dtcwpt/dtcwpt_band_processor.h>
+#include <dtcwpt/dtcwpt_topology_planner.h>
 #include "../util/RegressionFixtures.h"
 #include "../util/TestUtils.h"
 
@@ -118,6 +120,24 @@ public:
         beginTest("Configured maxDepth boundaries");
         testConfiguredMaxDepthBoundaries();
 
+        beginTest("Scheduler metadata preserves order and lookup mappings");
+        testSchedulerMetadataPreservesOrderAndLookupMappings();
+
+        beginTest("Scheduler metadata supports valid depth-12 topology domain");
+        testSchedulerMetadataSupportsDepth12TopologyDomain();
+
+        beginTest("Runtime state is pre-sized and sample reset stays logical only");
+        testRuntimeStateSizingAndLogicalReset();
+
+        beginTest("Arrival bookkeeping preserves zero-valued arrivals");
+        testArrivalBookkeepingPreservesZeroValuedArrivals();
+
+        beginTest("Ring buffer append preserves ascending order across wraparound");
+        testRingBufferAppendPreservesAscendingOrderAcrossWraparound();
+
+        beginTest("Dequeue advances head modulo capacity");
+        testDequeueAdvancesHeadModuloCapacity();
+
         beginTest("Malformed topologies rejected");
         testMalformedTopologiesRejected();
 
@@ -161,6 +181,30 @@ private:
             index = (index << 1) | (c == 'H' ? 1 : 0);
         }
         return index;
+    }
+
+    static std::vector<int> buildInternalNodeIdsFromPlanner(const dtcwpt::TopologyPlanner& planner)
+    {
+        std::vector<int> internalNodeIds;
+        internalNodeIds.push_back(1);
+        for (const int nodeId : planner.analysisOrder) {
+            if (nodeId != 1) {
+                internalNodeIds.push_back(nodeId);
+            }
+        }
+
+        return internalNodeIds;
+    }
+
+    static dtcwpt::AnalysisSchedulerMetadata buildMetadataFromDestinations(
+        const std::vector<std::string>& destinations)
+    {
+        dtcwpt::TopologyPlanner planner(destinations);
+        const auto internalNodeIds = buildInternalNodeIdsFromPlanner(planner);
+        return dtcwpt::buildAnalysisSchedulerMetadata(
+            internalNodeIds,
+            planner.destinations,
+            static_cast<int>(dtcwpt::TopologyPlanner::MAX_SIZE));
     }
 
     dtcwpt::TopologyConfig createConfig(const std::vector<std::string>& dests, int maxDepth = kDefaultMaxDepth) {
@@ -267,6 +311,21 @@ private:
         }
 
         expect(threwInvalidArgument, message);
+    }
+
+    void expectRuntimeErrorWithMessage(const std::function<void()>& action,
+                                       const juce::String& expectedMessage,
+                                       const juce::String& failureMessage) {
+        bool threwExpectedRuntimeError = false;
+
+        try {
+            action();
+        } catch (const std::runtime_error& error) {
+            threwExpectedRuntimeError = juce::String(error.what()) == expectedMessage;
+        } catch (...) {
+        }
+
+        expect(threwExpectedRuntimeError, failureMessage);
     }
 
     void testPassthroughReconstruction() {
@@ -490,6 +549,167 @@ private:
             processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 512,
                                     createConfig(destinations, 13), 1);
         }, "maxDepth=13 should throw std::invalid_argument");
+    }
+
+    void testSchedulerMetadataPreservesOrderAndLookupMappings() {
+        {
+            const auto metadata = buildMetadataFromDestinations({"L", "H"});
+            expect(metadata.internalNodeIdsInOrder == std::vector<int>({1}),
+                   "DWT topology should have only the root internal node");
+            expect(metadata.destinationIdsInOrder == std::vector<int>({2, 3}),
+                   "DWT topology should preserve destination order");
+            expectEquals(metadata.nodeIdToInternalIndex[1], 0,
+                         "Root node should map to internal index 0");
+            expectEquals(metadata.nodeIdToInternalIndex[2], -1,
+                         "Leaf node should not map to an internal-node index");
+        }
+
+        {
+            const auto metadata = buildMetadataFromDestinations({"L", "HL", "HH"});
+            expect(metadata.internalNodeIdsInOrder == std::vector<int>({1, 3}),
+                   "Mixed-depth topology should preserve planner internal-node order");
+            expect(metadata.destinationIdsInOrder == std::vector<int>({2, 6, 7}),
+                   "Mixed-depth topology should preserve destination order exactly");
+            expectEquals(metadata.nodeIdToInternalIndex[1], 0,
+                         "Root node should map to internal index 0");
+            expectEquals(metadata.nodeIdToInternalIndex[3], 1,
+                         "Internal node 3 should map to internal index 1");
+        }
+
+        {
+            const auto metadata = buildMetadataFromDestinations(TestUtils::getFullPacketDestinations(2));
+            expect(metadata.internalNodeIdsInOrder == std::vector<int>({1, 2, 3}),
+                   "Depth-2 full tree should preserve internal-node order 1,2,3");
+            expect(metadata.destinationIdsInOrder == std::vector<int>({4, 5, 6, 7}),
+                   "Depth-2 full tree should preserve destination order exactly");
+            expectEquals(metadata.nodeIdToInternalIndex[1], 0,
+                         "Internal node 1 should map to index 0");
+            expectEquals(metadata.nodeIdToInternalIndex[2], 1,
+                         "Internal node 2 should map to index 1");
+            expectEquals(metadata.nodeIdToInternalIndex[3], 2,
+                         "Internal node 3 should map to index 2");
+        }
+    }
+
+    void testSchedulerMetadataSupportsDepth12TopologyDomain() {
+        const auto metadata = buildMetadataFromDestinations(TestUtils::getFullPacketDestinations(12));
+
+        expectEquals(static_cast<int>(metadata.frontierCapacity),
+                     static_cast<int>(metadata.internalNodeIdsInOrder.size()),
+                     "Frontier capacity should equal internal-node count");
+        expect(metadata.frontierCapacity > 0,
+               "Depth-12 valid topology should build non-zero frontier capacity");
+        expect(metadata.frontierCapacity <= dtcwpt::TopologyPlanner::MAX_SIZE,
+               "Depth-12 valid topology should remain within supported planner storage");
+    }
+
+    void testRuntimeStateSizingAndLogicalReset() {
+        const auto metadata = buildMetadataFromDestinations({"L", "HL", "HH"});
+        auto state = dtcwpt::buildAnalysisRuntimeState(metadata);
+
+        expectEquals(static_cast<int>(state.transportedValues.size()), metadata.maxNodeId,
+                     "Transported values size should match metadata.maxNodeId");
+        expectEquals(static_cast<int>(state.arrivalGeneration.size()), metadata.maxNodeId,
+                     "Arrival generation size should match metadata.maxNodeId");
+        expectEquals(static_cast<int>(state.frontierInternalWorkItems.size()),
+                     static_cast<int>(metadata.frontierCapacity),
+                     "Frontier storage size should match metadata frontier capacity");
+
+        state.transportedValues[3] = 1.25;
+        state.arrivalGeneration[3] = 9;
+        state.currentGeneration = 9;
+        state.frontierHead = 2;
+        state.frontierSize = 3;
+
+        dtcwpt::beginAnalysisSample(state);
+
+        expectEquals(static_cast<int>(state.currentGeneration), 10,
+                     "beginAnalysisSample should increment generation");
+        expectEquals(static_cast<int>(state.frontierHead), 0,
+                     "beginAnalysisSample should reset frontier head");
+        expectEquals(static_cast<int>(state.frontierSize), 0,
+                     "beginAnalysisSample should reset frontier size");
+        expectWithinAbsoluteError(state.transportedValues[3], 1.25, 0.0,
+                                  "beginAnalysisSample should not clear transported values");
+        expectEquals(static_cast<int>(state.arrivalGeneration[3]), 9,
+                     "beginAnalysisSample should not clear prior generations");
+    }
+
+    void testArrivalBookkeepingPreservesZeroValuedArrivals() {
+        const auto metadata = buildMetadataFromDestinations({"L", "H"});
+        auto state = dtcwpt::buildAnalysisRuntimeState(metadata);
+        dtcwpt::beginAnalysisSample(state);
+
+        dtcwpt::recordArrival(state, 2, 0.0);
+        dtcwpt::recordArrival(state, 3, 1.5);
+
+        expect(dtcwpt::hasCurrentSampleArrival(state, 2),
+               "Zero-valued leaf arrival should still be recorded for the current sample");
+        expect(dtcwpt::hasCurrentSampleArrival(state, 3),
+               "Non-zero arrival should be recorded for the current sample");
+        expectWithinAbsoluteError(state.transportedValues[2], 0.0, 0.0,
+                                  "Zero-valued arrival should preserve transported value 0.0");
+        expectWithinAbsoluteError(state.transportedValues[3], 1.5, 0.0,
+                                  "Non-zero arrival should preserve transported value");
+    }
+
+    void testRingBufferAppendPreservesAscendingOrderAcrossWraparound() {
+        dtcwpt::AnalysisSchedulerMetadata metadata;
+        metadata.internalNodeIdsInOrder = {1, 2, 3, 4};
+        metadata.destinationIdsInOrder = {8, 9};
+        metadata.nodeIdToInternalIndex.assign(16, -1);
+        metadata.frontierCapacity = 4;
+        metadata.maxNodeId = 16;
+
+        auto state = dtcwpt::buildAnalysisRuntimeState(metadata);
+        state.frontierHead = 3;
+        state.frontierSize = 2;
+        state.frontierInternalWorkItems[3] = {6, 0.6};
+        state.frontierInternalWorkItems[0] = {7, 0.7};
+
+        dtcwpt::appendProcessedParentInternalChildren(
+            state,
+            4,
+            dtcwpt::AnalysisWorkItem{8, 0.8},
+            dtcwpt::AnalysisWorkItem{9, 0.9});
+
+        expectEquals(static_cast<int>(state.frontierSize), 4,
+                     "Appending two internal children should grow frontier size by two");
+        expectEquals(state.frontierInternalWorkItems[1].nodeId, 8,
+                     "Low child should be appended first at wrapped tail index");
+        expectEquals(state.frontierInternalWorkItems[2].nodeId, 9,
+                     "High child should be appended second at wrapped tail index");
+
+        const auto first = dtcwpt::dequeueInternalArrival(state);
+        const auto second = dtcwpt::dequeueInternalArrival(state);
+        const auto third = dtcwpt::dequeueInternalArrival(state);
+        const auto fourth = dtcwpt::dequeueInternalArrival(state);
+
+        expectEquals(first.nodeId, 6, "Logical dequeue order should keep the prior wrapped head first");
+        expectEquals(second.nodeId, 7, "Logical dequeue order should keep the prior suffix second");
+        expectEquals(third.nodeId, 8, "Logical dequeue order should append low child after existing items");
+        expectEquals(fourth.nodeId, 9, "Logical dequeue order should append high child after low child");
+    }
+
+    void testDequeueAdvancesHeadModuloCapacity() {
+        dtcwpt::AnalysisSchedulerMetadata metadata;
+        metadata.internalNodeIdsInOrder = {1, 2, 3};
+        metadata.destinationIdsInOrder = {4, 5};
+        metadata.nodeIdToInternalIndex.assign(8, -1);
+        metadata.frontierCapacity = 3;
+        metadata.maxNodeId = 8;
+
+        auto state = dtcwpt::buildAnalysisRuntimeState(metadata);
+        state.frontierHead = 2;
+        state.frontierSize = 1;
+        state.frontierInternalWorkItems[2] = {3, 0.3};
+
+        const auto item = dtcwpt::dequeueInternalArrival(state);
+        expectEquals(item.nodeId, 3, "Dequeue should return the current logical head item");
+        expectEquals(static_cast<int>(state.frontierHead), 0,
+                     "Dequeue should advance frontier head modulo capacity");
+        expectEquals(static_cast<int>(state.frontierSize), 0,
+                     "Dequeue should reduce frontier size");
     }
 
     void testMalformedTopologiesRejected() {
@@ -751,10 +971,18 @@ private:
         const int latencyBeforeFailure = processor.getLatency();
         const auto input = TestUtils::generateNoise(0.25, TestUtils::TestConfig::SAMPLE_RATE, 123U);
 
-        expectInvalidArgument([&]() {
+#if DTCWPT_ENABLE_TEST_SEAMS
+        processor.setPrepareCandidateFailpointForTesting(
+            dtcwpt::DTCWPTProcessor::PrepareCandidateFailpoint::beforeCommit);
+
+        expectRuntimeErrorWithMessage([&]() {
             processor.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 512,
-                                    createConfig(TestUtils::getFullPacketDestinations(6), 5), 1);
-        }, "Rejected re-prepare should throw std::invalid_argument");
+                                    createConfig(TestUtils::getFullPacketDestinations(5), 5), 1);
+        }, "prepare candidate failpoint",
+           "Failpoint-triggered re-prepare should throw std::runtime_error with the exact message");
+#else
+        expect(false, "DTCWPT_ENABLE_TEST_SEAMS must be enabled for failpoint coverage");
+#endif
 
         expectEquals(processor.getLatency(), latencyBeforeFailure,
                      "Latency should remain unchanged after failed re-prepare");

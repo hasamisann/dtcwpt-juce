@@ -99,6 +99,7 @@ target_include_directories(dtcwpt_tests
 
 target_compile_definitions(dtcwpt_tests
     PRIVATE
+        DTCWPT_ENABLE_TEST_SEAMS=1
         JucePlugin_Name="DT-CWPT Morph"
         JucePlugin_IsSynth=0
         JucePlugin_WantsMidiInput=0
