@@ -8,6 +8,37 @@
 
 namespace dtcwpt {
 
+enum class AnalysisPathId {
+    mainReal,
+    mainImag,
+    sidechainReal,
+    sidechainImag,
+};
+
+enum class AnalysisTraceEventKind {
+    dequeue,
+    childArrivalRecorded,
+    destinationWrite,
+};
+
+struct AnalysisTraceEvent {
+    AnalysisTraceEventKind kind{};
+    AnalysisPathId path = AnalysisPathId::mainReal;
+    int channel = 0;
+    int sampleIndex = 0;
+    int nodeId = 0;
+    int relatedNodeId = 0;
+    std::size_t cursorBeforeWrite = 0;
+    double sampleValue = 0.0;
+    bool enteredFrontier = false;
+};
+
+class AnalysisTraceSink {
+public:
+    virtual ~AnalysisTraceSink() = default;
+    virtual void record(const AnalysisTraceEvent& event) noexcept = 0;
+};
+
 struct AnalysisWorkItem {
     int nodeId = 0;
     double sampleValue = 0.0;

@@ -85,6 +85,15 @@ public:
     std::vector<char> hasSidechainHistory;
 };
 
+class CaptureTraceSink final : public dtcwpt::AnalysisTraceSink {
+public:
+    void record(const dtcwpt::AnalysisTraceEvent& event) noexcept override {
+        events.push_back(event);
+    }
+
+    std::vector<dtcwpt::AnalysisTraceEvent> events;
+};
+
 class DTCWPTProcessorTests : public juce::UnitTest {
 public:
     DTCWPTProcessorTests() : UnitTest("DTCWPTProcessor") {}
@@ -137,6 +146,9 @@ public:
 
         beginTest("Dequeue advances head modulo capacity");
         testDequeueAdvancesHeadModuloCapacity();
+
+        beginTest("Analysis trace sink is instance scoped");
+        testAnalysisTraceSinkIsInstanceScoped();
 
         beginTest("Malformed topologies rejected");
         testMalformedTopologiesRejected();
@@ -710,6 +722,42 @@ private:
                      "Dequeue should advance frontier head modulo capacity");
         expectEquals(static_cast<int>(state.frontierSize), 0,
                      "Dequeue should reduce frontier size");
+    }
+
+    void testAnalysisTraceSinkIsInstanceScoped() {
+#if DTCWPT_ENABLE_TEST_SEAMS
+        CaptureTraceSink sink;
+
+        dtcwpt::DTCWPTProcessor processorWithSink;
+        processorWithSink.setAnalysisTraceSinkForTesting(&sink);
+        processorWithSink.setBandProcessor(std::make_unique<PassthroughProcessor>());
+        processorWithSink.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 8,
+                                        createConfig({"L", "H"}, 1), 1);
+
+        juce::AudioBuffer<double> firstBuffer(1, 8);
+        firstBuffer.clear();
+        firstBuffer.getWritePointer(0)[0] = 0.25;
+        processorWithSink.processBlock(firstBuffer);
+
+        expect(! sink.events.empty(),
+               "Processor with attached trace sink should emit trace events during analysis");
+        const auto eventsAfterFirstProcessor = sink.events.size();
+
+        dtcwpt::DTCWPTProcessor processorWithoutSink;
+        processorWithoutSink.setBandProcessor(std::make_unique<PassthroughProcessor>());
+        processorWithoutSink.prepareToPlay(TestUtils::TestConfig::SAMPLE_RATE, 8,
+                                           createConfig({"L", "H"}, 1), 1);
+
+        juce::AudioBuffer<double> secondBuffer(1, 8);
+        secondBuffer.clear();
+        secondBuffer.getWritePointer(0)[0] = 0.5;
+        processorWithoutSink.processBlock(secondBuffer);
+
+        expectEquals(static_cast<int>(sink.events.size()), static_cast<int>(eventsAfterFirstProcessor),
+                     "Processor without the sink attached must not write into another processor's trace sink");
+#else
+        expect(false, "DTCWPT_ENABLE_TEST_SEAMS must be enabled for trace seam coverage");
+#endif
     }
 
     void testMalformedTopologiesRejected() {

@@ -1,9 +1,13 @@
 #include "RegressionFixtures.h"
 
+#include "AnalysisArrivalOracle.h"
+
 #include "TestUtils.h"
 
+#include <dtcwpt/dtcwpt_analysis_node_factory.h>
 #include <dtcwpt/dtcwpt_band_processor.h>
 #include <dtcwpt/dtcwpt_processor.h>
+#include <dtcwpt/dtcwpt_topology_planner.h>
 
 #include <algorithm>
 #include <cmath>
@@ -15,6 +19,20 @@
 namespace RegressionFixtures {
 
 namespace {
+
+dtcwpt::AnalysisTreeKind treeKindFromPath(dtcwpt::AnalysisPathId path) noexcept
+{
+    switch (path) {
+        case dtcwpt::AnalysisPathId::mainReal:
+        case dtcwpt::AnalysisPathId::sidechainReal:
+            return dtcwpt::AnalysisTreeKind::real;
+        case dtcwpt::AnalysisPathId::mainImag:
+        case dtcwpt::AnalysisPathId::sidechainImag:
+            return dtcwpt::AnalysisTreeKind::imag;
+    }
+
+    return dtcwpt::AnalysisTreeKind::real;
+}
 
 int getLeafDepth(const std::string& destination)
 {
@@ -222,6 +240,15 @@ private:
     bool captureEnabled = true;
 };
 
+struct LinearBaselineTraceSink final : public dtcwpt::AnalysisTraceSink {
+    void record(const dtcwpt::AnalysisTraceEvent& event) noexcept override
+    {
+        events.push_back(event);
+    }
+
+    std::vector<dtcwpt::AnalysisTraceEvent> events;
+};
+
 } // namespace
 
 std::vector<RandomTopologyCase> buildDeterministicTopologyMatrix(
@@ -419,6 +446,64 @@ bool compareSegmentationInvariantResults(
     return true;
 }
 
+bool compareAnalysisTraces(
+    std::span<const dtcwpt::AnalysisTraceEvent> expected,
+    std::span<const dtcwpt::AnalysisTraceEvent> actual,
+    juce::String& failureMessage)
+{
+    failureMessage.clear();
+
+    if (expected.size() != actual.size()) {
+        failureMessage = "trace event count mismatch";
+        return false;
+    }
+
+    constexpr double kTraceTolerance = 1.0e-15;
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        const auto& expectedEvent = expected[index];
+        const auto& actualEvent = actual[index];
+
+        if (expectedEvent.kind != actualEvent.kind) {
+            failureMessage = "trace kind mismatch at event " + juce::String(static_cast<int>(index));
+            return false;
+        }
+        if (expectedEvent.path != actualEvent.path) {
+            failureMessage = "trace path mismatch at event " + juce::String(static_cast<int>(index));
+            return false;
+        }
+        if (expectedEvent.channel != actualEvent.channel) {
+            failureMessage = "trace channel mismatch at event " + juce::String(static_cast<int>(index));
+            return false;
+        }
+        if (expectedEvent.sampleIndex != actualEvent.sampleIndex) {
+            failureMessage = "trace sample index mismatch at event " + juce::String(static_cast<int>(index));
+            return false;
+        }
+        if (expectedEvent.nodeId != actualEvent.nodeId) {
+            failureMessage = "trace node ID mismatch at event " + juce::String(static_cast<int>(index));
+            return false;
+        }
+        if (expectedEvent.relatedNodeId != actualEvent.relatedNodeId) {
+            failureMessage = "trace related node ID mismatch at event " + juce::String(static_cast<int>(index));
+            return false;
+        }
+        if (expectedEvent.cursorBeforeWrite != actualEvent.cursorBeforeWrite) {
+            failureMessage = "trace cursor mismatch at event " + juce::String(static_cast<int>(index));
+            return false;
+        }
+        if (expectedEvent.enteredFrontier != actualEvent.enteredFrontier) {
+            failureMessage = "trace enteredFrontier mismatch at event " + juce::String(static_cast<int>(index));
+            return false;
+        }
+        if (std::abs(expectedEvent.sampleValue - actualEvent.sampleValue) > kTraceTolerance) {
+            failureMessage = "trace sample value mismatch at event " + juce::String(static_cast<int>(index));
+            return false;
+        }
+    }
+
+    return true;
+}
+
 ReconstructionCheck evaluateReconstruction(
     std::span<const double> input,
     std::span<const double> output,
@@ -541,6 +626,129 @@ AnalysisSnapshotScenarioResult runAnalysisSnapshotScenario(
 
     const auto quantizedOutput = quantizeToFloat32(output, 1, static_cast<int>(output.size()));
     return captureProcessorPtr->buildResult(std::move(output), quantizedOutput, latencySamples);
+}
+
+SchedulerBaselineResult runLinearScanBaseline(
+    const dtcwpt::TopologyConfig& config,
+    std::span<const double> input,
+    dtcwpt::AnalysisPathId path)
+{
+    dtcwpt::TopologyPlanner planner(config.destinations);
+    const auto treeKind = treeKindFromPath(path);
+
+    std::vector<int> internalNodeIds;
+    internalNodeIds.push_back(1);
+    for (const int nodeId : planner.analysisOrder) {
+        if (nodeId != 1) {
+            internalNodeIds.push_back(nodeId);
+        }
+    }
+
+    std::vector<dtcwpt::AnalysisNode> nodes;
+    nodes.reserve(internalNodeIds.size());
+    for (const int nodeId : internalNodeIds) {
+        nodes.push_back(dtcwpt::createAnalysisNodeForId(nodeId, treeKind));
+    }
+
+    std::vector<double> workBuffer(dtcwpt::TopologyPlanner::MAX_SIZE, 0.0);
+    std::vector<char> activeFlags(dtcwpt::TopologyPlanner::MAX_SIZE, 0);
+    std::vector<std::vector<double>> perDestinationOutputs(planner.destinations.size());
+    LinearBaselineTraceSink traceSink;
+
+    for (int sampleIndex = 0; sampleIndex < static_cast<int>(input.size()); ++sampleIndex) {
+        std::fill(activeFlags.begin(), activeFlags.end(), static_cast<char>(0));
+        activeFlags[1] = 1;
+        workBuffer[1] = input[static_cast<std::size_t>(sampleIndex)];
+
+        for (std::size_t nodeIndex = 0; nodeIndex < internalNodeIds.size(); ++nodeIndex) {
+            const int nodeId = internalNodeIds[nodeIndex];
+            if (!activeFlags[static_cast<std::size_t>(nodeId)]) {
+                continue;
+            }
+
+            traceSink.record(dtcwpt::AnalysisTraceEvent{
+                .kind = dtcwpt::AnalysisTraceEventKind::dequeue,
+                .path = path,
+                .channel = 0,
+                .sampleIndex = sampleIndex,
+                .nodeId = nodeId,
+                .relatedNodeId = 0,
+                .cursorBeforeWrite = 0,
+                .sampleValue = workBuffer[static_cast<std::size_t>(nodeId)],
+                .enteredFrontier = true,
+            });
+
+            dtcwpt::AnalysisChildOutputs outputs{};
+            const bool emitted = dtcwpt::test::runLegacyAnalysisArrival(
+                nodes[nodeIndex],
+                workBuffer[static_cast<std::size_t>(nodeId)],
+                outputs);
+            if (!emitted) {
+                continue;
+            }
+
+            const int leftNodeId = nodeId << 1;
+            const int rightNodeId = (nodeId << 1) | 1;
+            workBuffer[static_cast<std::size_t>(leftNodeId)] = outputs.low;
+            workBuffer[static_cast<std::size_t>(rightNodeId)] = outputs.high;
+            activeFlags[static_cast<std::size_t>(leftNodeId)] = 1;
+            activeFlags[static_cast<std::size_t>(rightNodeId)] = 1;
+
+            const bool leftIsInternal = std::find(internalNodeIds.begin(), internalNodeIds.end(), leftNodeId)
+                != internalNodeIds.end();
+            const bool rightIsInternal = std::find(internalNodeIds.begin(), internalNodeIds.end(), rightNodeId)
+                != internalNodeIds.end();
+
+            traceSink.record(dtcwpt::AnalysisTraceEvent{
+                .kind = dtcwpt::AnalysisTraceEventKind::childArrivalRecorded,
+                .path = path,
+                .channel = 0,
+                .sampleIndex = sampleIndex,
+                .nodeId = nodeId,
+                .relatedNodeId = leftNodeId,
+                .cursorBeforeWrite = 0,
+                .sampleValue = outputs.low,
+                .enteredFrontier = leftIsInternal,
+            });
+            traceSink.record(dtcwpt::AnalysisTraceEvent{
+                .kind = dtcwpt::AnalysisTraceEventKind::childArrivalRecorded,
+                .path = path,
+                .channel = 0,
+                .sampleIndex = sampleIndex,
+                .nodeId = nodeId,
+                .relatedNodeId = rightNodeId,
+                .cursorBeforeWrite = 0,
+                .sampleValue = outputs.high,
+                .enteredFrontier = rightIsInternal,
+            });
+        }
+
+        for (std::size_t destinationIndex = 0; destinationIndex < planner.destinations.size(); ++destinationIndex) {
+            const int destinationId = planner.destinations[destinationIndex];
+            if (!activeFlags[static_cast<std::size_t>(destinationId)]) {
+                continue;
+            }
+
+            traceSink.record(dtcwpt::AnalysisTraceEvent{
+                .kind = dtcwpt::AnalysisTraceEventKind::destinationWrite,
+                .path = path,
+                .channel = 0,
+                .sampleIndex = sampleIndex,
+                .nodeId = destinationId,
+                .relatedNodeId = 0,
+                .cursorBeforeWrite = perDestinationOutputs[destinationIndex].size(),
+                .sampleValue = workBuffer[static_cast<std::size_t>(destinationId)],
+                .enteredFrontier = false,
+            });
+            perDestinationOutputs[destinationIndex].push_back(workBuffer[static_cast<std::size_t>(destinationId)]);
+        }
+    }
+
+    SchedulerBaselineResult result;
+    result.trace = std::move(traceSink.events);
+    result.destinationIdsInOrder = planner.destinations;
+    result.perDestinationOutputs = std::move(perDestinationOutputs);
+    return result;
 }
 
 } // namespace RegressionFixtures

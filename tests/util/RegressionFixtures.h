@@ -1,5 +1,7 @@
 #pragma once
 
+#include <dtcwpt/dtcwpt_analysis_scheduler.h>
+
 #include <juce_core/juce_core.h>
 
 #include <optional>
@@ -69,6 +71,12 @@ struct AnalysisSnapshotScenarioResult {
     bool hasSidechainSnapshots = false;
 };
 
+struct SchedulerBaselineResult {
+    std::vector<dtcwpt::AnalysisTraceEvent> trace;
+    std::vector<int> destinationIdsInOrder;
+    std::vector<std::vector<double>> perDestinationOutputs;
+};
+
 std::vector<RandomTopologyCase> buildDeterministicTopologyMatrix(
     TopologyFamily family,
     std::span<const int> depths,
@@ -106,5 +114,15 @@ AnalysisSnapshotScenarioResult runAnalysisSnapshotScenario(
     std::span<const double> input,
     std::optional<std::span<const double>> sidechain,
     const SegmentationPlan& plan);
+
+bool compareAnalysisTraces(
+    std::span<const dtcwpt::AnalysisTraceEvent> expected,
+    std::span<const dtcwpt::AnalysisTraceEvent> actual,
+    juce::String& failureMessage);
+
+SchedulerBaselineResult runLinearScanBaseline(
+    const dtcwpt::TopologyConfig& config,
+    std::span<const double> input,
+    dtcwpt::AnalysisPathId path);
 
 } // namespace RegressionFixtures

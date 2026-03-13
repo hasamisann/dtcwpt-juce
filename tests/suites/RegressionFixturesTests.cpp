@@ -1,4 +1,5 @@
 #include "../util/RegressionFixtures.h"
+#include "../util/AnalysisArrivalOracle.h"
 #include "../util/TestUtils.h"
 
 #include <dtcwpt/dtcwpt_processor.h>
@@ -44,6 +45,15 @@ public:
 
         beginTest("Reconstruction evaluation uses the c07 oracle threshold");
         testReconstructionEvaluationUsesTheC07OracleThreshold();
+
+        beginTest("Trace comparison uses strict structure and tolerant sample values");
+        testTraceComparisonUsesStrictStructureAndTolerantSampleValues();
+
+        beginTest("Linear scan baseline preserves destination order and mixed topology trace semantics");
+        testLinearScanBaselinePreservesDestinationOrderAndMixedTopologyTraceSemantics();
+
+        beginTest("Linear scan baseline uses legacy adapter expected call counts");
+        testLinearScanBaselineUsesLegacyAdapterExpectedCallCounts();
     }
 
 private:
@@ -338,6 +348,103 @@ private:
                "The chosen error should still beat the legacy -80 dB helper threshold");
         expect(! nearLegacyThreshold.passesMseThreshold,
                "The c07 reconstruction helper must not reuse the legacy -80 dB threshold");
+    }
+
+    void testTraceComparisonUsesStrictStructureAndTolerantSampleValues()
+    {
+        const std::vector<dtcwpt::AnalysisTraceEvent> reference{
+            {dtcwpt::AnalysisTraceEventKind::dequeue, dtcwpt::AnalysisPathId::mainReal, 0, 0, 1, 0, 0, 0.25, true},
+            {dtcwpt::AnalysisTraceEventKind::destinationWrite, dtcwpt::AnalysisPathId::mainReal, 0, 0, 2, 0, 0, -0.5, false},
+        };
+
+        auto tolerant = reference;
+        tolerant[0].sampleValue += 5.0e-16;
+
+        juce::String failureMessage;
+        expect(RegressionFixtures::compareAnalysisTraces(reference, tolerant, failureMessage),
+               "Trace comparison should tolerate sampleValue differences within 1e-15");
+        expect(failureMessage.isEmpty(),
+               "Successful trace comparison should not report a failure message");
+
+        auto wrongNode = reference;
+        wrongNode[1].nodeId = 7;
+        failureMessage.clear();
+        expect(! RegressionFixtures::compareAnalysisTraces(reference, wrongNode, failureMessage),
+               "Trace comparison should reject structural mismatches");
+        expect(failureMessage.contains("node ID"),
+               "Structural mismatch should report the field that differed");
+
+        auto wrongValue = reference;
+        wrongValue[0].sampleValue += 1.0e-12;
+        failureMessage.clear();
+        expect(! RegressionFixtures::compareAnalysisTraces(reference, wrongValue, failureMessage),
+               "Trace comparison should reject sampleValue differences above 1e-15");
+        expect(failureMessage.contains("sample value"),
+               "Sample mismatch should report a numeric payload failure");
+    }
+
+    void testLinearScanBaselinePreservesDestinationOrderAndMixedTopologyTraceSemantics()
+    {
+        const auto config = makeConfig({"L", "HL", "HH"}, 2);
+        const std::vector<double> input{0.25};
+
+        dtcwpt::test::resetLegacyAdapterCallCount();
+        const auto result = RegressionFixtures::runLinearScanBaseline(
+            config,
+            input,
+            dtcwpt::AnalysisPathId::mainReal);
+
+        expect(result.destinationIdsInOrder == std::vector<int>({2, 6, 7}),
+               "Baseline should preserve destination IDs in exact input order");
+        expectEquals(static_cast<int>(result.perDestinationOutputs.size()), 3,
+                     "Baseline should return one output buffer per destination in order");
+
+        expectEquals(static_cast<int>(result.trace.size()), 9,
+                     "Mixed topology one-sample baseline should emit dequeue, child-arrival, and destination-write events deterministically");
+        expect(result.trace[0].kind == dtcwpt::AnalysisTraceEventKind::dequeue && result.trace[0].nodeId == 1,
+               "Root dequeue must be the first trace event");
+        expect(result.trace[3].kind == dtcwpt::AnalysisTraceEventKind::dequeue && result.trace[3].nodeId == 3,
+               "Internal H dequeue must occur after the root child-arrival events");
+
+        expect(result.trace[1].kind == dtcwpt::AnalysisTraceEventKind::childArrivalRecorded,
+               "Left child arrival should be recorded immediately after root dequeue");
+        expectEquals(result.trace[1].relatedNodeId, 2,
+                     "Left child arrival should target node 2");
+        expect(! result.trace[1].enteredFrontier,
+               "Leaf child L should be recorded without entering the frontier");
+
+        expect(result.trace[2].kind == dtcwpt::AnalysisTraceEventKind::childArrivalRecorded,
+               "Right child arrival should be recorded immediately after left child arrival");
+        expectEquals(result.trace[2].relatedNodeId, 3,
+                     "Right child arrival should target node 3");
+        expect(result.trace[2].enteredFrontier,
+               "Internal child H should be recorded as entering the frontier");
+        expect(result.trace[6].kind == dtcwpt::AnalysisTraceEventKind::destinationWrite
+                   && result.trace[6].nodeId == 2,
+               "Leaf L destination write should occur after internal processing completes");
+    }
+
+    void testLinearScanBaselineUsesLegacyAdapterExpectedCallCounts()
+    {
+        {
+            const auto config = makeConfig({"L", "HL", "HH"}, 2);
+            const std::vector<double> input{0.5};
+
+            dtcwpt::test::resetLegacyAdapterCallCount();
+            (void) RegressionFixtures::runLinearScanBaseline(config, input, dtcwpt::AnalysisPathId::mainReal);
+            expectEquals(dtcwpt::test::getLegacyAdapterCallCount(), 2,
+                         "Mixed topology baseline must invoke the legacy adapter exactly for nodes 1 and 3");
+        }
+
+        {
+            const auto config = makeConfig({"LL", "LH", "HL", "HH"}, 2);
+            const std::vector<double> input{0.5};
+
+            dtcwpt::test::resetLegacyAdapterCallCount();
+            (void) RegressionFixtures::runLinearScanBaseline(config, input, dtcwpt::AnalysisPathId::mainReal);
+            expectEquals(dtcwpt::test::getLegacyAdapterCallCount(), 3,
+                         "Depth-2 full tree baseline must invoke the legacy adapter exactly for nodes 1, 2, and 3");
+        }
     }
 };
 

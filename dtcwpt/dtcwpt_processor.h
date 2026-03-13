@@ -101,6 +101,7 @@ public:
     };
 
     void setPrepareCandidateFailpointForTesting(PrepareCandidateFailpoint failpoint) noexcept;
+    void setAnalysisTraceSinkForTesting(AnalysisTraceSink* sink) noexcept;
 #endif
 
 private:
@@ -222,6 +223,7 @@ private:
 
 #if DTCWPT_ENABLE_TEST_SEAMS
     PrepareCandidateFailpoint prepareCandidateFailpoint_ = PrepareCandidateFailpoint::none;
+    AnalysisTraceSink* analysisTraceSink_ = nullptr;
 #endif
 
     // Helper methods
@@ -235,12 +237,14 @@ private:
     void processChannelSynthesisAndAverage(int ch, juce::AudioBuffer<double>& output);
 
     void analysisProcess(const std::vector<double>& inputBlock,
-                           AnalysisNodeGroup& nodeGroup,
-                           const std::vector<int>& nodeIds,
-                           std::vector<std::vector<double>>& results,
-                           std::vector<size_t>& cursors,
-                           std::vector<double>& workBuffer,
-                           std::vector<char>& activeFlags);
+                            AnalysisNodeGroup& nodeGroup,
+                            const std::vector<int>& nodeIds,
+                            std::vector<std::vector<double>>& results,
+                            std::vector<size_t>& cursors,
+                            std::vector<double>& workBuffer,
+                            std::vector<char>& activeFlags,
+                            AnalysisPathId path,
+                            int channel);
 
     void synthesisProcess(std::vector<std::vector<double>>& analysedData,
                           SynthesisNodeGroup& nodeGroup,
