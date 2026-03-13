@@ -66,7 +66,7 @@ AboutView::AboutView (std::function<void()> onBack)
     // -----------------------------------------------------------------------
     // Version label
     // -----------------------------------------------------------------------
-    versionLabel_.setText ("Version 0.1.0", juce::dontSendNotification);
+    versionLabel_.setText ("Version 0.1.1", juce::dontSendNotification);
     versionLabel_.setFont (FontHelper::getFont (14.0f));
     versionLabel_.setColour (juce::Label::textColourId, juce::Colour (kMutedTextColour));
     versionLabel_.setJustificationType (juce::Justification::centred);

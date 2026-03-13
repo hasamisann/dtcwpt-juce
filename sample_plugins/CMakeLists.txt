@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(dtcwpt_sample_plugins VERSION 0.1.0 LANGUAGES CXX)
+project(dtcwpt_sample_plugins VERSION 0.1.1 LANGUAGES CXX)
 
 enable_testing()
 

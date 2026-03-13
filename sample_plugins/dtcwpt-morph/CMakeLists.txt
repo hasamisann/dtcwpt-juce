@@ -1,4 +1,4 @@
-project(dtcwpt_morph_plugin VERSION 0.1.0 LANGUAGES CXX)
+project(dtcwpt_morph_plugin VERSION 0.1.1 LANGUAGES CXX)
 
 # Embedded font resources (Hanken Grotesk, SIL OFL v1.1)
 juce_add_binary_data(DtcwptMorphResources

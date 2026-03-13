@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(dtcwpt_tests VERSION 0.1.0 LANGUAGES CXX)
+project(dtcwpt_tests VERSION 0.2.0 LANGUAGES CXX)
 
 # C++20 required
 set(CMAKE_CXX_STANDARD 20)
