@@ -2,7 +2,7 @@
 
 JUCE 8.x 向け Dual-Tree Complex Wavelet Packet Transform ライブラリ
 
-[English](README.md) | 日本語
+[English](README-en.md) | 日本語
 
 ---
 
