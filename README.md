@@ -10,6 +10,10 @@ English | [日本語](README-ja.md)
 
 This library implements the Dual-Tree Complex Wavelet Packet Transform (Bayram & Selesnick, 2008) as a JUCE module. It performs subband decomposition of audio signals via dual-tree complex wavelet filter banks with configurable tree topology, and reconstructs the output with perfect reconstruction. A callback interface allows user-defined processing on the complex subbands between analysis and synthesis.
 
+In modern music production, cross-synthesis effects such as vocoders and cepstrum morphing and effects that directly manipulate audio in the frequency domain using the STFT are widely used in sound design. However, due to the time-frequency uncertainty principle inherent to the STFT, it is impossible to simultaneously achieve high frequency resolution at low frequencies and high temporal resolution at high frequencies. This forces a trade-off between transient accuracy and frequency resolution.
+To overcome this limitation, I implemented the complex wavelet packet transform, one of multi-resolution analysis methods. CWPT enables frequency domain processing that maintains high frequency resolution in the low-frequency range and high time resolution in the high-frequency range.
+Furthermore, in CWPT, the time-varying amplitude represents the amplitude envelope of a specific frequency band, while the time-varying phase captures its frequency information. This makes it highly suitable for cross-synthesis applications—such as applying the envelope or timbre of one sound to another—enabling the synthesis of two sounds with significantly higher accuracy.
+
 ---
 
 ## Requirements
