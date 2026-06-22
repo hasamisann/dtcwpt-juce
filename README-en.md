@@ -2,7 +2,7 @@
 
 Dual-Tree Complex Wavelet Packet Transform library for JUCE 8.x
 
-English | [日本語](README-ja.md)
+English | [日本語](README.md)
 
 ---
 
