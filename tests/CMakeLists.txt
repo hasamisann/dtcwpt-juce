@@ -76,6 +76,7 @@ target_sources(dtcwpt_tests
         suites/AnalyzerLatencyAlignerTests.cpp
         suites/RegressionFixturesTests.cpp
         suites/StreamingEngineTests.cpp
+        suites/StreamingBenchmark.cpp
         util/AnalysisArrivalOracle.cpp
         util/RegressionFixtures.cpp
         util/TestUtils.cpp
