@@ -446,6 +446,14 @@ int getLatency() const;
 ---
 
 ```cpp
+void reset();
+```
+
+ストリーミング状態（フィルタ履歴、遅延補償バッファ、入出力 FIFO、サイドチェーン状態、間引きパリティ）をすべて `prepareToPlay()` 直後の状態に戻し、登録済みバンドプロセッサの `reset()` を呼び出します。ホストの停止・シーク・ループ復帰で、それ以前の音声が出力されないようにするために使用します。トポロジー、レイテンシー、登録済みバンドプロセッサは変わりません。メモリ確保は行わず、`prepareToPlay()` 前に呼び出した場合は何もしません。`processBlock()` / `processSidechain()` と同時に呼び出さないでください。
+
+---
+
+```cpp
 void setBandProcessor(std::unique_ptr<BandProcessor> processor);
 ```
 

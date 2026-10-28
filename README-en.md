@@ -453,6 +453,14 @@ Returns the processing latency in samples. Use this for host latency compensatio
 ---
 
 ```cpp
+void reset();
+```
+
+Returns all streaming state (filter histories, delay-compensation buffers, input/output FIFOs, sidechain state, downsampling parity) to the state right after `prepareToPlay()` and calls `reset()` on the registered band processor. Use it on host stop, seek or loop restart so audio from before the event is not emitted afterwards. The topology, latency and registered band processor are unchanged. It does not allocate, and does nothing if `prepareToPlay()` has not been called. Do not call it concurrently with `processBlock()` / `processSidechain()`.
+
+---
+
+```cpp
 void setBandProcessor(std::unique_ptr<BandProcessor> processor);
 ```
 
