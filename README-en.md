@@ -440,7 +440,16 @@ Initializes the processor with given parameters. Must be called before processin
 void processBlock(juce::AudioBuffer<double>& buffer);
 ```
 
-Processes an audio block. Accepts any buffer size; an internal FIFO handles block-size adaptation automatically.
+Processes an audio block. Accepts any buffer size; an internal FIFO handles block-size adaptation automatically. Blocks longer than the `maxBlockSize` passed to `prepareToPlay()` are supported, and the output does not depend on how the host partitions the stream.
+
+---
+
+```cpp
+void processBlock(juce::AudioBuffer<double>& buffer,
+                  const juce::AudioBuffer<double>* sidechain);
+```
+
+Processes the main signal together with a sidechain of the same length (`nullptr` for none). The sidechain is consumed in lockstep with the main signal, so it also works for blocks longer than `maxBlockSize`.
 
 ---
 
@@ -464,7 +473,7 @@ Registers a band processor (takes ownership). If `prepareToPlay()` was already c
 void processSidechain(juce::AudioBuffer<double>& sidechainBuffer);
 ```
 
-Feeds sidechain audio for parallel CWPT analysis. Must be called with the same sample count as the main `processBlock()` call, and must be called before `processBlock()` for the same block.
+Feeds sidechain audio for parallel CWPT analysis. Must be called with the same sample count as the main `processBlock()` call, and must be called before `processBlock()` for the same block. A sidechain longer than the `maxBlockSize` passed to `prepareToPlay()` is ignored for that block (use `processBlock(buffer, &sidechainBuffer)` when blocks may exceed `maxBlockSize`).
 
 ---
 

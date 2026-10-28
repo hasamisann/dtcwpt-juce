@@ -69,8 +69,26 @@ public:
     void prepareToPlay(double sampleRate, int maxBlockSize,
                        const TopologyConfig& config, int channelNum);
 
+    /**
+     * @brief Process audio in place. Accepts any block length, including 1 sample and lengths
+     *        above the maxBlockSize given to prepareToPlay() (hosts may exceed it); the stream is
+     *        cut into internal blocks regardless of how the host partitions it.
+     *
+     * Uses the sidechain staged by processSidechain() if its length matches this block.
+     */
     void processBlock(juce::AudioBuffer<double>& buffer);
 
+    /**
+     * @brief Process audio in place together with an optional sidechain of the same length.
+     *
+     * Like processBlock(buffer), any block length is accepted. The sidechain is consumed in lockstep
+     * with the main signal, so it also works for blocks above maxBlockSize.
+     * The sidechain is ignored if it is null, has no channels or has a different length.
+     * Channel count is adjusted to match main input (duplicate last / truncate).
+     *
+     * @param buffer    Main audio, processed in place
+     * @param sidechain Sidechain audio (read only), or nullptr for none
+     */
     void processBlock(juce::AudioBuffer<double>& buffer, const juce::AudioBuffer<double>* sidechain);
 
     int getLatency() const;
@@ -91,6 +109,9 @@ public:
      * Must be called with the same sample count as the main processBlock() call.
      * Channel count is adjusted to match main input (duplicate last / truncate).
      * Must be called BEFORE processBlock() for the same block.
+     *
+     * Blocks longer than the maxBlockSize given to prepareToPlay() cannot be staged: the sidechain
+     * is ignored for that block. Use processBlock(buffer, &sidechainBuffer) for such blocks.
      *
      * @param sidechainBuffer The sidechain audio buffer to process
      */
@@ -199,14 +220,14 @@ private:
     std::vector<std::vector<double>> scDelayTempBuffer_;
     std::vector<double> scInputBlockBuffer_;
     std::vector<double> scDelaySliceBuffer_;
-    /// Sidechain FIFO (mirrors main input FIFO)
+    /// Sidechain FIFO (filled in lockstep with the main input FIFO)
     std::vector<std::vector<double>> scInputFifo_;
-    std::vector<size_t> scInputFifoFill_;
     /// Sidechain state
-    bool sidechainActive_ = false;
     bool sidechainProcessedThisBlock_ = false;
     /// Expected sample count for sidechain buffer validation
     int expectedSidechainSamples_ = 0;
+    /// Samples of the in-progress internal block that were fed with sidechain data
+    size_t scFedSamples_ = 0;
 
     // --- Pre-allocated sidechain adjusted channels buffer ---
     std::vector<std::vector<double>> scAdjustedChannels_;
@@ -219,16 +240,23 @@ private:
     // --- Pre-allocated BandData buffer ---
     BandData cachedBandData_;
 
-    // --- Pre-allocated channel tracking buffer (RT-safe, avoids per-block alloc) ---
-    std::vector<char> channelHasData_;  // use char instead of bool to avoid bit-packed specialization
-    std::vector<char> scChannelHasData_;  // use char instead of bool to avoid bit-packed specialization
-
 #if DTCWPT_ENABLE_TEST_SEAMS
     PrepareCandidateFailpoint prepareCandidateFailpoint_ = PrepareCandidateFailpoint::none;
     AnalysisTraceSink* analysisTraceSink_ = nullptr;
 #endif
 
     // Helper methods
+    /// Pushes samples [startSample, startSample + numSamples) of `buffer` into the input FIFO, running an
+    /// internal block whenever it fills, and writes the same number of output samples back in place.
+    void processSegments(juce::AudioBuffer<double>& buffer, int startSample, int numSamples, bool useSidechain);
+
+    /// Runs one internal block from the input FIFO contents and appends its output to the output FIFO.
+    void processInternalBlock(bool hasSidechain);
+
+    /// Copies `numSamples` samples of the sidechain (from `startSample`) into scAdjustedChannels_ with
+    /// the channel count adjusted to the main input. Requires numSamples <= maxBlockSize_.
+    void stageSidechain(const juce::AudioBuffer<double>& sidechainBuffer, int startSample, int numSamples);
+
     /// Analysis + delay compensation phase for one channel.
     void processChannelAnalysisAndDelay(int ch, const std::vector<double>& inputBlock);
 

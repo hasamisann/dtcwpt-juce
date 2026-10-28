@@ -57,6 +57,13 @@ public:
     std::vector<double> sidechainTrace;
 };
 
+/** Leaves every band untouched (the capture processor above allocates when recording). */
+class PassthroughBandProcessor : public dtcwpt::BandProcessor {
+public:
+    void prepare(double, int, int, int) override {}
+    void reset() override {}
+};
+
 dtcwpt::TopologyConfig makeDwtConfig(int levels, int maxDepth = 8) {
     dtcwpt::TopologyConfig config;
     config.destinations = TestUtils::getWaveletTreeDestinations(levels);
@@ -189,7 +196,7 @@ private:
 
     void testOversizedBlocksDoNotAllocate() {
         dtcwpt::DTCWPTProcessor processor;
-        processor.setBandProcessor(std::make_unique<CaptureBandProcessor>());
+        processor.setBandProcessor(std::make_unique<PassthroughBandProcessor>());
         processor.prepareToPlay(kSampleRate, kPreparedBlockSize, makeDwtConfig(6), 2);
 
         juce::AudioBuffer<double> oversized(2, 1024);

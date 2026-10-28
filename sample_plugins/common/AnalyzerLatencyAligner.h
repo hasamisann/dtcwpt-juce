@@ -43,10 +43,10 @@ public:
         if (ringBuffer_.empty() || input == nullptr || output == nullptr || numSamples <= 0)
             return;
 
+        // The ring is advanced per sample, so blocks longer than maxBlockSize_ are handled as well.
         const int ringSize = static_cast<int> (ringBuffer_.size());
-        const int samplesToProcess = std::min (numSamples, maxBlockSize_);
 
-        for (int i = 0; i < samplesToProcess; ++i)
+        for (int i = 0; i < numSamples; ++i)
         {
             ringBuffer_[static_cast<std::size_t> (writeIndex_)] = input[i];
 

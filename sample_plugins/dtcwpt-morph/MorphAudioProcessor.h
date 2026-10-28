@@ -115,12 +115,13 @@ public:
      * Per-block operations (in order):
      *  1. Topology dirty check — if set, rebuild DTCWPTProcessor and update latency.
      *  2. Read APVTS atomic floats; call morphProcessor_->setTargets().
-     *  3. Convert float main buffer → double mainDoubleBuffer_.
-     *  4. Build sidechain double buffer (bus 1 if enabled, else copy of main).
-     *  5. dtcwptMain_->processSidechain(scDoubleBuffer_).
-     *  6. dtcwptMain_->processBlock(mainDoubleBuffer_).
-     *  7. Convert double output → float main buffer.
-     *  8. Push mono-averaged input + output to spectrumBridge_.
+     *  3. Split the block into chunks of at most the prepared block size
+     *     (hosts may exceed the size passed to prepareToPlay()) and for each chunk:
+     *     a. Convert float main buffer → double mainDoubleBuffer_.
+     *     b. Build sidechain double buffer (bus 1 if enabled, else copy of main).
+     *     c. dtcwptMain_->processBlock(main, &sidechain).
+     *     d. Convert double output → float main buffer.
+     *     e. Push mono-averaged input + output to spectrumBridge_.
      *
      * All code is real-time safe (noexcept, no allocations, no locks except
      * the brief topology-rebuild mutex hold).
@@ -292,6 +293,13 @@ private:
     void rebuildDTCWPT();
     bool tryApplyTopologyCandidate (const std::vector<std::string>& candidateDestinations) noexcept;
     bool tryApplyPendingTopologyCandidate() noexcept;
+
+    /**
+     * @brief Processes samples [startSample, startSample + numSamples) of the host buffer.
+     *
+     * numSamples must not exceed the block size given to prepareToPlay().
+     */
+    void processChunk (juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
 
     //==============================================================================
     // APVTS — owns all automatable parameters

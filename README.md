@@ -433,7 +433,16 @@ void prepareToPlay(double sampleRate, int maxBlockSize,
 void processBlock(juce::AudioBuffer<double>& buffer);
 ```
 
-オーディオブロックを処理します。任意のバッファサイズを受け付け、内部 FIFO がブロックサイズの適応を自動的に処理します。
+オーディオブロックを処理します。任意のバッファサイズを受け付け、内部 FIFO がブロックサイズの適応を自動的に処理します。`prepareToPlay()` に渡した `maxBlockSize` を超えるブロックも処理でき、出力はホストのブロック分割に依存しません。
+
+---
+
+```cpp
+void processBlock(juce::AudioBuffer<double>& buffer,
+                  const juce::AudioBuffer<double>* sidechain);
+```
+
+メイン信号とサイドチェーン信号（同じサンプル数。不要なら `nullptr`）を一緒に処理します。サイドチェーンはメイン信号と同期して取り込まれるため、`maxBlockSize` を超えるブロックでも使えます。
 
 ---
 
@@ -457,7 +466,7 @@ void setBandProcessor(std::unique_ptr<BandProcessor> processor);
 void processSidechain(juce::AudioBuffer<double>& sidechainBuffer);
 ```
 
-パラレル CWPT 解析のためにサイドチェーンオーディオを入力します。メインの `processBlock()` と同じサンプル数で呼び出す必要があり、同じブロックの `processBlock()` の前に呼び出す必要があります。
+パラレル CWPT 解析のためにサイドチェーンオーディオを入力します。メインの `processBlock()` と同じサンプル数で呼び出す必要があり、同じブロックの `processBlock()` の前に呼び出す必要があります。`prepareToPlay()` の `maxBlockSize` を超える長さのサイドチェーンは、そのブロックでは無効になります（`maxBlockSize` を超えうる場合は `processBlock(buffer, &sidechainBuffer)` を使ってください）。
 
 ---
 

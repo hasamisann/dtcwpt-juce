@@ -167,8 +167,7 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     if (dtcwptMain_ == nullptr || morphProcessor_ == nullptr)
         return;
 
-    const int numSamples  = buffer.getNumSamples();
-    const int numChannels = buffer.getNumChannels();
+    const int numSamples = buffer.getNumSamples();
 
     // -------------------------------------------------------------------------
     // 1. Topology dirty check — rebuild if the GUI has requested a change
@@ -194,29 +193,50 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
 
     // -------------------------------------------------------------------------
+    // 3. Process the host block in chunks of at most the prepared block size.
+    //    Hosts may exceed the size announced in prepareToPlay(); the scratch
+    //    buffers are sized for that announcement and must not be reallocated
+    //    or overrun on the audio thread.
+    // -------------------------------------------------------------------------
+    const int maxChunkSamples = mainDoubleBuffer_.getNumSamples();
+    if (maxChunkSamples <= 0)
+        return;
+
+    for (int startSample = 0; startSample < numSamples; startSample += maxChunkSamples)
+        processChunk (buffer, startSample, std::min (maxChunkSamples, numSamples - startSample));
+}
+
+void MorphAudioProcessor::processChunk (juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
+{
+    const int numChannels = buffer.getNumChannels();
+
+    // Views onto the pre-allocated double buffers for this chunk (no allocation)
+    juce::AudioBuffer<double> mainChunk (mainDoubleBuffer_.getArrayOfWritePointers(), 2, numSamples);
+    juce::AudioBuffer<double> scChunk   (scDoubleBuffer_.getArrayOfWritePointers(),   2, numSamples);
+
+    // -------------------------------------------------------------------------
     // 3. Save a copy of the float input for the spectrum bridge (mono-averaged)
     //    Use the pre-allocated inputMonoScratch_ member to avoid heap allocation
     //    on the audio thread.
     // -------------------------------------------------------------------------
-    inputMonoScratch_.clear();
+    inputMonoScratch_.clear (0, numSamples);
     for (int ch = 0; ch < std::min (numChannels, 2); ++ch)
     {
         inputMonoScratch_.addFrom (0, 0,
                                     buffer,
-                                    ch, 0,
+                                    ch, startSample,
                                     numSamples,
                                     1.0f / static_cast<float> (std::min (numChannels, 2)));
     }
 
     // -------------------------------------------------------------------------
-    // 4. Convert float main buffer → mainDoubleBuffer_ (channels 0 & 1)
+    // 4. Convert float main buffer → mainChunk (channels 0 & 1)
     // -------------------------------------------------------------------------
-    mainDoubleBuffer_.setSize (2, numSamples, false, false, true /*keep existing*/);
     for (int ch = 0; ch < 2; ++ch)
     {
         const int srcCh = (ch < numChannels) ? ch : 0;
-        const float* src = buffer.getReadPointer (srcCh);
-        double*       dst = mainDoubleBuffer_.getWritePointer (ch);
+        const float* src = buffer.getReadPointer (srcCh) + startSample;
+        double*       dst = mainChunk.getWritePointer (ch);
         for (int i = 0; i < numSamples; ++i)
             dst[i] = static_cast<double> (src[i]);
     }
@@ -224,61 +244,54 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // -------------------------------------------------------------------------
     // 5. Build sidechain double buffer (channels 2–3 if enabled, else copy main)
     // -------------------------------------------------------------------------
-    scDoubleBuffer_.setSize (2, numSamples, false, false, true);
-
     const bool hasSidechain = (numChannels >= 4);
 
     for (int ch = 0; ch < 2; ++ch)
     {
-        double* dst = scDoubleBuffer_.getWritePointer (ch);
+        double* dst = scChunk.getWritePointer (ch);
         if (hasSidechain)
         {
             const int srcCh = 2 + ch;
-            const float* src = buffer.getReadPointer (srcCh);
+            const float* src = buffer.getReadPointer (srcCh) + startSample;
             for (int i = 0; i < numSamples; ++i)
                 dst[i] = static_cast<double> (src[i]);
         }
         else
         {
             // Fallback: use main buffer as sidechain
-            const double* main = mainDoubleBuffer_.getReadPointer (ch);
+            const double* main = mainChunk.getReadPointer (ch);
             for (int i = 0; i < numSamples; ++i)
                 dst[i] = main[i];
         }
     }
 
     // -------------------------------------------------------------------------
-    // 6. Process sidechain (must be called BEFORE processBlock)
+    // 6. Process main audio together with the sidechain
     // -------------------------------------------------------------------------
-    dtcwptMain_->processSidechain (scDoubleBuffer_);
+    dtcwptMain_->processBlock (mainChunk, &scChunk);
 
     // -------------------------------------------------------------------------
-    // 7. Process main audio
-    // -------------------------------------------------------------------------
-    dtcwptMain_->processBlock (mainDoubleBuffer_);
-
-    // -------------------------------------------------------------------------
-    // 8. Convert double output → float main buffer (channels 0 & 1 only)
+    // 7. Convert double output → float main buffer (channels 0 & 1 only)
     // -------------------------------------------------------------------------
     for (int ch = 0; ch < 2; ++ch)
     {
-        const double* src = mainDoubleBuffer_.getReadPointer (ch);
-        float*         dst = buffer.getWritePointer (ch);
+        const double* src = mainChunk.getReadPointer (ch);
+        float*         dst = buffer.getWritePointer (ch) + startSample;
         for (int i = 0; i < numSamples; ++i)
             dst[i] = static_cast<float> (src[i]);
     }
 
     // -------------------------------------------------------------------------
-    // 9. Push mono-averaged input + output to SpectrumDataBridge
+    // 8. Push mono-averaged input + output to SpectrumDataBridge
     //    Use pre-allocated outputMonoScratch_ member to avoid heap allocation
     //    on the audio thread.
     // -------------------------------------------------------------------------
-    outputMonoScratch_.clear();
+    outputMonoScratch_.clear (0, numSamples);
     for (int ch = 0; ch < 2; ++ch)
     {
         outputMonoScratch_.addFrom (0, 0,
                                      buffer,
-                                     ch, 0,
+                                     ch, startSample,
                                      numSamples,
                                      0.5f);
     }

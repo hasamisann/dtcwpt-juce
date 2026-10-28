@@ -82,8 +82,6 @@ struct PreparedProcessorState {
     std::vector<double> scInputBlockBuffer;
     std::vector<double> scDelaySliceBuffer;
     std::vector<std::vector<double>> scInputFifo;
-    std::vector<size_t> scInputFifoFill;
-    bool sidechainActive = false;
     bool sidechainProcessedThisBlock = false;
     int expectedSidechainSamples = 0;
     std::vector<std::vector<double>> scAdjustedChannels;
@@ -92,8 +90,6 @@ struct PreparedProcessorState {
     std::vector<std::vector<double>> alignedSidechainBuffers;
     juce::AudioBuffer<double> alignedOutputBuffer;
     BandData cachedBandData;
-    std::vector<char> channelHasData;
-    std::vector<char> scChannelHasData;
 };
 
 int getNodeLevelFromId(int nodeId) {
@@ -297,14 +293,13 @@ DTCWPTProcessor::DTCWPTProcessor()
     , scInputBlockBuffer_()
     , scDelaySliceBuffer_()
     , scInputFifo_()
-    , scInputFifoFill_()
-    , sidechainActive_(false)
     , sidechainProcessedThisBlock_(false)
 #if DTCWPT_ENABLE_TEST_SEAMS
     , prepareCandidateFailpoint_(PrepareCandidateFailpoint::none)
     , analysisTraceSink_(nullptr)
 #endif
-    , expectedSidechainSamples_(0) {
+    , expectedSidechainSamples_(0)
+    , scFedSamples_(0) {
 }
 
 #if DTCWPT_ENABLE_TEST_SEAMS
@@ -590,7 +585,6 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
     candidate.scDelaySliceBuffer.resize(candidate.internalBlockSize);
     candidate.scInputFifo.assign(static_cast<size_t>(channelNum),
                                  std::vector<double>(candidate.internalBlockSize * 2, 0.0));
-    candidate.scInputFifoFill.assign(static_cast<size_t>(channelNum), 0);
 
     candidate.scAdjustedChannels.resize(static_cast<size_t>(channelNum));
     candidate.alignedInputBuffers.resize(static_cast<size_t>(channelNum));
@@ -608,9 +602,6 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
         candidate.cachedBandData.bands[static_cast<size_t>(ch)].resize(candidate.destinations.size());
         candidate.cachedBandData.sidechainBands[static_cast<size_t>(ch)].resize(candidate.destinations.size());
     }
-
-    candidate.channelHasData.resize(static_cast<size_t>(channelNum));
-    candidate.scChannelHasData.resize(static_cast<size_t>(channelNum));
 
 #if DTCWPT_ENABLE_TEST_SEAMS
     if (prepareCandidateFailpoint_ == PrepareCandidateFailpoint::beforeCommit) {
@@ -670,17 +661,14 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
     scInputBlockBuffer_ = std::move(candidate.scInputBlockBuffer);
     scDelaySliceBuffer_ = std::move(candidate.scDelaySliceBuffer);
     scInputFifo_ = std::move(candidate.scInputFifo);
-    scInputFifoFill_ = std::move(candidate.scInputFifoFill);
-    sidechainActive_ = candidate.sidechainActive;
     sidechainProcessedThisBlock_ = candidate.sidechainProcessedThisBlock;
+    scFedSamples_ = 0;
     expectedSidechainSamples_ = candidate.expectedSidechainSamples;
     scAdjustedChannels_ = std::move(candidate.scAdjustedChannels);
     alignedInputBuffers_ = std::move(candidate.alignedInputBuffers);
     alignedSidechainBuffers_ = std::move(candidate.alignedSidechainBuffers);
     alignedOutputBuffer_ = std::move(candidate.alignedOutputBuffer);
     cachedBandData_ = std::move(candidate.cachedBandData);
-    channelHasData_ = std::move(candidate.channelHasData);
-    scChannelHasData_ = std::move(candidate.scChannelHasData);
 
     // Reset band processor if exists (lifecycle hook)
     if (bandProcessor_) {
@@ -714,56 +702,32 @@ void DTCWPTProcessor::setBandProcessor(std::unique_ptr<BandProcessor> processor)
     }
 }
 
+void DTCWPTProcessor::stageSidechain(const juce::AudioBuffer<double>& sidechainBuffer,
+                                     int startSample, int numSamples) {
+    // Channel adjustment: match main input channel count (duplicate the last channel if fewer).
+    // Uses the pre-allocated buffer; callers guarantee numSamples <= maxBlockSize_.
+    const int lastSourceChannel = sidechainBuffer.getNumChannels() - 1;
+    for (int ch = 0; ch < channelNum_; ++ch) {
+        const double* src = sidechainBuffer.getReadPointer(std::min(ch, lastSourceChannel)) + startSample;
+        std::copy(src, src + numSamples, scAdjustedChannels_[ch].begin());
+    }
+}
+
 void DTCWPTProcessor::processSidechain(juce::AudioBuffer<double>& sidechainBuffer) {
     const int numSamples = sidechainBuffer.getNumSamples();
-    const int numChannels = sidechainBuffer.getNumChannels();
+
+    // The staging buffers hold at most maxBlockSize_ samples. A longer sidechain cannot be kept
+    // aligned with the main signal here, so it is ignored for this block instead of overflowing.
+    // Use processBlock(buffer, &sidechainBuffer) when the host may exceed the prepared block size.
+    if (numSamples > maxBlockSize_ || sidechainBuffer.getNumChannels() < 1) {
+        jassert(numSamples <= maxBlockSize_);
+        sidechainProcessedThisBlock_ = false;
+        return;
+    }
 
     // Store expected sample count for validation in processBlock()
     expectedSidechainSamples_ = numSamples;
-
-    // Channel adjustment: match main input channel count
-    // Use pre-allocated buffer (assumes numSamples <= maxBlockSize_)
-    if (numChannels >= channelNum_) {
-        // More or equal channels: copy first channelNum_ channels
-        for (int ch = 0; ch < channelNum_; ++ch) {
-            const double* src = sidechainBuffer.getReadPointer(ch);
-            std::copy(src, src + numSamples, scAdjustedChannels_[ch].begin());
-        }
-    } else {
-        // Fewer channels: duplicate last channel to fill remaining slots
-        for (int ch = 0; ch < channelNum_; ++ch) {
-            int srcCh = std::min(ch, numChannels - 1);
-            const double* src = sidechainBuffer.getReadPointer(srcCh);
-            std::copy(src, src + numSamples, scAdjustedChannels_[ch].begin());
-        }
-    }
-
-    // Push adjusted sidechain samples into scInputFifo_
-    const size_t need = static_cast<size_t>(numSamples);
-    for (int ch = 0; ch < channelNum_; ++ch) {
-        const double* src = scAdjustedChannels_[ch].data();
-        size_t pushed = 0;
-
-        while (pushed < need) {
-            const size_t space = internalBlockSize_ - scInputFifoFill_[ch];
-            const size_t toCopy = std::min(space, need - pushed);
-
-            std::copy(src + pushed,
-                      src + pushed + toCopy,
-                      scInputFifo_[ch].begin() +
-                          static_cast<ptrdiff_t>(scInputFifoFill_[ch]));
-            scInputFifoFill_[ch] += toCopy;
-            pushed += toCopy;
-
-            // If FIFO is full, stop pushing (should not happen with correct usage)
-            // The data remains in FIFO until processBlock extracts it
-            if (scInputFifoFill_[ch] >= internalBlockSize_) {
-                break;
-            }
-        }
-    }
-
-    sidechainActive_ = true;
+    stageSidechain(sidechainBuffer, 0, numSamples);
     sidechainProcessedThisBlock_ = true;
 }
 
@@ -921,185 +885,198 @@ void DTCWPTProcessor::processChannelSynthesisAndAverage(int ch, juce::AudioBuffe
     }
 }
 
-// Public entry point: accumulates input into FIFO, processes aligned blocks, drains output FIFO.
+// Public entry point: accepts any block length. Sidechain staged by processSidechain() is used
+// only when its length matches this block.
 void DTCWPTProcessor::processBlock(juce::AudioBuffer<double>& buffer) {
-    const int numSamples  = buffer.getNumSamples();
-    const int numChannels = std::min(buffer.getNumChannels(), channelNum_);
+    const int numSamples = buffer.getNumSamples();
 
-    if (numSamples == 0) return;
-
-    // Validate sidechain sample count if sidechain was called
     // Instead of throwing (which is unsafe in audio thread), disable sidechain on mismatch
-    if (sidechainProcessedThisBlock_ && numSamples != expectedSidechainSamples_) {        
-        // Graceful fallback: disable sidechain for this block
-        sidechainActive_ = false;
-        sidechainProcessedThisBlock_ = false;
-    }
-
-    const size_t need = static_cast<size_t>(numSamples);
-
-    // Track which channels have data ready (using pre-allocated buffer for RT safety)
-    // Use channelHasData_ which was resized in prepareToPlay()
-    std::fill(channelHasData_.begin(), channelHasData_.end(), static_cast<char>(0));
-
-    bool allChannelsReady = true;
-    
-    // Step 1: push input samples into per-channel input FIFO
-    for (int ch = 0; ch < numChannels; ++ch) {
-        const double* src = buffer.getReadPointer(ch);
-        size_t pushed = 0;
-
-        while (pushed < need) {
-            const size_t space   = internalBlockSize_ - inputFifoFill_[ch];
-            const size_t toCopy  = std::min(space, need - pushed);
-
-            std::copy(src + pushed,
-                      src + pushed + toCopy,
-                      inputFifo_[ch].begin() +
-                          static_cast<ptrdiff_t>(inputFifoFill_[ch]));
-            inputFifoFill_[ch] += toCopy;
-            pushed              += toCopy;
-
-            if (inputFifoFill_[ch] >= internalBlockSize_) {
-                // Extract data from input FIFO into pre-allocated alignedInputBuffers_
-                std::copy(inputFifo_[ch].begin(),
-                              inputFifo_[ch].begin() + static_cast<ptrdiff_t>(internalBlockSize_),
-                              alignedInputBuffers_[ch].begin());
-                channelHasData_[ch] = static_cast<char>(1);
-                inputFifoFill_[ch] = 0;
-            }
-        }
-        
-        // Check if this channel is ready
-        if (!channelHasData_[ch]) {
-            allChannelsReady = false;
-        }
-    }
-    
-    // Step 1.5: Extract sidechain FIFO data if sidechain is active
-    if (sidechainActive_ && sidechainProcessedThisBlock_) {
-        for (int ch = 0; ch < channelNum_; ++ch) {
-            if (scInputFifoFill_[ch] >= internalBlockSize_) {
-                std::copy(scInputFifo_[ch].begin(),
-                          scInputFifo_[ch].begin() + static_cast<ptrdiff_t>(internalBlockSize_),
-                          alignedSidechainBuffers_[ch].begin());
-                scChannelHasData_[ch] = static_cast<char>(1);
-                // Reset sidechain FIFO (simple single-block model)
-                scInputFifoFill_[ch] = 0;
-            }
-        }
-    }
-    
-    // Step 2: If all channels have data, process analysis + delay for all channels
-    if (allChannelsReady) {
-        for (int ch = 0; ch < channelNum_; ++ch) {
-            processChannelAnalysisAndDelay(ch, alignedInputBuffers_[ch]);
-        }
-        
-        // Step 2.25: Process sidechain analysis if active
-        for (int ch = 0; ch < channelNum_; ++ch) {
-            if (scChannelHasData_[ch]) {
-                // Sidechain data is always available when sidechainActive_ and sidechainProcessedThisBlock_ are true
-                processSidechainAnalysisAndDelay(ch, alignedSidechainBuffers_[ch]);
-            }
-        }
-        
-        // Step 2.5: Invoke BandProcessor if registered
-        if (bandProcessor_) {
-            // Reuse cached BandData (pre-allocated, no resize)
-            cachedBandData_.numChannels = channelNum_;
-            cachedBandData_.numBands = static_cast<int>(destinations_.size());
-            cachedBandData_.hasSidechain = sidechainActive_ && sidechainProcessedThisBlock_;
-            cachedBandData_.destinationIds = &destinations_;
-
-            // Populate bands with pointers into per-channel resultsRe_/resultsIm_
-            for (int ch = 0; ch < channelNum_; ++ch) {
-                for (size_t b = 0; b < destinations_.size(); ++b) {
-                    int dest = destinations_[b];
-                    size_t numSamplesInBand = cursorsRe_[ch][dest];
-                    cachedBandData_.bands[ch][b].re = resultsRe_[ch][dest].data();
-                    cachedBandData_.bands[ch][b].im = resultsIm_[ch][dest].data();
-                    cachedBandData_.bands[ch][b].numSamples = numSamplesInBand;
-                }
-            }
-
-            // Populate sidechainBands if sidechain is active
-            if (cachedBandData_.hasSidechain) {
-                for (int ch = 0; ch < channelNum_; ++ch) {
-                    for (size_t b = 0; b < destinations_.size(); ++b) {
-                        int dest = destinations_[b];
-                        size_t numSamplesInBand = scCursorsRe_[ch][dest];
-                        cachedBandData_.sidechainBands[ch][b].re = scResultsRe_[ch][dest].data();
-                        cachedBandData_.sidechainBands[ch][b].im = scResultsIm_[ch][dest].data();
-                        cachedBandData_.sidechainBands[ch][b].numSamples = numSamplesInBand;
-                    }
-                }
-            }
-
-            // Call BandProcessor
-            bandProcessor_->processAllBands(cachedBandData_);
-        }
-        
-        // Step 3: Synthesis + output averaging for all channels
-        for (int ch = 0; ch < channelNum_; ++ch) {
-            // Use pre-allocated output buffer (clear it first)
-            alignedOutputBuffer_.clear();
-            
-            processChannelSynthesisAndAverage(ch, alignedOutputBuffer_);
-
-            // Append to output FIFO
-            const size_t writePos = outputFifoRead_[ch] + outputFifoFill_[ch];
-            assert(writePos + internalBlockSize_ <= outputFifo_[ch].size() &&
-                   "output FIFO overflow during processBlock append");
-            std::copy(alignedOutputBuffer_.getReadPointer(0),
-                      alignedOutputBuffer_.getReadPointer(0) + static_cast<ptrdiff_t>(internalBlockSize_),
-                      outputFifo_[ch].begin() +
-                          static_cast<ptrdiff_t>(writePos));
-            outputFifoFill_[ch] += internalBlockSize_;
-        }
-    }
-    
-    // Reset sidechain state for next block
+    const bool useSidechain = sidechainProcessedThisBlock_ && numSamples == expectedSidechainSamples_;
     sidechainProcessedThisBlock_ = false;
-    for (int ch = 0; ch < numChannels; ++ch) {
-      scChannelHasData_[ch] = static_cast<char>(0);
+
+    processSegments(buffer, 0, numSamples, useSidechain);
+}
+
+// Any block length: the sidechain is staged in chunks of at most maxBlockSize_ and each chunk is
+// pushed together with the matching main samples, so both signals stay aligned.
+void DTCWPTProcessor::processBlock(juce::AudioBuffer<double>& buffer, const juce::AudioBuffer<double>* sidechain) {
+    const int numSamples = buffer.getNumSamples();
+    sidechainProcessedThisBlock_ = false;
+
+    if (sidechain == nullptr || sidechain->getNumSamples() != numSamples
+        || sidechain->getNumChannels() < 1 || maxBlockSize_ < 1) {
+        processSegments(buffer, 0, numSamples, false);
+        return;
     }
-    
-    // Step 4: drain numSamples from the output FIFO into buffer.
-    for (int ch = 0; ch < numChannels; ++ch) {
-        double* dst = buffer.getWritePointer(ch);
 
-        if (outputFifoFill_[ch] >= need) {
-            const size_t rd = outputFifoRead_[ch];
-            std::copy(outputFifo_[ch].begin() + static_cast<ptrdiff_t>(rd),
-                      outputFifo_[ch].begin() + static_cast<ptrdiff_t>(rd + need),
-                      dst);
-            outputFifoRead_[ch]  += need;
-            outputFifoFill_[ch]  -= need;
-
-            // Compact the output FIFO when the read cursor passes internalBlockSize_
-            if (outputFifoRead_[ch] >= internalBlockSize_) {
-                const size_t remaining = outputFifoFill_[ch];
-                std::move(outputFifo_[ch].begin() +
-                              static_cast<ptrdiff_t>(outputFifoRead_[ch]),
-                          outputFifo_[ch].begin() +
-                              static_cast<ptrdiff_t>(outputFifoRead_[ch] + remaining),
-                          outputFifo_[ch].begin());
-                outputFifoRead_[ch] = 0;
-            }
-        } else {
-            // Output not yet ready (startup latency period) — emit silence
-            std::fill(dst, dst + numSamples, 0.0);
-        }
+    for (int start = 0; start < numSamples; start += maxBlockSize_) {
+        const int chunk = std::min(maxBlockSize_, numSamples - start);
+        stageSidechain(*sidechain, start, chunk);
+        processSegments(buffer, start, chunk, true);
     }
 }
 
-void DTCWPTProcessor::processBlock(juce::AudioBuffer<double>& buffer, const juce::AudioBuffer<double>* sidechain) {
-    // TDD red stage: forwards to the legacy two-call sequence (placeholder for the new API).
-    if (sidechain != nullptr) {
-        processSidechain(const_cast<juce::AudioBuffer<double>&>(*sidechain));
+// Pushes `numSamples` samples of `buffer` (from `startSample`) into the input FIFO and, each time the
+// FIFO fills up, runs one internal block. The same number of samples is drained from the output FIFO
+// after every segment, so one call can run any number of internal blocks.
+//
+// The input FIFO fill and the output FIFO fill always add up to internalBlockSize_ (the output FIFO
+// starts with one block of silence), so a segment never asks for more output than is available.
+// When useSidechain is true, the staged scAdjustedChannels_ holds the sidechain for these samples.
+void DTCWPTProcessor::processSegments(juce::AudioBuffer<double>& buffer, int startSample,
+                                      int numSamples, bool useSidechain) {
+    if (!prepared_ || numSamples <= 0) return;
+
+    if (buffer.getNumChannels() < channelNum_) {
+        // The engine needs every channel to run an internal block; emit silence for what is there.
+        for (int ch = 0; ch < buffer.getNumChannels(); ++ch) {
+            buffer.clear(ch, startSample, numSamples);
+        }
+        return;
     }
-    processBlock(buffer);
+
+    const size_t total = static_cast<size_t>(numSamples);
+    size_t done = 0;
+
+    while (done < total) {
+        const size_t take = std::min(internalBlockSize_ - inputFifoFill_[0], total - done);
+
+        // Step 1: push input (and sidechain) samples into the per-channel FIFOs
+        for (int ch = 0; ch < channelNum_; ++ch) {
+            const double* src = buffer.getReadPointer(ch) + startSample + static_cast<ptrdiff_t>(done);
+            const ptrdiff_t fill = static_cast<ptrdiff_t>(inputFifoFill_[ch]);
+
+            std::copy(src, src + take, inputFifo_[ch].begin() + fill);
+            if (useSidechain) {
+                std::copy(scAdjustedChannels_[ch].begin() + static_cast<ptrdiff_t>(done),
+                          scAdjustedChannels_[ch].begin() + static_cast<ptrdiff_t>(done + take),
+                          scInputFifo_[ch].begin() + fill);
+            }
+            inputFifoFill_[ch] += take;
+        }
+        if (useSidechain) {
+            scFedSamples_ += take;
+        }
+
+        // Step 2: run an internal block when the FIFO is full. The sidechain is only used if it
+        // covered every sample of the block.
+        if (inputFifoFill_[0] >= internalBlockSize_) {
+            processInternalBlock(scFedSamples_ >= internalBlockSize_);
+            std::fill(inputFifoFill_.begin(), inputFifoFill_.end(), static_cast<size_t>(0));
+            scFedSamples_ = 0;
+        }
+
+        // Step 3: drain `take` samples from the output FIFO into the buffer
+        for (int ch = 0; ch < channelNum_; ++ch) {
+            double* dst = buffer.getWritePointer(ch) + startSample + static_cast<ptrdiff_t>(done);
+
+            if (outputFifoFill_[ch] >= take) {
+                const size_t rd = outputFifoRead_[ch];
+                std::copy(outputFifo_[ch].begin() + static_cast<ptrdiff_t>(rd),
+                          outputFifo_[ch].begin() + static_cast<ptrdiff_t>(rd + take),
+                          dst);
+                outputFifoRead_[ch]  += take;
+                outputFifoFill_[ch]  -= take;
+
+                // Compact the output FIFO when the read cursor passes internalBlockSize_
+                if (outputFifoRead_[ch] >= internalBlockSize_) {
+                    const size_t remaining = outputFifoFill_[ch];
+                    std::move(outputFifo_[ch].begin() +
+                                  static_cast<ptrdiff_t>(outputFifoRead_[ch]),
+                              outputFifo_[ch].begin() +
+                                  static_cast<ptrdiff_t>(outputFifoRead_[ch] + remaining),
+                              outputFifo_[ch].begin());
+                    outputFifoRead_[ch] = 0;
+                }
+            } else {
+                // Not reachable while the FIFO fill invariant holds; never emit stale data
+                std::fill(dst, dst + take, 0.0);
+            }
+        }
+
+        done += take;
+    }
+}
+
+// Runs analysis, band processing and synthesis for the input FIFO contents (one full internal block)
+// and appends the result to the output FIFO.
+void DTCWPTProcessor::processInternalBlock(bool hasSidechain) {
+    for (int ch = 0; ch < channelNum_; ++ch) {
+        std::copy(inputFifo_[ch].begin(),
+                  inputFifo_[ch].begin() + static_cast<ptrdiff_t>(internalBlockSize_),
+                  alignedInputBuffers_[ch].begin());
+        if (hasSidechain) {
+            std::copy(scInputFifo_[ch].begin(),
+                      scInputFifo_[ch].begin() + static_cast<ptrdiff_t>(internalBlockSize_),
+                      alignedSidechainBuffers_[ch].begin());
+        }
+    }
+
+    // Analysis + delay for all channels
+    for (int ch = 0; ch < channelNum_; ++ch) {
+        processChannelAnalysisAndDelay(ch, alignedInputBuffers_[ch]);
+    }
+
+    // Sidechain analysis if the sidechain covered this block
+    if (hasSidechain) {
+        for (int ch = 0; ch < channelNum_; ++ch) {
+            processSidechainAnalysisAndDelay(ch, alignedSidechainBuffers_[ch]);
+        }
+    }
+
+    // Invoke BandProcessor if registered
+    if (bandProcessor_) {
+        // Reuse cached BandData (pre-allocated, no resize)
+        cachedBandData_.numChannels = channelNum_;
+        cachedBandData_.numBands = static_cast<int>(destinations_.size());
+        cachedBandData_.hasSidechain = hasSidechain;
+        cachedBandData_.destinationIds = &destinations_;
+
+        // Populate bands with pointers into per-channel resultsRe_/resultsIm_
+        for (int ch = 0; ch < channelNum_; ++ch) {
+            for (size_t b = 0; b < destinations_.size(); ++b) {
+                int dest = destinations_[b];
+                size_t numSamplesInBand = cursorsRe_[ch][dest];
+                cachedBandData_.bands[ch][b].re = resultsRe_[ch][dest].data();
+                cachedBandData_.bands[ch][b].im = resultsIm_[ch][dest].data();
+                cachedBandData_.bands[ch][b].numSamples = numSamplesInBand;
+            }
+        }
+
+        // Populate sidechainBands if sidechain is active
+        if (cachedBandData_.hasSidechain) {
+            for (int ch = 0; ch < channelNum_; ++ch) {
+                for (size_t b = 0; b < destinations_.size(); ++b) {
+                    int dest = destinations_[b];
+                    size_t numSamplesInBand = scCursorsRe_[ch][dest];
+                    cachedBandData_.sidechainBands[ch][b].re = scResultsRe_[ch][dest].data();
+                    cachedBandData_.sidechainBands[ch][b].im = scResultsIm_[ch][dest].data();
+                    cachedBandData_.sidechainBands[ch][b].numSamples = numSamplesInBand;
+                }
+            }
+        }
+
+        // Call BandProcessor
+        bandProcessor_->processAllBands(cachedBandData_);
+    }
+
+    // Synthesis + output averaging for all channels
+    for (int ch = 0; ch < channelNum_; ++ch) {
+        // Use pre-allocated output buffer (clear it first)
+        alignedOutputBuffer_.clear();
+
+        processChannelSynthesisAndAverage(ch, alignedOutputBuffer_);
+
+        // Append to output FIFO
+        const size_t writePos = outputFifoRead_[ch] + outputFifoFill_[ch];
+        assert(writePos + internalBlockSize_ <= outputFifo_[ch].size() &&
+               "output FIFO overflow during processBlock append");
+        std::copy(alignedOutputBuffer_.getReadPointer(0),
+                  alignedOutputBuffer_.getReadPointer(0) + static_cast<ptrdiff_t>(internalBlockSize_),
+                  outputFifo_[ch].begin() +
+                      static_cast<ptrdiff_t>(writePos));
+        outputFifoFill_[ch] += internalBlockSize_;
+    }
 }
 
 // Performs analysis filter bank processing for a single block

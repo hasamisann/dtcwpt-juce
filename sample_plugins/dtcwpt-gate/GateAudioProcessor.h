@@ -82,6 +82,8 @@ public:
 
     /**
      * @brief Processes one block of audio.
+     *
+     * Blocks longer than the size given to prepareToPlay() are processed in chunks.
      */
     void processBlock (juce::AudioBuffer<float>& buffer,
                        juce::MidiBuffer& midiMessages) override;
@@ -192,6 +194,13 @@ private:
      */
     void rebuildDTCWPT();
     bool tryApplyTopologyCandidate (const std::vector<std::string>& candidateDestinations) noexcept;
+
+    /**
+     * @brief Processes samples [startSample, startSample + numSamples) of the host buffer.
+     *
+     * numSamples must not exceed the block size given to prepareToPlay().
+     */
+    void processChunk (juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
 
     //==============================================================================
     // APVTS — owns all automatable parameters

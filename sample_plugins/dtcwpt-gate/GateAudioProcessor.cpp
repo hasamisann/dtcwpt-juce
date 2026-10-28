@@ -188,52 +188,70 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     lastBypassLowestForTest_ = bypassLowestRaw_ != nullptr && bypassLowestRaw_->load() >= 0.5f;
     gateProcessor_->setBypassLowest(lastBypassLowestForTest_);
 
-    // 3. Snapshot input (mono-averaged) for spectrum
-    inputMonoScratch_.clear();
+    // 3. Process the host block in chunks of at most the prepared block size.
+    //    Hosts may exceed the size announced in prepareToPlay(); the scratch
+    //    buffers are sized for that announcement and must not be reallocated
+    //    or overrun on the audio thread.
+    const int maxChunkSamples = mainDoubleBuffer_.getNumSamples();
+    if (maxChunkSamples <= 0)
+        return;
+
+    for (int startSample = 0; startSample < numSamples; startSample += maxChunkSamples)
+        processChunk (buffer, startSample, std::min (maxChunkSamples, numSamples - startSample));
+
+    // 4. Push levels to bandLevelBridge_
+    float levels[GateBandProcessor::kMaxBands];
+    int nBands = gateProcessor_->getBandLevelsDb(levels);
+    bandLevelBridge_.update(levels, std::min(nBands, GateBandProcessor::kMaxBands));
+}
+
+void GateAudioProcessor::processChunk (juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
+{
+    const int numChannels = buffer.getNumChannels();
+
+    // View onto the pre-allocated double buffer for this chunk (no allocation)
+    juce::AudioBuffer<double> mainChunk (mainDoubleBuffer_.getArrayOfWritePointers(), 2, numSamples);
+
+    // Snapshot input (mono-averaged) for spectrum
+    inputMonoScratch_.clear (0, numSamples);
     for (int ch = 0; ch < std::min (numChannels, 2); ++ch)
     {
         inputMonoScratch_.addFrom (0, 0,
                                     buffer,
-                                    ch, 0,
+                                    ch, startSample,
                                     numSamples,
                                     1.0f / static_cast<float> (std::min (numChannels, 2)));
     }
 
-    // 4. Float → Double conversion for main input
-    mainDoubleBuffer_.setSize (2, numSamples, false, false, true);
-    mainDoubleBuffer_.clear();
+    // Float → Double conversion for main input
+    mainChunk.clear();
     for (int ch = 0; ch < std::min(numChannels, 2); ++ch)
     {
-        const float* src = buffer.getReadPointer (ch);
-        double*       dst = mainDoubleBuffer_.getWritePointer (ch);
+        const float* src = buffer.getReadPointer (ch) + startSample;
+        double*       dst = mainChunk.getWritePointer (ch);
         for (int i = 0; i < numSamples; ++i)
             dst[i] = static_cast<double> (src[i]);
     }
 
-    // 5. Process audio
-    dtcwptMain_->processBlock (mainDoubleBuffer_);
+    // Process audio
+    dtcwptMain_->processBlock (mainChunk);
 
-    // 6. Push levels to bandLevelBridge_
-    float levels[GateBandProcessor::kMaxBands];
-    int nBands = gateProcessor_->getBandLevelsDb(levels);
-    bandLevelBridge_.update(levels, std::min(nBands, GateBandProcessor::kMaxBands));
-
-    // 7. Double → Float conversion
+    // Double → Float conversion
     for (int ch = 0; ch < std::min(numChannels, 2); ++ch)
     {
-        const double* src = mainDoubleBuffer_.getReadPointer (ch);
-        float*         dst = buffer.getWritePointer (ch);
+        const double* src = mainChunk.getReadPointer (ch);
+        float*         dst = buffer.getWritePointer (ch) + startSample;
         for (int i = 0; i < numSamples; ++i)
             dst[i] = static_cast<float> (src[i]);
     }
 
-    // 8. Snapshot output and push spectrum to bridge
-    outputMonoScratch_.clear();
+    // Snapshot output and push spectrum to bridge
+    outputMonoScratch_.clear (0, numSamples);
     for (int ch = 0; ch < std::min(numChannels, 2); ++ch)
     {
         outputMonoScratch_.addFrom (0, 0,
                                      buffer,
-                                     ch, 0,
+                                     ch, startSample,
                                      numSamples,
                                      1.0f / static_cast<float>(std::min(numChannels, 2)));
     }
