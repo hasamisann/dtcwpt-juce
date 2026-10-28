@@ -11,7 +11,8 @@
  * 1. Converts main and sidechain Re/Im subbands to magnitude/phase (polar form).
  * 2. Linearly interpolates (lerps) magnitudes: outMag = lerp(mainMag, scMag, magnitude).
  * 3. Applies a threshold gate to attenuate phase influence when the sidechain
- *    signal is below a minimum level.
+ *    signal is below a minimum level. The phase ratio is scaled by
+ *    min(1, scMag / threshold), which is continuous at the threshold.
  * 4. N-Lerps phases by representing them as unit vectors, lerping, then taking
  *    atan2 of the result (no renorm step required since atan2 is normalisation).
  * 5. Converts back to Re/Im.
@@ -75,7 +76,9 @@ public:
      * @param phase          Target phase interpolation ratio [0.0, 1.0].
      *                       0 = use main phases, 1 = use sidechain phases.
      * @param threshLinear   Sidechain magnitude threshold (linear amplitude).
-     *                       Phase influence is attenuated when scMag < threshold.
+     *                       Phase influence is scaled by min(1, scMag / threshold),
+     *                       i.e. attenuated linearly when scMag < threshold.
+     *                       A value <= 0 disables the attenuation.
      * @param bypassLow      If true, pass the lowest-frequency subband (L-only path)
      *                       through unchanged.
      * @param bypassHigh     If true, pass the highest-frequency subband (H-only path)
@@ -109,7 +112,7 @@ public:
      *   1. Advances SmoothedValues by one step (per-sample smoothing).
      *   2. Converts main and sidechain Re/Im to polar form.
      *   3. Lerps magnitudes.
-     *   4. Applies threshold gate to attenuate phase influence.
+     *   4. Applies threshold gate: phase ratio *= min(1, scMag / threshold).
      *   5. N-Lerps phases via unit-vector lerp + atan2.
      *   6. Converts back to Re/Im.
      *

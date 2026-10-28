@@ -117,12 +117,10 @@ void MorphBandProcessor::processAllBands (dtcwpt::BandData& data)
                 const double outMag = mainM + mag * (scM - mainM);
 
                 // Step 4: Threshold gate
+                // The coefficient is min(1, scM / thr): continuous at scM == thr.
                 double effPhase = ph;
                 if (scM < thr && thr > 0.0)
-                {
-                    effPhase *= (scM * 0.5 / thr);
-                    effPhase  = std::clamp (effPhase, 0.0, ph);
-                }
+                    effPhase *= scM / thr;
 
                 // Step 5: Phase N-Lerp via unit-vector interpolation
                 const double rx = std::cos (mainP);
