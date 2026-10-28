@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -211,8 +212,14 @@ private:
         float result = 0.0f;
         for (int i = startIndex; i < endIndex; ++i)
         {
-            result = std::max (result, std::abs (signal.left[static_cast<std::size_t> (i)]));
-            result = std::max (result, std::abs (signal.right[static_cast<std::size_t> (i)]));
+            const float l = std::abs (signal.left[static_cast<std::size_t> (i)]);
+            const float r = std::abs (signal.right[static_cast<std::size_t> (i)]);
+
+            // NaN / inf must not hide behind std::max.
+            if (! std::isfinite (l) || ! std::isfinite (r))
+                return std::numeric_limits<float>::infinity();
+
+            result = std::max ({ result, l, r });
         }
         return result;
     }
@@ -242,6 +249,8 @@ private:
     void testProcessBlockBypassedIsDelayedInput()
     {
         auto processor = createPrepared();
+        // Silent live path: only the bypass path can produce the expected dry signal.
+        Traits::configureSilentWet (*processor);
         const int latency = processor->getLatencySamples();
         expect (latency > 0, "Precondition: the plugin reports latency");
 
@@ -257,6 +266,8 @@ private:
     void testBypassParameterSwitchesToDelayedDry()
     {
         auto processor = createPrepared();
+        // Silent live path: only the bypass path can produce the expected dry signal.
+        Traits::configureSilentWet (*processor);
         const int latency = processor->getLatencySamples();
         const auto input = makeNoise (kBlockSize * 24);
         constexpr int kSwitchBlock = 4;
@@ -338,7 +349,8 @@ private:
 
         const int bypassedPeakEnd = offBlock * kBlockSize;
         expect (peak (output, warmup + kFadeMarginSamples, bypassedPeakEnd) > 0.8f * Traits::kSineAmplitude,
-                "Precondition: bypass outputs the dry sine");
+                "Precondition: bypass outputs the dry sine; peak = "
+                    + juce::String (peak (output, warmup + kFadeMarginSamples, bypassedPeakEnd)));
 
         // A sine at 523.25 Hz moves by at most 0.075 * amplitude per sample and a fade over
         // 441 samples adds about amplitude / 441, so 0.12 * amplitude leaves margin, while a
@@ -379,6 +391,8 @@ private:
     void testDryDelayFollowsTopologyChange()
     {
         auto processor = createPrepared();
+        // Silent live path: only the bypass path can produce the expected dry signal.
+        Traits::configureSilentWet (*processor);
         const int initialLatency = processor->getLatencySamples();
         const auto newTopology = TestUtils::getFullPacketDestinations (4);
 
@@ -417,6 +431,8 @@ private:
     void testDeepestTopologyLatency()
     {
         auto processor = createPrepared();
+        // Silent live path: only the bypass path can produce the expected dry signal.
+        Traits::configureSilentWet (*processor);
         expect (processor->applyTopologyCandidateForTest (TestUtils::getWaveletTreeDestinations (Traits::kDeepTopologyDepth)),
                 "Deepest wavelet tree should be accepted");
 

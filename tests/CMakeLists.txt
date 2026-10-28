@@ -76,6 +76,7 @@ target_sources(dtcwpt_tests
         suites/AnalyzerLatencyAlignerTests.cpp
         suites/MorphBypassTests.cpp
         suites/GateBypassTests.cpp
+        suites/LatencyBypassTests.cpp
         suites/RegressionFixturesTests.cpp
         util/AnalysisArrivalOracle.cpp
         util/RegressionFixtures.cpp

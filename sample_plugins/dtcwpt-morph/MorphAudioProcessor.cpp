@@ -51,6 +51,8 @@ MorphAudioProcessor::MorphAudioProcessor()
     apvts_.state.setProperty (topology::kTopologyPropertyKey,
                                topology::serializeTopologyDestinations (currentDestinations_),
                                nullptr);
+
+    bypassRaw_ = apvts_.getRawParameterValue (ParamID::Bypass);
 }
 
 //==============================================================================
@@ -75,6 +77,12 @@ void MorphAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     analyzerInputAligner_.prepare (samplesPerBlock, analyzerInputAlignerMaxDelay_);
     analyzerInputAligner_.setDelaySamples (0);
 
+    // The bypass delay line is sized for the deepest topology the engine accepts, so a
+    // later topology change never has to allocate it again.
+    latencyBypass_.prepare (sampleRate, samplesPerBlock, 2,
+                            latency_bypass::maxEngineLatencySamples (dtcwpt::topology_limits::kSupportedMaxDepth,
+                                                                     samplesPerBlock));
+
     // Build the DTCWPTProcessor
     rebuildDTCWPT();
 }
@@ -89,6 +97,7 @@ void MorphAudioProcessor::releaseResources()
     outputMonoScratch_.setSize (0, 0);
     alignedInputMonoScratch_.setSize (0, 0);
     analyzerInputAligner_.reset();
+    latencyBypass_.release();
 }
 
 //==============================================================================
@@ -131,6 +140,7 @@ bool MorphAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::stri
         analyzerInputAlignerMaxDelay_ = newAnalyzerMaxDelay;
         apvts_.state.setProperty (topology::kTopologyPropertyKey, serializedTopology, nullptr);
         setLatencySamples (newLatency);
+        latencyBypass_.setDelaySamples (newLatency);
         hasCommittedValidTopology_ = true;
         return true;
     }
@@ -160,6 +170,22 @@ bool MorphAudioProcessor::tryApplyPendingTopologyCandidate() noexcept
 
 void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                          juce::MidiBuffer& /*midiMessages*/)
+{
+    processBlockInternal (buffer, false);
+}
+
+void MorphAudioProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer,
+                                                 juce::MidiBuffer& /*midiMessages*/)
+{
+    processBlockInternal (buffer, true);
+}
+
+juce::AudioProcessorParameter* MorphAudioProcessor::getBypassParameter() const
+{
+    return apvts_.getParameter (ParamID::Bypass);
+}
+
+void MorphAudioProcessor::processBlockInternal (juce::AudioBuffer<float>& buffer, bool forceBypass)
 {
     juce::ScopedNoDenormals noDenormals;
 
@@ -222,6 +248,14 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
 
     // -------------------------------------------------------------------------
+    // 4b. Bypass: record the input in the latency-matched dry delay line. The engine
+    //     keeps processing while bypassed so its state stays current and nothing stale
+    //     is replayed when bypass is released.
+    // -------------------------------------------------------------------------
+    latencyBypass_.setBypassed (forceBypass || (bypassRaw_ != nullptr && bypassRaw_->load() >= 0.5f));
+    latencyBypass_.captureDry (mainDoubleBuffer_);
+
+    // -------------------------------------------------------------------------
     // 5. Build sidechain double buffer (channels 2–3 if enabled, else copy main)
     // -------------------------------------------------------------------------
     scDoubleBuffer_.setSize (2, numSamples, false, false, true);
@@ -256,6 +290,9 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // 7. Process main audio
     // -------------------------------------------------------------------------
     dtcwptMain_->processBlock (mainDoubleBuffer_);
+
+    // Cross-fade engine output with the delayed dry signal (no-op while fully live).
+    latencyBypass_.mixInto (mainDoubleBuffer_);
 
     // -------------------------------------------------------------------------
     // 8. Convert double output → float main buffer (channels 0 & 1 only)
@@ -459,6 +496,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout MorphAudioProcessor::createP
     layout.add (std::make_unique<juce::AudioParameterBool> (
         juce::ParameterID { ParamID::BypassHigh, 1 },
         "Bypass High",
+        false));
+
+    // bypass: host bypass, latency-compensated; default off
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { ParamID::Bypass, 1 },
+        "Bypass",
         false));
 
     return layout;

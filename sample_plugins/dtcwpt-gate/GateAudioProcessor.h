@@ -28,6 +28,7 @@
 #include "SpectrumDataBridge.h"
 #include "BandLevelBridge.h"
 #include "../common/AnalyzerLatencyAligner.h"
+#include "../common/LatencyBypass.h"
 
 // Standard library
 #include <memory>
@@ -82,9 +83,24 @@ public:
 
     /**
      * @brief Processes one block of audio.
+     *
+     * The engine output is cross-faded with the input delayed by the reported
+     * latency while the "bypass" parameter is on (see LatencyBypass).
      */
     void processBlock (juce::AudioBuffer<float>& buffer,
                        juce::MidiBuffer& midiMessages) override;
+
+    /**
+     * @brief Host-forced bypass: same path as processBlock with the bypass forced on.
+     *
+     * The engine keeps running and the output is the input delayed by the reported
+     * latency, so the host's latency compensation stays aligned.
+     */
+    void processBlockBypassed (juce::AudioBuffer<float>& buffer,
+                               juce::MidiBuffer& midiMessages) override;
+
+    /** Returns the "bypass" parameter so hosts can use their soft-bypass control. */
+    juce::AudioProcessorParameter* getBypassParameter() const override;
 
     //==============================================================================
     // AudioProcessor interface — bus layout
@@ -191,6 +207,7 @@ private:
      * @brief (Re)creates the DTCWPTProcessor using currentDestinations_.
      */
     void rebuildDTCWPT();
+    void processBlockInternal (juce::AudioBuffer<float>& buffer, bool forceBypass);
     bool tryApplyTopologyCandidate (const std::vector<std::string>& candidateDestinations) noexcept;
 
     //==============================================================================
@@ -213,6 +230,17 @@ private:
 
     std::unique_ptr<dtcwpt::DTCWPTProcessor> dtcwptMain_;
     GateBandProcessor* gateProcessor_ { nullptr };
+
+    /**
+     * @brief Latency-matched dry path and cross-fade for bypass.
+     *
+     * Allocated in prepareToPlay() for the largest latency the engine can report, so
+     * topology changes only move its read offset.
+     */
+    LatencyBypass latencyBypass_;
+
+    /** Cached raw value of the "bypass" parameter. */
+    std::atomic<float>* bypassRaw_ { nullptr };
 
     //==============================================================================
     // Thread-bridge objects

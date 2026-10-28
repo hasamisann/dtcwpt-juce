@@ -6,8 +6,10 @@
  *
  * MorphAudioProcessor is the JUCE AudioProcessor for the DT-CWPT Morph plugin.
  * It manages:
- *  - Five automatable parameters via APVTS (magnitude, phase, threshold,
- *    bypassLow, bypassHigh).
+ *  - Six automatable parameters via APVTS (magnitude, phase, threshold,
+ *    bypassLow, bypassHigh, bypass).
+ *  - A latency-compensated bypass (LatencyBypass) exposed to the host through
+ *    getBypassParameter() and processBlockBypassed().
  *  - A DTCWPTProcessor for real-time wavelet analysis/synthesis.
  *  - A MorphBandProcessor for spectral morphing in the subband domain.
  *  - Thread-safe topology change handoff via TopologyState.
@@ -27,6 +29,7 @@
 #include "TopologyState.h"
 #include "SpectrumDataBridge.h"
 #include "../common/AnalyzerLatencyAligner.h"
+#include "../common/LatencyBypass.h"
 
 // Standard library
 #include <memory>
@@ -52,6 +55,7 @@ namespace ParamID
     inline constexpr const char* Threshold  = "threshold";
     inline constexpr const char* BypassLow  = "bypassLow";
     inline constexpr const char* BypassHigh = "bypassHigh";
+    inline constexpr const char* Bypass     = "bypass";
 } // namespace ParamID
 
 //==============================================================================
@@ -125,11 +129,26 @@ public:
      * All code is real-time safe (noexcept, no allocations, no locks except
      * the brief topology-rebuild mutex hold).
      *
+     * The engine output is cross-faded with the input delayed by the reported
+     * latency while the "bypass" parameter is on (see LatencyBypass).
+     *
      * @param buffer        Audio I/O buffer (in: main + optional sidechain channels).
      * @param midiMessages  Unused.
      */
     void processBlock (juce::AudioBuffer<float>& buffer,
                        juce::MidiBuffer& midiMessages) override;
+
+    /**
+     * @brief Host-forced bypass: same path as processBlock with the bypass forced on.
+     *
+     * The engine keeps running and the output is the input delayed by the reported
+     * latency, so the host's latency compensation stays aligned.
+     */
+    void processBlockBypassed (juce::AudioBuffer<float>& buffer,
+                               juce::MidiBuffer& midiMessages) override;
+
+    /** Returns the "bypass" parameter so hosts can use their soft-bypass control. */
+    juce::AudioProcessorParameter* getBypassParameter() const override;
 
     //==============================================================================
     // AudioProcessor interface — bus layout
@@ -213,7 +232,7 @@ public:
     //==============================================================================
 
     /**
-     * @brief Creates the APVTS parameter layout with all five parameters.
+     * @brief Creates the APVTS parameter layout with all six parameters.
      *
      * Parameters:
      *  - magnitude:  NormalisableRange<float>(0, 1),    default 0.0
@@ -221,6 +240,7 @@ public:
      *  - threshold:  NormalisableRange<float>(-200, 0),  default -20.0 [dB]
      *  - bypassLow:  AudioParameterBool,                default true
      *  - bypassHigh: AudioParameterBool,                default false
+     *  - bypass:     AudioParameterBool,                default false (host bypass)
      *
      * @return Fully populated ParameterLayout.
      */
@@ -290,6 +310,7 @@ private:
      * flag is set and the mutex can be briefly held.
      */
     void rebuildDTCWPT();
+    void processBlockInternal (juce::AudioBuffer<float>& buffer, bool forceBypass);
     bool tryApplyTopologyCandidate (const std::vector<std::string>& candidateDestinations) noexcept;
     bool tryApplyPendingTopologyCandidate() noexcept;
 
@@ -320,6 +341,17 @@ private:
      * Lifetime is tied to dtcwptMain_: reset to nullptr when dtcwptMain_ is destroyed.
      */
     MorphBandProcessor* morphProcessor_ { nullptr };
+
+    /**
+     * @brief Latency-matched dry path and cross-fade for bypass.
+     *
+     * Allocated in prepareToPlay() for the largest latency the engine can report, so
+     * topology changes only move its read offset.
+     */
+    LatencyBypass latencyBypass_;
+
+    /** Cached raw value of the "bypass" parameter. */
+    std::atomic<float>* bypassRaw_ { nullptr };
 
     //==============================================================================
     // Thread-bridge objects (owned here, shared by reference with GUI)

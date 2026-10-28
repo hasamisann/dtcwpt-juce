@@ -43,6 +43,9 @@ GateAudioProcessor::GateAudioProcessor()
     
     // Cache the bypass parameter
     bypassLowestRaw_ = apvts_.getRawParameterValue("bypass_lowest_band");
+
+    // Cache the host bypass parameter
+    bypassRaw_ = apvts_.getRawParameterValue ("bypass");
 }
 
 //==============================================================================
@@ -64,6 +67,11 @@ void GateAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     analyzerInputAligner_.prepare (samplesPerBlock, analyzerInputAlignerMaxDelay_);
     analyzerInputAligner_.setDelaySamples (0);
 
+    // The bypass delay line is sized for the deepest topology the engine accepts, so a
+    // later topology change never has to allocate it again.
+    latencyBypass_.prepare (sampleRate, samplesPerBlock, 2,
+                            latency_bypass::maxEngineLatencySamples (kGateTopologyMaxDepth, samplesPerBlock));
+
     rebuildDTCWPT();
 }
 
@@ -76,6 +84,7 @@ void GateAudioProcessor::releaseResources()
     outputMonoScratch_.setSize (0, 0);
     alignedInputMonoScratch_.setSize (0, 0);
     analyzerInputAligner_.reset();
+    latencyBypass_.release();
 }
 
 //==============================================================================
@@ -117,6 +126,7 @@ bool GateAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::strin
                                   topology::serializeTopologyDestinations (destinations),
                                   nullptr);
         setLatencySamples (newLatency);
+        latencyBypass_.setDelaySamples (newLatency);
         hasCommittedValidTopology_ = true;
     };
 
@@ -152,6 +162,22 @@ bool GateAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::strin
 
 void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                          juce::MidiBuffer& /*midiMessages*/)
+{
+    processBlockInternal (buffer, false);
+}
+
+void GateAudioProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer,
+                                                 juce::MidiBuffer& /*midiMessages*/)
+{
+    processBlockInternal (buffer, true);
+}
+
+juce::AudioProcessorParameter* GateAudioProcessor::getBypassParameter() const
+{
+    return apvts_.getParameter ("bypass");
+}
+
+void GateAudioProcessor::processBlockInternal (juce::AudioBuffer<float>& buffer, bool forceBypass)
 {
     juce::ScopedNoDenormals noDenormals;
 
@@ -210,8 +236,15 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             dst[i] = static_cast<double> (src[i]);
     }
 
-    // 5. Process audio
+    // 5. Bypass: record the input in the latency-matched dry delay line. The engine keeps
+    //    processing while bypassed so its state stays current and nothing stale is replayed
+    //    when bypass is released.
+    latencyBypass_.setBypassed (forceBypass || (bypassRaw_ != nullptr && bypassRaw_->load() >= 0.5f));
+    latencyBypass_.captureDry (mainDoubleBuffer_);
+
+    //    Process audio, then cross-fade with the delayed dry signal (no-op while fully live).
     dtcwptMain_->processBlock (mainDoubleBuffer_);
+    latencyBypass_.mixInto (mainDoubleBuffer_);
 
     // 6. Push levels to bandLevelBridge_
     float levels[GateBandProcessor::kMaxBands];
@@ -402,6 +435,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout GateAudioProcessor::createPa
             attributes
         ));
     }
+
+    // Host bypass (latency-compensated)
+    layout.add(std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID{"bypass", 1},
+        "Bypass",
+        false
+    ));
 
     // Bypass lowest frequency band toggle
     layout.add(std::make_unique<juce::AudioParameterBool>(
