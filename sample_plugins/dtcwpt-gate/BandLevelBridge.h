@@ -33,6 +33,8 @@ public:
         numBands_.store(n, std::memory_order_relaxed);
     }
 
+    void reset() noexcept {}  // red stub: intentionally does nothing yet
+
     /** GUI thread: read current band levels. Returns number of active bands. */
     int read(float* outLevelsDb) const
     {

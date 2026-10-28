@@ -73,6 +73,8 @@ public:
 
     int getLatency() const;
 
+    void reset() {}  // red stub: intentionally does nothing yet
+
     /**
      * @brief Register a band processor. Takes ownership.
      *
