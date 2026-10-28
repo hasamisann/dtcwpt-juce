@@ -64,6 +64,8 @@ target_sources(dtcwpt_tests
         suites/StatefulFilterTests.cpp
         suites/TopologyPlannerTests.cpp
         suites/TopologyStateTests.cpp
+        suites/MorphTopologyHandoffTests.cpp
+        suites/GateTopologyHandoffTests.cpp
         suites/TopologySplitOrderTests.cpp
         suites/GraphicEqDragPaintTests.cpp
         suites/GateEditorSampleRateTests.cpp

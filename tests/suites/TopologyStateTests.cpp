@@ -34,6 +34,12 @@ public:
 
         beginTest ("5. Empty destinations");
         testEmptyDestinations();
+
+        beginTest ("6. (#5 problem 1) request arriving between copy and clear is not lost");
+        testRequestDuringConsumeIsNotLost();
+
+        beginTest ("7. (#5 problem 3) a second consumer must not steal a pending request");
+        testSecondConsumerDoesNotStealRequest();
     }
 
 private:
@@ -107,6 +113,41 @@ private:
 
         expect (ts.tryConsume (out), "tryConsume with empty destinations should return true");
         expect (out.empty(), "out should be empty after consuming empty destinations");
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #5 problem 1: the audio thread copied request A, then the GUI thread posts request B,
+    // then the audio thread clears the dirty flag. B must still be delivered.
+    void testRequestDuringConsumeIsNotLost()
+    {
+        TopologyState ts;
+        ts.afterCopyHookForTest = [&ts] { ts.requestChange ({"HL", "HH", "LH", "LL"}); };
+        ts.requestChange ({"H", "LH", "LL"});
+
+        std::vector<std::string> first;
+        expect (ts.tryConsume (first), "Request A should be consumed");
+        expectEquals (static_cast<int> (first.size()), 3, "A has 3 destinations");
+
+        ts.afterCopyHookForTest = nullptr;
+
+        std::vector<std::string> second;
+        expect (ts.tryConsume (second), "Request B posted during the consume must still be pending");
+        expectEquals (static_cast<int> (second.size()), 4, "B has 4 destinations");
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #5 problem 3: setStateInformation posts a request; the editor (GraphicEqWidget) consumed it
+    // before the audio thread did, so the engine never received the restored topology.
+    void testSecondConsumerDoesNotStealRequest()
+    {
+        TopologyState ts;
+        ts.requestChange ({"H", "LH", "LL"});
+
+        std::vector<std::string> editorView;
+        (void) ts.tryConsume (editorView);   // what the editor did when it opened
+
+        std::vector<std::string> audioView;
+        expect (ts.tryConsume (audioView), "The audio thread must still receive the restored topology");
     }
 };
 
