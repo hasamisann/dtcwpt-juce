@@ -60,6 +60,7 @@ target_sources(dtcwpt_tests
         suites/DTCWPTProcessorTests.cpp
         suites/MorphAudioProcessorTests.cpp
         suites/GateAudioProcessorTests.cpp
+        suites/GateParameterDesignTests.cpp
         suites/MorphBandProcessorTests.cpp
         suites/StatefulFilterTests.cpp
         suites/TopologyPlannerTests.cpp
