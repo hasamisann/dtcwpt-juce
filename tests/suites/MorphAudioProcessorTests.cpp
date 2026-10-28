@@ -466,6 +466,9 @@ private:
         expect (stateSource->applyTopologyCandidateForTest (topologyCandidate),
                 "State source should accept the topology that will be serialized");
         applyParameterState (*stateSource, parameterState);
+        // The engine reports its output from the first block on, so the restored parameter values matter here.
+        // Parameter changes reach the saved ValueTree only on a flush, which copyState() performs.
+        (void) stateSource->getAPVTS().copyState();
         const auto stateData = getStateInformationCopy (*stateSource);
 
         auto restoredProcessor = std::make_unique<MorphAudioProcessor>();

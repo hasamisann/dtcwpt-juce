@@ -18,15 +18,17 @@ void SynthesisNode::synthesizeBlock(const std::vector<double>& lowBuf,
     //   - Odd:  push zeros (upsampling), write filtered sum
     for (size_t i = 0; i < numSamples; ++i) {
         // Even output sample
-        filterLow_.pushSample(lowBuf[i]);
-        filterHigh_.pushSample(highBuf[i]);
-        outBuf[outCursor + 2 * i] = filterLow_.filtering() + filterHigh_.filtering();
+        outBuf[outCursor + 2 * i] = processTick(lowBuf[i], highBuf[i]);
 
         // Odd output sample (zero insertion for upsampling)
-        filterLow_.pushSample(0.0);
-        filterHigh_.pushSample(0.0);
-        outBuf[outCursor + 2 * i + 1] = filterLow_.filtering() + filterHigh_.filtering();
+        outBuf[outCursor + 2 * i + 1] = processTick(0.0, 0.0);
     }
+}
+
+double SynthesisNode::processTick(double lowIn, double highIn) {
+    filterLow_.pushSample(lowIn);
+    filterHigh_.pushSample(highIn);
+    return filterLow_.filtering() + filterHigh_.filtering();
 }
 
 } // namespace dtcwpt

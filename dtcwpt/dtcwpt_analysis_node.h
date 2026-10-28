@@ -84,6 +84,13 @@ public:
      */
     bool processArrival(double sampleValue, AnalysisChildOutputs& outputs) noexcept;
 
+    /**
+     * @brief Sets the downsampling phase without touching the filter state.
+     *
+     * @param skipNextArrival True if the next arrival must be suppressed (odd arrival count so far)
+     */
+    void setParity(bool skipNextArrival) noexcept { parity_ = skipNextArrival; }
+
 private:
     StatefulFilter filterLow_;   ///< Low-pass analysis filter
     StatefulFilter filterHigh_;  ///< High-pass analysis filter

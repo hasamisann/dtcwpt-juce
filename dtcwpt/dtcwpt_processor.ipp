@@ -5,8 +5,10 @@
 #include "dtcwpt_analysis_node_factory.h"
 
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <map>
 #include <set>
@@ -54,17 +56,17 @@ struct PreparedProcessorState {
     std::vector<std::vector<size_t>> cursorsRe;
     std::vector<std::vector<size_t>> cursorsIm;
     std::vector<std::vector<double>> delayTempBuffer;
-    std::vector<double> inputBlockBuffer;
     std::vector<double> delaySliceBuffer;
 
     int maxDelay = 0;
-    size_t alignUnit = 1;
-    size_t internalBlockSize = 0;
-    std::vector<std::vector<double>> inputFifo;
-    std::vector<size_t> inputFifoFill;
-    std::vector<std::vector<double>> outputFifo;
-    std::vector<size_t> outputFifoFill;
-    std::vector<size_t> outputFifoRead;
+
+    int maxSynthesisLevel = 0;
+    std::vector<std::vector<SynthesisTickPlan>> synthesisLevelPlans;
+    std::vector<std::vector<double>> synthesisOutputRe;
+    std::vector<std::vector<double>> synthesisOutputIm;
+    std::vector<std::vector<size_t>> leafReadCursors;
+    std::vector<double> silenceBuffer;
+    std::vector<double> discardBuffer;
 
     std::vector<AnalysisNodeGroup> scAnalysisNodesRe;
     std::vector<AnalysisNodeGroup> scAnalysisNodesIm;
@@ -79,21 +81,13 @@ struct PreparedProcessorState {
     std::vector<double> scAnalysisWorkBuffer;
     std::vector<char> scAnalysisActiveFlags;
     std::vector<std::vector<double>> scDelayTempBuffer;
-    std::vector<double> scInputBlockBuffer;
     std::vector<double> scDelaySliceBuffer;
-    std::vector<std::vector<double>> scInputFifo;
-    std::vector<size_t> scInputFifoFill;
     bool sidechainActive = false;
     bool sidechainProcessedThisBlock = false;
     int expectedSidechainSamples = 0;
     std::vector<std::vector<double>> scAdjustedChannels;
 
-    std::vector<std::vector<double>> alignedInputBuffers;
-    std::vector<std::vector<double>> alignedSidechainBuffers;
-    juce::AudioBuffer<double> alignedOutputBuffer;
     BandData cachedBandData;
-    std::vector<char> channelHasData;
-    std::vector<char> scChannelHasData;
 };
 
 int getNodeLevelFromId(int nodeId) {
@@ -225,20 +219,22 @@ TopologyValidationResult validateTopologyConfig(const TopologyConfig& config) {
     return result;
 }
 
-int calculateMaxSamplesPerBand(const std::vector<int>& destinations, size_t internalBlockSize) {
-    size_t minDepth = static_cast<size_t>(getNodeLevelFromId(destinations.front()));
+// Largest number of samples a destination at tree level `level` can receive from a host chunk of
+// maxBlockSize input samples: a chunk of n consecutive input samples contains at most ceil(n / 2^level)
+// multiples of 2^level, and the level-L leaf produces one sample per multiple of 2^L.
+size_t calculateMaxSamplesForLevel(int maxBlockSize, int level) {
+    const size_t unit = static_cast<size_t>(1) << static_cast<size_t>(level);
+    return (static_cast<size_t>(maxBlockSize) + unit - 1) / unit;
+}
+
+int calculateMaxSamplesPerBand(const std::vector<int>& destinations, int maxBlockSize) {
+    int minDepth = getNodeLevelFromId(destinations.front());
 
     for (const int dest : destinations) {
-        const size_t depth = static_cast<size_t>(getNodeLevelFromId(dest));
-        minDepth = std::min(minDepth, depth);
+        minDepth = std::min(minDepth, getNodeLevelFromId(dest));
     }
 
-    int maxSamplesPerBand = static_cast<int>(internalBlockSize >> minDepth);
-    if (maxSamplesPerBand < 1) {
-        maxSamplesPerBand = 1;
-    }
-
-    return maxSamplesPerBand;
+    return static_cast<int>(calculateMaxSamplesForLevel(maxBlockSize, minDepth));
 }
 
 } // namespace
@@ -269,16 +265,8 @@ DTCWPTProcessor::DTCWPTProcessor()
     , cursorsRe_()
     , cursorsIm_()
     , delayTempBuffer_()
-    , inputBlockBuffer_()
     , delaySliceBuffer_()
     , maxDelay_(0)
-    , alignUnit_(1)
-    , internalBlockSize_(0)
-    , inputFifo_()
-    , inputFifoFill_()
-    , outputFifo_()
-    , outputFifoFill_()
-    , outputFifoRead_()
     , bandProcessor_(nullptr)
     , prepared_(false)
     , scAnalysisNodesRe_()
@@ -294,10 +282,7 @@ DTCWPTProcessor::DTCWPTProcessor()
     , scAnalysisWorkBuffer_()
     , scAnalysisActiveFlags_()
     , scDelayTempBuffer_()
-    , scInputBlockBuffer_()
     , scDelaySliceBuffer_()
-    , scInputFifo_()
-    , scInputFifoFill_()
     , sidechainActive_(false)
     , sidechainProcessedThisBlock_(false)
 #if DTCWPT_ENABLE_TEST_SEAMS
@@ -335,7 +320,7 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
     if (channelNum < 1 || channelNum > 2) {
         throw std::invalid_argument("Channel count must be 1 or 2");
     }
-    const TopologyValidationResult validation = validateTopologyConfig(config);
+    validateTopologyConfig(config);
 
     PreparedProcessorState candidate;
     candidate.topology = std::make_unique<TopologyPlanner>(config.destinations);
@@ -441,22 +426,19 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
         const int dest = candidate.destinations[i];
         const int depth = getNodeLevel(dest);
         const int rateFactor = 1 << depth;
+        const int maxBandSamples = static_cast<int>(calculateMaxSamplesForLevel(maxBlockSize, depth));
         const int diffReSubband = (candidate.maxDelay - pathDelaysRe[i]) / rateFactor;
         const int diffImSubband = (candidate.maxDelay - pathDelaysIm[i]) / rateFactor;
 
         for (int ch = 0; ch < channelNum; ++ch) {
-            candidate.delayBuffersRe[static_cast<size_t>(ch)].emplace_back(diffReSubband, maxBlockSize);
-            candidate.delayBuffersIm[static_cast<size_t>(ch)].emplace_back(diffImSubband, maxBlockSize);
+            candidate.delayBuffersRe[static_cast<size_t>(ch)].emplace_back(diffReSubband, maxBandSamples);
+            candidate.delayBuffersIm[static_cast<size_t>(ch)].emplace_back(diffImSubband, maxBandSamples);
         }
     }
 
-    candidate.alignUnit = static_cast<size_t>(1) << static_cast<size_t>(validation.actualDepth);
-    const size_t maxBlockSizeValue = static_cast<size_t>(maxBlockSize);
-    candidate.internalBlockSize = ((maxBlockSizeValue + candidate.alignUnit - 1) / candidate.alignUnit)
-        * candidate.alignUnit;
-
     const size_t maxNodeId = TopologyPlanner::MAX_SIZE;
 
+    // A destination at level L receives at most ceil(maxBlockSize / 2^L) samples per host chunk.
     candidate.resultsRe.resize(static_cast<size_t>(channelNum));
     candidate.resultsIm.resize(static_cast<size_t>(channelNum));
     candidate.cursorsRe.resize(static_cast<size_t>(channelNum));
@@ -467,23 +449,8 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
         candidate.cursorsRe[static_cast<size_t>(ch)].assign(maxNodeId, 0);
         candidate.cursorsIm[static_cast<size_t>(ch)].assign(maxNodeId, 0);
 
-        for (const int target : candidate.analysisOrder) {
-            const int depth = getNodeLevel(target);
-            size_t outputSize = candidate.internalBlockSize >> static_cast<size_t>(depth);
-            if (outputSize < 1) {
-                outputSize = 1;
-            }
-
-            candidate.resultsRe[static_cast<size_t>(ch)][static_cast<size_t>(target)].assign(outputSize, 0.0);
-            candidate.resultsIm[static_cast<size_t>(ch)][static_cast<size_t>(target)].assign(outputSize, 0.0);
-        }
-
         for (const int target : candidate.destinations) {
-            const int depth = getNodeLevel(target);
-            size_t outputSize = candidate.internalBlockSize >> static_cast<size_t>(depth);
-            if (outputSize < 1) {
-                outputSize = 1;
-            }
+            const size_t outputSize = calculateMaxSamplesForLevel(maxBlockSize, getNodeLevel(target));
 
             candidate.resultsRe[static_cast<size_t>(ch)][static_cast<size_t>(target)].assign(outputSize, 0.0);
             candidate.resultsIm[static_cast<size_t>(ch)][static_cast<size_t>(target)].assign(outputSize, 0.0);
@@ -492,23 +459,39 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
 
     candidate.analysisWorkBuffer.assign(maxNodeId, 0.0);
     candidate.analysisActiveFlags.assign(maxNodeId, 0);
+
+    const size_t maxBandSamplesWidest = static_cast<size_t>(
+        calculateMaxSamplesPerBand(candidate.destinations, maxBlockSize));
     candidate.delayTempBuffer.resize(static_cast<size_t>(channelNum));
     for (int ch = 0; ch < channelNum; ++ch) {
-        candidate.delayTempBuffer[static_cast<size_t>(ch)].resize(candidate.internalBlockSize);
+        candidate.delayTempBuffer[static_cast<size_t>(ch)].resize(maxBandSamplesWidest);
     }
-    candidate.inputBlockBuffer.resize(candidate.internalBlockSize);
-    candidate.delaySliceBuffer.resize(candidate.internalBlockSize);
+    candidate.delaySliceBuffer.resize(maxBandSamplesWidest);
 
-    const size_t inputFifoSize = candidate.internalBlockSize * 2;
-    const size_t outputFifoSize = static_cast<size_t>(candidate.maxDelay) + candidate.internalBlockSize * 4;
-    candidate.inputFifo.assign(static_cast<size_t>(channelNum), std::vector<double>(inputFifoSize, 0.0));
-    candidate.outputFifo.assign(static_cast<size_t>(channelNum), std::vector<double>(outputFifoSize, 0.0));
-    candidate.inputFifoFill.assign(static_cast<size_t>(channelNum), 0);
-    candidate.outputFifoFill.assign(static_cast<size_t>(channelNum), 0);
-    candidate.outputFifoRead.assign(static_cast<size_t>(channelNum), 0);
-    for (int ch = 0; ch < channelNum; ++ch) {
-        candidate.outputFifoFill[static_cast<size_t>(ch)] = candidate.internalBlockSize;
+    // Synthesis is scheduled tick by tick: group the synthesis nodes by level.
+    std::vector<char> isDestination(maxNodeId, 0);
+    for (const int dest : candidate.destinations) {
+        isDestination[static_cast<size_t>(dest)] = 1;
     }
+    candidate.maxSynthesisLevel = 0;
+    for (const int nodeId : candidate.synthesisNodeIds) {
+        candidate.maxSynthesisLevel = std::max(candidate.maxSynthesisLevel, getNodeLevel(nodeId));
+    }
+    candidate.synthesisLevelPlans.resize(static_cast<size_t>(candidate.maxSynthesisLevel) + 1);
+    for (size_t i = 0; i < candidate.synthesisNodeIds.size(); ++i) {
+        const int nodeId = candidate.synthesisNodeIds[i];
+        SynthesisTickPlan tickPlan;
+        tickPlan.nodeIndex = i;
+        tickPlan.nodeId = nodeId;
+        tickPlan.lowIsLeaf = isDestination[static_cast<size_t>(nodeId) << 1] != 0;
+        tickPlan.highIsLeaf = isDestination[(static_cast<size_t>(nodeId) << 1) | 1] != 0;
+        candidate.synthesisLevelPlans[static_cast<size_t>(getNodeLevel(nodeId))].push_back(tickPlan);
+    }
+    candidate.synthesisOutputRe.assign(static_cast<size_t>(channelNum), std::vector<double>(maxNodeId, 0.0));
+    candidate.synthesisOutputIm.assign(static_cast<size_t>(channelNum), std::vector<double>(maxNodeId, 0.0));
+    candidate.leafReadCursors.assign(static_cast<size_t>(channelNum), std::vector<size_t>(maxNodeId, 0));
+    candidate.silenceBuffer.assign(static_cast<size_t>(maxBlockSize), 0.0);
+    candidate.discardBuffer.assign(static_cast<size_t>(maxBlockSize), 0.0);
 
     candidate.scAnalysisNodesRe.resize(static_cast<size_t>(channelNum));
     candidate.scAnalysisNodesIm.resize(static_cast<size_t>(channelNum));
@@ -543,12 +526,13 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
         const int dest = candidate.destinations[i];
         const int depth = getNodeLevel(dest);
         const int rateFactor = 1 << depth;
+        const int maxBandSamples = static_cast<int>(calculateMaxSamplesForLevel(maxBlockSize, depth));
         const int diffReSubband = (candidate.maxDelay - pathDelaysRe[i]) / rateFactor;
         const int diffImSubband = (candidate.maxDelay - pathDelaysIm[i]) / rateFactor;
 
         for (int ch = 0; ch < channelNum; ++ch) {
-            candidate.scDelayBuffersRe[static_cast<size_t>(ch)].emplace_back(diffReSubband, maxBlockSize);
-            candidate.scDelayBuffersIm[static_cast<size_t>(ch)].emplace_back(diffImSubband, maxBlockSize);
+            candidate.scDelayBuffersRe[static_cast<size_t>(ch)].emplace_back(diffReSubband, maxBandSamples);
+            candidate.scDelayBuffersIm[static_cast<size_t>(ch)].emplace_back(diffImSubband, maxBandSamples);
         }
     }
 
@@ -562,23 +546,8 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
         candidate.scCursorsRe[static_cast<size_t>(ch)].assign(maxNodeId, 0);
         candidate.scCursorsIm[static_cast<size_t>(ch)].assign(maxNodeId, 0);
 
-        for (const int target : candidate.analysisOrder) {
-            const int depth = getNodeLevel(target);
-            size_t outputSize = candidate.internalBlockSize >> static_cast<size_t>(depth);
-            if (outputSize < 1) {
-                outputSize = 1;
-            }
-
-            candidate.scResultsRe[static_cast<size_t>(ch)][static_cast<size_t>(target)].assign(outputSize, 0.0);
-            candidate.scResultsIm[static_cast<size_t>(ch)][static_cast<size_t>(target)].assign(outputSize, 0.0);
-        }
-
         for (const int target : candidate.destinations) {
-            const int depth = getNodeLevel(target);
-            size_t outputSize = candidate.internalBlockSize >> static_cast<size_t>(depth);
-            if (outputSize < 1) {
-                outputSize = 1;
-            }
+            const size_t outputSize = calculateMaxSamplesForLevel(maxBlockSize, getNodeLevel(target));
 
             candidate.scResultsRe[static_cast<size_t>(ch)][static_cast<size_t>(target)].assign(outputSize, 0.0);
             candidate.scResultsIm[static_cast<size_t>(ch)][static_cast<size_t>(target)].assign(outputSize, 0.0);
@@ -589,23 +558,14 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
     candidate.scAnalysisActiveFlags.assign(maxNodeId, 0);
     candidate.scDelayTempBuffer.resize(static_cast<size_t>(channelNum));
     for (int ch = 0; ch < channelNum; ++ch) {
-        candidate.scDelayTempBuffer[static_cast<size_t>(ch)].resize(candidate.internalBlockSize);
+        candidate.scDelayTempBuffer[static_cast<size_t>(ch)].resize(maxBandSamplesWidest);
     }
-    candidate.scInputBlockBuffer.resize(candidate.internalBlockSize);
-    candidate.scDelaySliceBuffer.resize(candidate.internalBlockSize);
-    candidate.scInputFifo.assign(static_cast<size_t>(channelNum),
-                                 std::vector<double>(candidate.internalBlockSize * 2, 0.0));
-    candidate.scInputFifoFill.assign(static_cast<size_t>(channelNum), 0);
+    candidate.scDelaySliceBuffer.resize(maxBandSamplesWidest);
 
     candidate.scAdjustedChannels.resize(static_cast<size_t>(channelNum));
-    candidate.alignedInputBuffers.resize(static_cast<size_t>(channelNum));
-    candidate.alignedSidechainBuffers.resize(static_cast<size_t>(channelNum));
     for (int ch = 0; ch < channelNum; ++ch) {
-        candidate.scAdjustedChannels[static_cast<size_t>(ch)].resize(candidate.internalBlockSize);
-        candidate.alignedInputBuffers[static_cast<size_t>(ch)].resize(candidate.internalBlockSize);
-        candidate.alignedSidechainBuffers[static_cast<size_t>(ch)].resize(candidate.internalBlockSize);
+        candidate.scAdjustedChannels[static_cast<size_t>(ch)].resize(static_cast<size_t>(maxBlockSize));
     }
-    candidate.alignedOutputBuffer.setSize(1, static_cast<int>(candidate.internalBlockSize));
 
     candidate.cachedBandData.bands.resize(static_cast<size_t>(channelNum));
     candidate.cachedBandData.sidechainBands.resize(static_cast<size_t>(channelNum));
@@ -613,9 +573,6 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
         candidate.cachedBandData.bands[static_cast<size_t>(ch)].resize(candidate.destinations.size());
         candidate.cachedBandData.sidechainBands[static_cast<size_t>(ch)].resize(candidate.destinations.size());
     }
-
-    candidate.channelHasData.resize(static_cast<size_t>(channelNum));
-    candidate.scChannelHasData.resize(static_cast<size_t>(channelNum));
 
 #if DTCWPT_ENABLE_TEST_SEAMS
     if (prepareCandidateFailpoint_ == PrepareCandidateFailpoint::beforeCommit) {
@@ -649,16 +606,16 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
     cursorsRe_ = std::move(candidate.cursorsRe);
     cursorsIm_ = std::move(candidate.cursorsIm);
     delayTempBuffer_ = std::move(candidate.delayTempBuffer);
-    inputBlockBuffer_ = std::move(candidate.inputBlockBuffer);
     delaySliceBuffer_ = std::move(candidate.delaySliceBuffer);
     maxDelay_ = candidate.maxDelay;
-    alignUnit_ = candidate.alignUnit;
-    internalBlockSize_ = candidate.internalBlockSize;
-    inputFifo_ = std::move(candidate.inputFifo);
-    inputFifoFill_ = std::move(candidate.inputFifoFill);
-    outputFifo_ = std::move(candidate.outputFifo);
-    outputFifoFill_ = std::move(candidate.outputFifoFill);
-    outputFifoRead_ = std::move(candidate.outputFifoRead);
+    streamPos_ = 0;
+    maxSynthesisLevel_ = candidate.maxSynthesisLevel;
+    synthesisLevelPlans_ = std::move(candidate.synthesisLevelPlans);
+    synthesisOutputRe_ = std::move(candidate.synthesisOutputRe);
+    synthesisOutputIm_ = std::move(candidate.synthesisOutputIm);
+    leafReadCursors_ = std::move(candidate.leafReadCursors);
+    silenceBuffer_ = std::move(candidate.silenceBuffer);
+    discardBuffer_ = std::move(candidate.discardBuffer);
     scAnalysisNodesRe_ = std::move(candidate.scAnalysisNodesRe);
     scAnalysisNodesIm_ = std::move(candidate.scAnalysisNodesIm);
     scAnalysisRuntimeStatesRe_ = std::move(candidate.scAnalysisRuntimeStatesRe);
@@ -672,20 +629,13 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
     scAnalysisWorkBuffer_ = std::move(candidate.scAnalysisWorkBuffer);
     scAnalysisActiveFlags_ = std::move(candidate.scAnalysisActiveFlags);
     scDelayTempBuffer_ = std::move(candidate.scDelayTempBuffer);
-    scInputBlockBuffer_ = std::move(candidate.scInputBlockBuffer);
     scDelaySliceBuffer_ = std::move(candidate.scDelaySliceBuffer);
-    scInputFifo_ = std::move(candidate.scInputFifo);
-    scInputFifoFill_ = std::move(candidate.scInputFifoFill);
+    scStreamPos_ = 0;
     sidechainActive_ = candidate.sidechainActive;
     sidechainProcessedThisBlock_ = candidate.sidechainProcessedThisBlock;
     expectedSidechainSamples_ = candidate.expectedSidechainSamples;
     scAdjustedChannels_ = std::move(candidate.scAdjustedChannels);
-    alignedInputBuffers_ = std::move(candidate.alignedInputBuffers);
-    alignedSidechainBuffers_ = std::move(candidate.alignedSidechainBuffers);
-    alignedOutputBuffer_ = std::move(candidate.alignedOutputBuffer);
     cachedBandData_ = std::move(candidate.cachedBandData);
-    channelHasData_ = std::move(candidate.channelHasData);
-    scChannelHasData_ = std::move(candidate.scChannelHasData);
 
     // Reset band processor if exists (lifecycle hook)
     if (bandProcessor_) {
@@ -701,7 +651,7 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
 
     // If BandProcessor was set before prepareToPlay(), prepare it now
     if (bandProcessor_) {
-        const int maxSamplesPerBand = calculateMaxSamplesPerBand(destinations_, internalBlockSize_);
+        const int maxSamplesPerBand = calculateMaxSamplesPerBand(destinations_, maxBlockSize_);
         bandProcessor_->prepare(sampleRate_, maxSamplesPerBand,
                                 static_cast<int>(destinations_.size()), channelNum_);
     }
@@ -717,7 +667,7 @@ void DTCWPTProcessor::setBandProcessor(std::unique_ptr<BandProcessor> processor)
 
     // If already prepared, prepare the processor immediately
     if (prepared_ && bandProcessor_) {
-        const int maxSamplesPerBand = calculateMaxSamplesPerBand(destinations_, internalBlockSize_);
+        const int maxSamplesPerBand = calculateMaxSamplesPerBand(destinations_, maxBlockSize_);
         bandProcessor_->prepare(sampleRate_, maxSamplesPerBand,
                                 static_cast<int>(destinations_.size()), channelNum_);
     }
@@ -727,11 +677,17 @@ void DTCWPTProcessor::processSidechain(juce::AudioBuffer<double>& sidechainBuffe
     const int numSamples = sidechainBuffer.getNumSamples();
     const int numChannels = sidechainBuffer.getNumChannels();
 
+    // The adjusted copy is pre-allocated for maxBlockSize_ samples: a longer (or empty) sidechain
+    // block cannot be used, so the sidechain stays off for the next processBlock().
+    if (!prepared_ || numSamples <= 0 || numSamples > maxBlockSize_ || numChannels < 1) {
+        sidechainProcessedThisBlock_ = false;
+        return;
+    }
+
     // Store expected sample count for validation in processBlock()
     expectedSidechainSamples_ = numSamples;
 
     // Channel adjustment: match main input channel count
-    // Use pre-allocated buffer (assumes numSamples <= maxBlockSize_)
     if (numChannels >= channelNum_) {
         // More or equal channels: copy first channelNum_ channels
         for (int ch = 0; ch < channelNum_; ++ch) {
@@ -744,31 +700,6 @@ void DTCWPTProcessor::processSidechain(juce::AudioBuffer<double>& sidechainBuffe
             int srcCh = std::min(ch, numChannels - 1);
             const double* src = sidechainBuffer.getReadPointer(srcCh);
             std::copy(src, src + numSamples, scAdjustedChannels_[ch].begin());
-        }
-    }
-
-    // Push adjusted sidechain samples into scInputFifo_
-    const size_t need = static_cast<size_t>(numSamples);
-    for (int ch = 0; ch < channelNum_; ++ch) {
-        const double* src = scAdjustedChannels_[ch].data();
-        size_t pushed = 0;
-
-        while (pushed < need) {
-            const size_t space = internalBlockSize_ - scInputFifoFill_[ch];
-            const size_t toCopy = std::min(space, need - pushed);
-
-            std::copy(src + pushed,
-                      src + pushed + toCopy,
-                      scInputFifo_[ch].begin() +
-                          static_cast<ptrdiff_t>(scInputFifoFill_[ch]));
-            scInputFifoFill_[ch] += toCopy;
-            pushed += toCopy;
-
-            // If FIFO is full, stop pushing (should not happen with correct usage)
-            // The data remains in FIFO until processBlock extracts it
-            if (scInputFifoFill_[ch] >= internalBlockSize_) {
-                break;
-            }
         }
     }
 
@@ -827,22 +758,18 @@ int DTCWPTProcessor::calculateDelayForNode(int targetIdx, const SynthesisNodeGro
     return totalDelay;
 }
 
-// Analysis + delay compensation phase for one channel.
-void DTCWPTProcessor::processChannelAnalysisAndDelay(int ch, const std::vector<double>& inputBlock) {
-    // Init cursors for all targets
-    for (int target : analysisOrder_) {
-        cursorsRe_[ch][static_cast<size_t>(target)] = 0;
-        cursorsIm_[ch][static_cast<size_t>(target)] = 0;
-    }
+// Analysis + delay compensation phase for one channel and one chunk of input samples.
+void DTCWPTProcessor::processChannelAnalysisAndDelay(int ch, const double* input, size_t numSamples) {
+    // Init cursors for all destinations
     for (int target : destinations_) {
         cursorsRe_[ch][static_cast<size_t>(target)] = 0;
         cursorsIm_[ch][static_cast<size_t>(target)] = 0;
     }
 
     // Analysis for both trees (pass per-channel results/cursors and shared work buffers)
-    analysisProcess(inputBlock, analysisNodesRe_[ch], analysisSchedulerMetadata_, resultsRe_[ch], cursorsRe_[ch],
+    analysisProcess(input, numSamples, analysisNodesRe_[ch], analysisSchedulerMetadata_, resultsRe_[ch], cursorsRe_[ch],
                     analysisRuntimeStatesRe_[static_cast<size_t>(ch)], AnalysisPathId::mainReal, ch);
-    analysisProcess(inputBlock, analysisNodesIm_[ch], analysisSchedulerMetadata_, resultsIm_[ch], cursorsIm_[ch],
+    analysisProcess(input, numSamples, analysisNodesIm_[ch], analysisSchedulerMetadata_, resultsIm_[ch], cursorsIm_[ch],
                     analysisRuntimeStatesIm_[static_cast<size_t>(ch)], AnalysisPathId::mainImag, ch);
 
     // Delay compensation — Re tree
@@ -871,21 +798,17 @@ void DTCWPTProcessor::processChannelAnalysisAndDelay(int ch, const std::vector<d
 }
 
 // Sidechain analysis phase for one channel (no delay compensation - sidechain is control signal).
-void DTCWPTProcessor::processSidechainAnalysisAndDelay(int ch, const std::vector<double>& inputBlock) {
-    // Init cursors for all targets
-    for (int target : analysisOrder_) {
-        scCursorsRe_[ch][static_cast<size_t>(target)] = 0;
-        scCursorsIm_[ch][static_cast<size_t>(target)] = 0;
-    }
+void DTCWPTProcessor::processSidechainAnalysisAndDelay(int ch, const double* input, size_t numSamples) {
+    // Init cursors for all destinations
     for (int target : destinations_) {
         scCursorsRe_[ch][static_cast<size_t>(target)] = 0;
         scCursorsIm_[ch][static_cast<size_t>(target)] = 0;
     }
 
     // Analysis for both trees (pass per-channel results/cursors and per-channel work buffers)
-    analysisProcess(inputBlock, scAnalysisNodesRe_[ch], analysisSchedulerMetadata_, scResultsRe_[ch], scCursorsRe_[ch],
+    analysisProcess(input, numSamples, scAnalysisNodesRe_[ch], analysisSchedulerMetadata_, scResultsRe_[ch], scCursorsRe_[ch],
                     scAnalysisRuntimeStatesRe_[static_cast<size_t>(ch)], AnalysisPathId::sidechainReal, ch);
-    analysisProcess(inputBlock, scAnalysisNodesIm_[ch], analysisSchedulerMetadata_, scResultsIm_[ch], scCursorsIm_[ch],
+    analysisProcess(input, numSamples, scAnalysisNodesIm_[ch], analysisSchedulerMetadata_, scResultsIm_[ch], scCursorsIm_[ch],
                     scAnalysisRuntimeStatesIm_[static_cast<size_t>(ch)], AnalysisPathId::sidechainImag, ch);
 
     // Delay compensation — Re tree
@@ -913,198 +836,202 @@ void DTCWPTProcessor::processSidechainAnalysisAndDelay(int ch, const std::vector
     }
 }
 
+// The sidechain analysis only runs on blocks that come with a sidechain. After a gap its decimation
+// phase would differ from the main stream, so the per-band sample counts would no longer match.
+// Node at level l has received ceil(streamPos_ / 2^l) arrivals; its parity is that count modulo 2.
+void DTCWPTProcessor::alignSidechainPhase() noexcept {
+    for (auto* groups : {&scAnalysisNodesRe_, &scAnalysisNodesIm_}) {
+        for (auto& group : *groups) {
+            for (size_t i = 0; i < group.nodes.size(); ++i) {
+                const std::uint64_t unit = std::uint64_t{1} << getNodeLevel(group.ids[i]);
+                const std::uint64_t arrivals = (streamPos_ + unit - 1) / unit;
+                group.nodes[i].setParity((arrivals & 1U) != 0U);
+            }
+        }
+    }
+    scStreamPos_ = streamPos_;
+}
+
+bool DTCWPTProcessor::prepareBandData(bool hasSidechain) {
+    // Reuse cached BandData (pre-allocated, no resize)
+    cachedBandData_.numChannels = channelNum_;
+    cachedBandData_.numBands = static_cast<int>(destinations_.size());
+    cachedBandData_.hasSidechain = hasSidechain;
+    cachedBandData_.destinationIds = &destinations_;
+
+    bool anySamples = false;
+
+    // Populate bands with pointers into per-channel resultsRe_/resultsIm_
+    for (int ch = 0; ch < channelNum_; ++ch) {
+        for (size_t b = 0; b < destinations_.size(); ++b) {
+            int dest = destinations_[b];
+            size_t numSamplesInBand = cursorsRe_[ch][dest];
+            cachedBandData_.bands[ch][b].re = resultsRe_[ch][dest].data();
+            cachedBandData_.bands[ch][b].im = resultsIm_[ch][dest].data();
+            cachedBandData_.bands[ch][b].numSamples = numSamplesInBand;
+            anySamples = anySamples || numSamplesInBand > 0;
+        }
+    }
+
+    // Populate sidechainBands if sidechain is active
+    if (hasSidechain) {
+        for (int ch = 0; ch < channelNum_; ++ch) {
+            for (size_t b = 0; b < destinations_.size(); ++b) {
+                int dest = destinations_[b];
+                size_t numSamplesInBand = scCursorsRe_[ch][dest];
+                cachedBandData_.sidechainBands[ch][b].re = scResultsRe_[ch][dest].data();
+                cachedBandData_.sidechainBands[ch][b].im = scResultsIm_[ch][dest].data();
+                cachedBandData_.sidechainBands[ch][b].numSamples = numSamplesInBand;
+            }
+        }
+    }
+
+    return anySamples;
+}
+
 // Synthesis + output averaging phase for one channel.
-void DTCWPTProcessor::processChannelSynthesisAndAverage(int ch, juce::AudioBuffer<double>& output) {
-    const int numSamples = output.getNumSamples();
+//
+// Synthesis runs as a sample-by-sample schedule over the root output ticks t = streamPos_, streamPos_ + 1, ...
+// The synthesis node at level k produces one output per 2^k root ticks, at the ticks with t % 2^k == 0,
+// and nodes are advanced deepest level first so that a parent sees the output its child produced at the same t.
+// On even node ticks (t % 2^(k+1) == 0) a node pushes the next sample of each child (the next band sample for
+// a leaf, the child's latest output for an inner node); on odd node ticks it pushes zeros (upsampling).
+// This is the same sequence of filter operations as synthesising a whole block per node.
+void DTCWPTProcessor::processChannelSynthesisAndAverage(int ch, double* output, size_t numSamples) {
+    auto& outRe = synthesisOutputRe_[static_cast<size_t>(ch)];
+    auto& outIm = synthesisOutputIm_[static_cast<size_t>(ch)];
+    auto& readCursor = leafReadCursors_[static_cast<size_t>(ch)];
+    auto& bandsRe = resultsRe_[static_cast<size_t>(ch)];
+    auto& bandsIm = resultsIm_[static_cast<size_t>(ch)];
+    auto& nodesRe = synthesisNodesRe_[static_cast<size_t>(ch)].nodes;
+    auto& nodesIm = synthesisNodesIm_[static_cast<size_t>(ch)].nodes;
 
-    // Synthesis for both trees (pass per-channel results/cursors)
-    synthesisProcess(resultsRe_[ch], synthesisNodesRe_[ch], synthesisNodeIds_, cursorsRe_[ch]);
-    synthesisProcess(resultsIm_[ch], synthesisNodesIm_[ch], synthesisNodeIds_, cursorsIm_[ch]);
+    for (const int dest : destinations_) {
+        readCursor[static_cast<size_t>(dest)] = 0;
+    }
 
-    // Output averaging
-    double* writePtr = output.getWritePointer(0);
-    for (int i = 0; i < numSamples; ++i) {
-        double re = resultsRe_[ch][1][static_cast<size_t>(i)];
-        double im = resultsIm_[ch][1][static_cast<size_t>(i)];
-        writePtr[i] = (re + im) / 2.0;
+    // Next unread sample of a destination band; band samples of the current chunk are always complete
+    // for the ticks of the same chunk, so running out cannot happen.
+    auto takeLeaf = [&](int leafId, double& re, double& im) {
+        size_t& cursor = readCursor[static_cast<size_t>(leafId)];
+        assert(cursor < cursorsRe_[static_cast<size_t>(ch)][static_cast<size_t>(leafId)]);
+        re = bandsRe[static_cast<size_t>(leafId)][cursor];
+        im = bandsIm[static_cast<size_t>(leafId)][cursor];
+        ++cursor;
+    };
+
+    for (size_t i = 0; i < numSamples; ++i) {
+        const std::uint64_t tick = streamPos_ + i;
+        // Levels with tick % 2^level == 0 advance on this tick (countr_zero(0) == 64)
+        const int topLevel = std::min(std::countr_zero(tick), maxSynthesisLevel_);
+
+        for (int level = topLevel; level >= 0; --level) {
+            const bool pushChildren = (tick & ((std::uint64_t{2} << level) - 1)) == 0;
+
+            for (const SynthesisTickPlan& plan : synthesisLevelPlans_[static_cast<size_t>(level)]) {
+                double lowRe = 0.0, lowIm = 0.0, highRe = 0.0, highIm = 0.0;
+
+                if (pushChildren) {
+                    const int lowId = plan.nodeId << 1;
+                    const int highId = lowId | 1;
+
+                    if (plan.lowIsLeaf) {
+                        takeLeaf(lowId, lowRe, lowIm);
+                    } else {
+                        lowRe = outRe[static_cast<size_t>(lowId)];
+                        lowIm = outIm[static_cast<size_t>(lowId)];
+                    }
+
+                    if (plan.highIsLeaf) {
+                        takeLeaf(highId, highRe, highIm);
+                    } else {
+                        highRe = outRe[static_cast<size_t>(highId)];
+                        highIm = outIm[static_cast<size_t>(highId)];
+                    }
+                }
+
+                outRe[static_cast<size_t>(plan.nodeId)] = nodesRe[plan.nodeIndex].processTick(lowRe, highRe);
+                outIm[static_cast<size_t>(plan.nodeId)] = nodesIm[plan.nodeIndex].processTick(lowIm, highIm);
+
+#if DTCWPT_ENABLE_TEST_SEAMS
+                workCounters_.synthesisOutputSamples += 2;
+#endif
+            }
+        }
+
+        // Output averaging of the Re and Im trees
+        output[i] = (outRe[1] + outIm[1]) / 2.0;
     }
 }
 
-// Public entry point: accumulates input into FIFO, processes aligned blocks, drains output FIFO.
+// Public entry point: analyses the input samples, runs the BandProcessor on the subband samples that
+// became available, and synthesises the output samples of the same time span.
 void DTCWPTProcessor::processBlock(juce::AudioBuffer<double>& buffer) {
     const int numSamples  = buffer.getNumSamples();
     const int numChannels = std::min(buffer.getNumChannels(), channelNum_);
 
-    if (numSamples == 0) return;
+    if (!prepared_ || numSamples == 0) return;
 
     // Validate sidechain sample count if sidechain was called
     // Instead of throwing (which is unsafe in audio thread), disable sidechain on mismatch
-    if (sidechainProcessedThisBlock_ && numSamples != expectedSidechainSamples_) {        
+    if (sidechainProcessedThisBlock_ && numSamples != expectedSidechainSamples_) {
         // Graceful fallback: disable sidechain for this block
         sidechainActive_ = false;
         sidechainProcessedThisBlock_ = false;
     }
 
-    const size_t need = static_cast<size_t>(numSamples);
+    const bool hasSidechain = sidechainActive_ && sidechainProcessedThisBlock_;
 
-    // Track which channels have data ready (using pre-allocated buffer for RT safety)
-    // Use channelHasData_ which was resized in prepareToPlay()
-    std::fill(channelHasData_.begin(), channelHasData_.end(), static_cast<char>(0));
+    // Blocks longer than maxBlockSize_ are processed in chunks that fit the pre-allocated band buffers.
+    const size_t total = static_cast<size_t>(numSamples);
+    const size_t chunkLimit = static_cast<size_t>(maxBlockSize_);
 
-    bool allChannelsReady = true;
-    
-    // Step 1: push input samples into per-channel input FIFO
-    for (int ch = 0; ch < numChannels; ++ch) {
-        const double* src = buffer.getReadPointer(ch);
-        size_t pushed = 0;
+    for (size_t offset = 0; offset < total; offset += chunkLimit) {
+        const size_t chunk = std::min(chunkLimit, total - offset);
 
-        while (pushed < need) {
-            const size_t space   = internalBlockSize_ - inputFifoFill_[ch];
-            const size_t toCopy  = std::min(space, need - pushed);
-
-            std::copy(src + pushed,
-                      src + pushed + toCopy,
-                      inputFifo_[ch].begin() +
-                          static_cast<ptrdiff_t>(inputFifoFill_[ch]));
-            inputFifoFill_[ch] += toCopy;
-            pushed              += toCopy;
-
-            if (inputFifoFill_[ch] >= internalBlockSize_) {
-                // Extract data from input FIFO into pre-allocated alignedInputBuffers_
-                std::copy(inputFifo_[ch].begin(),
-                              inputFifo_[ch].begin() + static_cast<ptrdiff_t>(internalBlockSize_),
-                              alignedInputBuffers_[ch].begin());
-                channelHasData_[ch] = static_cast<char>(1);
-                inputFifoFill_[ch] = 0;
-            }
-        }
-        
-        // Check if this channel is ready
-        if (!channelHasData_[ch]) {
-            allChannelsReady = false;
-        }
-    }
-    
-    // Step 1.5: Extract sidechain FIFO data if sidechain is active
-    if (sidechainActive_ && sidechainProcessedThisBlock_) {
+        // Step 1: analysis (+ delay compensation) of every input sample of the chunk
         for (int ch = 0; ch < channelNum_; ++ch) {
-            if (scInputFifoFill_[ch] >= internalBlockSize_) {
-                std::copy(scInputFifo_[ch].begin(),
-                          scInputFifo_[ch].begin() + static_cast<ptrdiff_t>(internalBlockSize_),
-                          alignedSidechainBuffers_[ch].begin());
-                scChannelHasData_[ch] = static_cast<char>(1);
-                // Reset sidechain FIFO (simple single-block model)
-                scInputFifoFill_[ch] = 0;
-            }
+            const double* input = ch < numChannels
+                ? buffer.getReadPointer(ch) + offset
+                : silenceBuffer_.data();
+            processChannelAnalysisAndDelay(ch, input, chunk);
         }
-    }
-    
-    // Step 2: If all channels have data, process analysis + delay for all channels
-    if (allChannelsReady) {
-        for (int ch = 0; ch < channelNum_; ++ch) {
-            processChannelAnalysisAndDelay(ch, alignedInputBuffers_[ch]);
-        }
-        
-        // Step 2.25: Process sidechain analysis if active
-        for (int ch = 0; ch < channelNum_; ++ch) {
-            if (scChannelHasData_[ch]) {
-                // Sidechain data is always available when sidechainActive_ and sidechainProcessedThisBlock_ are true
-                processSidechainAnalysisAndDelay(ch, alignedSidechainBuffers_[ch]);
-            }
-        }
-        
-        // Step 2.5: Invoke BandProcessor if registered
-        if (bandProcessor_) {
-            // Reuse cached BandData (pre-allocated, no resize)
-            cachedBandData_.numChannels = channelNum_;
-            cachedBandData_.numBands = static_cast<int>(destinations_.size());
-            cachedBandData_.hasSidechain = sidechainActive_ && sidechainProcessedThisBlock_;
-            cachedBandData_.destinationIds = &destinations_;
 
-            // Populate bands with pointers into per-channel resultsRe_/resultsIm_
+        // Step 1.5: sidechain analysis, if this block comes with a sidechain
+        if (hasSidechain) {
+            if (scStreamPos_ != streamPos_) {
+                alignSidechainPhase();
+            }
             for (int ch = 0; ch < channelNum_; ++ch) {
-                for (size_t b = 0; b < destinations_.size(); ++b) {
-                    int dest = destinations_[b];
-                    size_t numSamplesInBand = cursorsRe_[ch][dest];
-                    cachedBandData_.bands[ch][b].re = resultsRe_[ch][dest].data();
-                    cachedBandData_.bands[ch][b].im = resultsIm_[ch][dest].data();
-                    cachedBandData_.bands[ch][b].numSamples = numSamplesInBand;
-                }
+                processSidechainAnalysisAndDelay(ch, scAdjustedChannels_[static_cast<size_t>(ch)].data() + offset, chunk);
             }
+            scStreamPos_ = streamPos_ + chunk;
+        }
 
-            // Populate sidechainBands if sidechain is active
-            if (cachedBandData_.hasSidechain) {
-                for (int ch = 0; ch < channelNum_; ++ch) {
-                    for (size_t b = 0; b < destinations_.size(); ++b) {
-                        int dest = destinations_[b];
-                        size_t numSamplesInBand = scCursorsRe_[ch][dest];
-                        cachedBandData_.sidechainBands[ch][b].re = scResultsRe_[ch][dest].data();
-                        cachedBandData_.sidechainBands[ch][b].im = scResultsIm_[ch][dest].data();
-                        cachedBandData_.sidechainBands[ch][b].numSamples = numSamplesInBand;
-                    }
-                }
-            }
-
-            // Call BandProcessor
+        // Step 2: invoke the BandProcessor once with the subband samples that became available
+        const bool anyBandSamples = prepareBandData(hasSidechain);
+        if (bandProcessor_ && anyBandSamples) {
             bandProcessor_->processAllBands(cachedBandData_);
         }
-        
-        // Step 3: Synthesis + output averaging for all channels
-        for (int ch = 0; ch < channelNum_; ++ch) {
-            // Use pre-allocated output buffer (clear it first)
-            alignedOutputBuffer_.clear();
-            
-            processChannelSynthesisAndAverage(ch, alignedOutputBuffer_);
 
-            // Append to output FIFO
-            const size_t writePos = outputFifoRead_[ch] + outputFifoFill_[ch];
-            assert(writePos + internalBlockSize_ <= outputFifo_[ch].size() &&
-                   "output FIFO overflow during processBlock append");
-            std::copy(alignedOutputBuffer_.getReadPointer(0),
-                      alignedOutputBuffer_.getReadPointer(0) + static_cast<ptrdiff_t>(internalBlockSize_),
-                      outputFifo_[ch].begin() +
-                          static_cast<ptrdiff_t>(writePos));
-            outputFifoFill_[ch] += internalBlockSize_;
+        // Step 3: synthesis + output averaging for the same span of output ticks
+        for (int ch = 0; ch < channelNum_; ++ch) {
+            double* output = ch < numChannels
+                ? buffer.getWritePointer(ch) + offset
+                : discardBuffer_.data();
+            processChannelSynthesisAndAverage(ch, output, chunk);
         }
+
+        streamPos_ += chunk;
     }
-    
+
     // Reset sidechain state for next block
     sidechainProcessedThisBlock_ = false;
-    for (int ch = 0; ch < numChannels; ++ch) {
-      scChannelHasData_[ch] = static_cast<char>(0);
-    }
-    
-    // Step 4: drain numSamples from the output FIFO into buffer.
-    for (int ch = 0; ch < numChannels; ++ch) {
-        double* dst = buffer.getWritePointer(ch);
-
-        if (outputFifoFill_[ch] >= need) {
-            const size_t rd = outputFifoRead_[ch];
-            std::copy(outputFifo_[ch].begin() + static_cast<ptrdiff_t>(rd),
-                      outputFifo_[ch].begin() + static_cast<ptrdiff_t>(rd + need),
-                      dst);
-            outputFifoRead_[ch]  += need;
-            outputFifoFill_[ch]  -= need;
-
-            // Compact the output FIFO when the read cursor passes internalBlockSize_
-            if (outputFifoRead_[ch] >= internalBlockSize_) {
-                const size_t remaining = outputFifoFill_[ch];
-                std::move(outputFifo_[ch].begin() +
-                              static_cast<ptrdiff_t>(outputFifoRead_[ch]),
-                          outputFifo_[ch].begin() +
-                              static_cast<ptrdiff_t>(outputFifoRead_[ch] + remaining),
-                          outputFifo_[ch].begin());
-                outputFifoRead_[ch] = 0;
-            }
-        } else {
-            // Output not yet ready (startup latency period) — emit silence
-            std::fill(dst, dst + numSamples, 0.0);
-        }
-    }
 }
 
 // Performs analysis filter bank processing for a single block
-void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
+void DTCWPTProcessor::analysisProcess(const double* input,
+                                      size_t numSamples,
                                       AnalysisNodeGroup& nodeGroup,
                                       const AnalysisSchedulerMetadata& metadata,
                                       std::vector<std::vector<double>>& results,
@@ -1112,8 +1039,8 @@ void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
                                       AnalysisRuntimeState& runtime,
                                       AnalysisPathId path,
                                       int channel) {
-    for (int sampleIndex = 0; sampleIndex < static_cast<int>(inputBlock.size()); ++sampleIndex) {
-        const double x = inputBlock[static_cast<size_t>(sampleIndex)];
+    for (int sampleIndex = 0; sampleIndex < static_cast<int>(numSamples); ++sampleIndex) {
+        const double x = input[sampleIndex];
         beginAnalysisSample(runtime);
         recordArrival(runtime, 1, x);
         runtime.frontierInternalWorkItems[0] = AnalysisWorkItem{1, x};
@@ -1237,42 +1164,6 @@ void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
     }
 }
 
-// Performs synthesis filter bank processing
-void DTCWPTProcessor::synthesisProcess(std::vector<std::vector<double>>& analysedData,
-                                       SynthesisNodeGroup& nodeGroup,
-                                       const std::vector<int>& nodeIds,
-                                       std::vector<size_t>& cursors) {
-    const size_t nodeCount = std::min(nodeIds.size(), nodeGroup.nodes.size());
-    for (size_t i = 0; i < nodeCount; ++i) {
-        int nodeId = nodeIds[i];
-        int leftChildId = nodeId << 1;
-        int rightChildId = (nodeId << 1) | 1;
-
-        // Get buffers, skip if empty
-        if (analysedData[leftChildId].empty() || analysedData[rightChildId].empty()) {
-            continue;
-        }
-        if (analysedData[nodeId].empty()) {
-            continue;
-        }
-
-        std::vector<double>& lowBuf = analysedData[leftChildId];
-        std::vector<double>& highBuf = analysedData[rightChildId];
-        std::vector<double>& outBuf = analysedData[nodeId];
-
-        size_t numSamples = cursors[static_cast<size_t>(leftChildId)];
-        size_t writeCursor = cursors[static_cast<size_t>(nodeId)];
-
-        nodeGroup.nodes[i].synthesizeBlock(lowBuf, highBuf, outBuf, writeCursor, numSamples);
-
-#if DTCWPT_ENABLE_TEST_SEAMS
-        workCounters_.synthesisOutputSamples += 2 * numSamples;
-#endif
-
-        cursors[static_cast<size_t>(nodeId)] = writeCursor + 2 * numSamples;
-    }
-}
-
 int DTCWPTProcessor::getNodeLevel(int nodeId) {
     if (nodeId <= 0) {
         return -1;
@@ -1287,8 +1178,8 @@ int DTCWPTProcessor::getNodeLevel(int nodeId) {
 }
 
 int DTCWPTProcessor::getLatency() const {
-    // DT-CWPT path delay + input FIFO buffering latency
-    return maxDelay_ + static_cast<int>(internalBlockSize_);
+    // The engine is streaming: the only latency is the DT-CWPT path delay.
+    return maxDelay_;
 }
 
 } // namespace dtcwpt

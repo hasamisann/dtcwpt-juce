@@ -440,7 +440,7 @@ Initializes the processor with given parameters. Must be called before processin
 void processBlock(juce::AudioBuffer<double>& buffer);
 ```
 
-Processes an audio block. Accepts any buffer size; an internal FIFO handles block-size adaptation automatically.
+Processes an audio block. Accepts any buffer size. The engine is streaming: it analyses every input sample as it arrives and synthesises the output samples of the same time span. The work of a call is proportional to the block length and is spread evenly over host callbacks, independent of the host buffer size and of the topology depth. `BandProcessor::processAllBands()` is called at most once per call (only when subband samples became available); the number of samples per band depends on the band level and on the position in the stream and can be zero for some bands. Blocks longer than the `maxBlockSize` passed to `prepareToPlay()` are processed internally in chunks of at most `maxBlockSize` samples.
 
 ---
 
@@ -448,7 +448,7 @@ Processes an audio block. Accepts any buffer size; an internal FIFO handles bloc
 int getLatency() const;
 ```
 
-Returns the processing latency in samples. Use this for host latency compensation.
+Returns the processing latency in samples. Use this for host latency compensation. The value is the filter-path delay of the topology (the largest delay over all destinations) and does not depend on the host buffer size (`maxBlockSize`).
 
 ---
 
@@ -464,7 +464,7 @@ Registers a band processor (takes ownership). If `prepareToPlay()` was already c
 void processSidechain(juce::AudioBuffer<double>& sidechainBuffer);
 ```
 
-Feeds sidechain audio for parallel CWPT analysis. Must be called with the same sample count as the main `processBlock()` call, and must be called before `processBlock()` for the same block.
+Feeds sidechain audio for parallel CWPT analysis. Must be called with the same sample count as the main `processBlock()` call, and must be called before `processBlock()` for the same block. The sample count must not exceed the `maxBlockSize` passed to `prepareToPlay()`; a longer sidechain block is ignored.
 
 ---
 
@@ -496,6 +496,8 @@ public:
 ```
 
 Abstract interface for user-defined subband processing. See [Band Processing](#band-processing) for usage details.
+
+`maxSamplesPerBand` in `prepare()` is the upper limit on the number of samples passed for one band in a single `processAllBands()` call (`ceil(maxBlockSize / 2^minDestinationLevel)`). `numSamples` varies from call to call and can be 0.
 
 ---
 

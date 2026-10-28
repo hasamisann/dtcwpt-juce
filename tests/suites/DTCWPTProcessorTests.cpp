@@ -1158,8 +1158,10 @@ private:
             const auto alternate = runSnapshotScenario(config, input, std::nullopt, plan);
             juce::String failureMessage;
 
-            expectEquals(alternate.bandProcessCalls, reference.bandProcessCalls,
-                         "Equivalent host segmentations should keep the same number of analysis arrivals");
+            // The BandProcessor is invoked once per host block, so the number of calls follows the
+            // segmentation; the concatenated band samples compared below must still be identical.
+            expectEquals(alternate.bandProcessCalls, static_cast<int>(plan.blockSizes.size()),
+                         "Each host block should yield one BandProcessor call");
             expect(RegressionFixtures::compareSegmentationInvariantResults(reference.mainSnapshots,
                                                                            alternate.mainSnapshots,
                                                                            reference.quantizedOutput,

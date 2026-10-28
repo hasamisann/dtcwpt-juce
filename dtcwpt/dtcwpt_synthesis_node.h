@@ -56,6 +56,20 @@ public:
                          size_t numSamples);
 
     /**
+     * @brief Advances the node by one output sample.
+     *
+     * Pushes one sample into each synthesis filter and returns the summed filter
+     * outputs. The caller supplies zeros on the zero-inserted (odd) output
+     * samples, so calling this twice with (low, high) and (0, 0) is equivalent to
+     * one iteration of synthesizeBlock().
+     *
+     * @param lowIn Low subband input (or 0 on an upsampled sample)
+     * @param highIn High subband input (or 0 on an upsampled sample)
+     * @return Output sample
+     */
+    double processTick(double lowIn, double highIn);
+
+    /**
      * @brief Returns the low-pass filter delay.
      * @return Delay in samples
      */

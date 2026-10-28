@@ -428,6 +428,9 @@ private:
         setThresholdsDb (*reference, { -6.0f, -18.0f, -36.0f, -48.0f });
         setBypassLowestBand (*reference, true);
 
+        // The engine reports its output from the first block on, so the restored parameter values matter here.
+        // Parameter changes reach the saved ValueTree only on a flush, which copyState() performs.
+        (void) reference->getAPVTS().copyState();
         const auto state = captureState (*reference);
         auto restored = std::make_unique<GateAudioProcessor>();
         restored->setStateInformation (state.getData(), static_cast<int> (state.getSize()));

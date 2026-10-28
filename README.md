@@ -433,7 +433,7 @@ void prepareToPlay(double sampleRate, int maxBlockSize,
 void processBlock(juce::AudioBuffer<double>& buffer);
 ```
 
-オーディオブロックを処理します。任意のバッファサイズを受け付け、内部 FIFO がブロックサイズの適応を自動的に処理します。
+オーディオブロックを処理します。任意のバッファサイズを受け付けます。エンジンはストリーミング方式で、入力サンプルをそのたびに解析し、同じ区間の出力サンプルを合成します。1 回の呼び出しの処理量は渡したブロック長に比例し、ホストのバッファサイズやトポロジーの深さによらず各コールバックに均等に配分されます。`BandProcessor::processAllBands()` は 1 回の呼び出しにつき（サブバンドサンプルが得られた場合のみ）1 回呼ばれ、バンドごとのサンプル数はバンドのレベルと呼び出し位置によって異なります（0 になるバンドもあります）。`prepareToPlay()` に渡した `maxBlockSize` より長いブロックは、内部で `maxBlockSize` 以下のチャンクに分けて処理されます。
 
 ---
 
@@ -441,7 +441,7 @@ void processBlock(juce::AudioBuffer<double>& buffer);
 int getLatency() const;
 ```
 
-サンプル数での処理レイテンシーを返します。ホストのレイテンシー補償に使用してください。
+サンプル数での処理レイテンシーを返します。ホストのレイテンシー補償に使用してください。値はトポロジーのフィルタ経路遅延（各デスティネーションまでの最大遅延）で決まり、ホストのバッファサイズ（`maxBlockSize`）には依存しません。
 
 ---
 
@@ -457,7 +457,7 @@ void setBandProcessor(std::unique_ptr<BandProcessor> processor);
 void processSidechain(juce::AudioBuffer<double>& sidechainBuffer);
 ```
 
-パラレル CWPT 解析のためにサイドチェーンオーディオを入力します。メインの `processBlock()` と同じサンプル数で呼び出す必要があり、同じブロックの `processBlock()` の前に呼び出す必要があります。
+パラレル CWPT 解析のためにサイドチェーンオーディオを入力します。メインの `processBlock()` と同じサンプル数で呼び出す必要があり、同じブロックの `processBlock()` の前に呼び出す必要があります。サンプル数は `prepareToPlay()` の `maxBlockSize` 以下でなければならず、超えた場合そのブロックのサイドチェーンは無視されます。
 
 ---
 
@@ -489,6 +489,8 @@ public:
 ```
 
 ユーザー定義サブバンド処理のための抽象インターフェース。使用方法の詳細は[バンド処理](#バンド処理)を参照してください。
+
+`prepare()` の `maxSamplesPerBand` は、1 回の `processAllBands()` で 1 つのバンドに渡されるサンプル数の上限（`ceil(maxBlockSize / 2^最小デスティネーションレベル)`）です。`numSamples` は呼び出しごとに変わり、0 になることもあります。
 
 ---
 
