@@ -24,6 +24,7 @@
  */
 
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -36,6 +37,14 @@ struct TopologyState
 
     /** Set by the GUI thread after a topology change; cleared by the audio thread. */
     std::atomic<bool> dirty { false };
+
+#if DTCWPT_ENABLE_TEST_SEAMS
+    /**
+     * Test seam: invoked by tryConsume() after the destinations were copied out and
+     * before the dirty flag is cleared, so tests can inject a request at that point.
+     */
+    std::function<void()> afterCopyHookForTest;
+#endif
 
     //==============================================================================
     // API
@@ -79,6 +88,10 @@ struct TopologyState
             std::lock_guard<std::mutex> lock (mutex);
             out = destinations;
         }
+#if DTCWPT_ENABLE_TEST_SEAMS
+        if (afterCopyHookForTest)
+            afterCopyHookForTest();
+#endif
         dirty.store (false, std::memory_order_release);
         return true;
     }

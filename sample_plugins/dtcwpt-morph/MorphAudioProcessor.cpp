@@ -388,6 +388,22 @@ std::vector<std::string> MorphAudioProcessor::getStoredTopologyDestinations() co
     return topology::resolvePersistedTopology (apvts_.state, currentDestinations_).destinations;
 }
 
+bool MorphAudioProcessor::requestTopologyChange (const std::vector<std::string>& destinations)
+{
+    topoState_.requestChange (destinations);
+    return true;
+}
+
+std::vector<std::string> MorphAudioProcessor::getCommittedTopology() const
+{
+    return getStoredTopologyDestinations();
+}
+
+std::uint64_t MorphAudioProcessor::getTopologyGeneration() const noexcept
+{
+    return 0;
+}
+
 bool MorphAudioProcessor::applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations) noexcept
 {
     return tryApplyTopologyCandidate (candidateDestinations);

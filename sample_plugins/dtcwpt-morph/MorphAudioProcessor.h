@@ -29,6 +29,7 @@
 #include "../common/AnalyzerLatencyAligner.h"
 
 // Standard library
+#include <cstdint>
 #include <memory>
 #include <array>
 #include <string>
@@ -265,6 +266,11 @@ public:
      * processor's in-memory destination list when the property is missing or invalid.
      */
     std::vector<std::string> getStoredTopologyDestinations() const;
+
+    // Topology API (thin forwarding layer over the current TopologyState implementation).
+    bool requestTopologyChange (const std::vector<std::string>& destinations);
+    std::vector<std::string> getCommittedTopology() const;
+    std::uint64_t getTopologyGeneration() const noexcept;
 
     bool applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations) noexcept;
     bool rebuildPendingTopologyForTest() noexcept;

@@ -344,6 +344,22 @@ std::vector<std::string> GateAudioProcessor::getStoredTopologyDestinations() con
     return topology::resolvePersistedTopology (apvts_.state, currentDestinations_).destinations;
 }
 
+bool GateAudioProcessor::requestTopologyChange (const std::vector<std::string>& destinations)
+{
+    topoState_.requestChange (destinations);
+    return true;
+}
+
+std::vector<std::string> GateAudioProcessor::getCommittedTopology() const
+{
+    return getStoredTopologyDestinations();
+}
+
+std::uint64_t GateAudioProcessor::getTopologyGeneration() const noexcept
+{
+    return 0;
+}
+
 bool GateAudioProcessor::applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations) noexcept
 {
     return tryApplyTopologyCandidate (candidateDestinations);

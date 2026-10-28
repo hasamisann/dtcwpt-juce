@@ -30,6 +30,7 @@
 #include "../common/AnalyzerLatencyAligner.h"
 
 // Standard library
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -172,6 +173,11 @@ public:
 
     /** @brief Resolves topology destinations persisted in APVTS state. */
     std::vector<std::string> getStoredTopologyDestinations() const;
+
+    // Topology API (thin forwarding layer over the current TopologyState implementation).
+    bool requestTopologyChange (const std::vector<std::string>& destinations);
+    std::vector<std::string> getCommittedTopology() const;
+    std::uint64_t getTopologyGeneration() const noexcept;
 
     bool applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations) noexcept;
     const std::vector<std::string>& getCommittedDestinationsForTest() const noexcept { return currentDestinations_; }
