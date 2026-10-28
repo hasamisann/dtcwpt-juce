@@ -126,6 +126,7 @@ bool MorphAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::stri
 
         dtcwptMain_ = std::move (newEngine);
         morphProcessor_ = observedMorphProcessor;
+        inputStreamPosition_ = 0; // the new engine starts with an empty input stream
         currentDestinations_ = candidateDestinations;
         analyzerInputAligner_ = std::move (newAnalyzerAligner);
         analyzerInputAlignerMaxDelay_ = newAnalyzerMaxDelay;
@@ -190,7 +191,8 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                   static_cast<double> (phaseF),
                                   threshLinear,
                                   bypassLow,
-                                  bypassHigh);
+                                  bypassHigh,
+                                  inputStreamPosition_);
 
 
     // -------------------------------------------------------------------------
@@ -256,6 +258,7 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // 7. Process main audio
     // -------------------------------------------------------------------------
     dtcwptMain_->processBlock (mainDoubleBuffer_);
+    inputStreamPosition_ += numSamples;
 
     // -------------------------------------------------------------------------
     // 8. Convert double output → float main buffer (channels 0 & 1 only)

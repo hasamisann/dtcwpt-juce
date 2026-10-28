@@ -29,6 +29,7 @@ target_sources(DtcwptMorph
         MorphAudioProcessorEditor.cpp
         MorphBandProcessor.h
         MorphBandProcessor.cpp
+        TimedLinearRamp.h
         TopologyState.h
         SpectrumDataBridge.h
         SpectrumDataBridge.cpp

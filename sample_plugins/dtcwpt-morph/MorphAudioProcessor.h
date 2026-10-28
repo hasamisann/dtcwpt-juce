@@ -114,7 +114,7 @@ public:
      *
      * Per-block operations (in order):
      *  1. Topology dirty check — if set, rebuild DTCWPTProcessor and update latency.
-     *  2. Read APVTS atomic floats; call morphProcessor_->setTargets().
+     *  2. Read APVTS atomic floats; call morphProcessor_->setTargets() with the input stream position.
      *  3. Convert float main buffer → double mainDoubleBuffer_.
      *  4. Build sidechain double buffer (bus 1 if enabled, else copy of main).
      *  5. dtcwptMain_->processSidechain(scDoubleBuffer_).
@@ -372,6 +372,13 @@ private:
 
     /** Current maximum block size (cached from prepareToPlay). */
     int currentBlockSize_ { 512 };
+
+    /**
+     * Host samples fed to the current engine so far (the engine's input stream
+     * position). Timestamps parameter changes for MorphBandProcessor::setTargets().
+     * Restarts at 0 whenever a new engine is committed.
+     */
+    std::int64_t inputStreamPosition_ { 0 };
 
     /** Tracks whether a valid topology has already been committed into the engine. */
     bool hasCommittedValidTopology_ { false };
