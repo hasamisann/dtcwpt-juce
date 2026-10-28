@@ -1274,4 +1274,8 @@ int DTCWPTProcessor::getLatency() const {
     return maxDelay_ + static_cast<int>(internalBlockSize_);
 }
 
+int DTCWPTProcessor::getTailLengthSamples() const {
+    return 0;
+}
+
 } // namespace dtcwpt

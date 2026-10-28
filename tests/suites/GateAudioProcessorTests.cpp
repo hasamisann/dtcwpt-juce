@@ -43,6 +43,9 @@ public:
 
         beginTest ("Gate rejects valid core topology beyond depth-8 limit");
         testGateRejectsValidCoreTopologyBeyondDepthEightLimit();
+
+        beginTest ("getTailLengthSeconds reports the filter bank tail past the latency");
+        testTailLengthSecondsReportsFilterBankTail();
     }
 
 private:
@@ -621,6 +624,53 @@ private:
         expectEquals (juce::String (topology::getLastInvalidTopologyDiagnosticCategoryForTest()),
                       juce::String (topology::invalidTopologyDiagnosticCategory()),
                       "Depth-limit rejection should use the shared invalid-topology diagnostic category");
+    }
+
+    void testTailLengthSecondsReportsFilterBankTail()
+    {
+        GateAudioProcessor unprepared;
+        expectEquals (unprepared.getTailLengthSeconds(), 0.0,
+                      "A processor that has not been prepared has no tail");
+
+        const auto engineTailSamples = [] (const std::vector<std::string>& destinations, double sampleRate)
+        {
+            dtcwpt::TopologyConfig config;
+            config.destinations = destinations;
+            config.maxDepth = dtcwpt::topology_limits::kSupportedMaxDepth;
+            dtcwpt::DTCWPTProcessor engine;
+            engine.prepareToPlay (sampleRate, kDefaultBlockSize, config, 2);
+            return engine.getTailLengthSamples();
+        };
+
+        auto processor = createPreparedProcessor();
+        const double sampleRate = TestUtils::TestConfig::SAMPLE_RATE;
+        const double defaultTail = processor->getTailLengthSeconds();
+
+        expect (defaultTail > 0.0,
+                "Subband processing rings after the reported latency, so the tail must not be zero");
+        expectWithinAbsoluteError (defaultTail,
+                                   static_cast<double> (engineTailSamples (getDefaultTopology(), sampleRate)) / sampleRate,
+                                   1.0e-12,
+                                   "Tail seconds must be the engine tail converted at the host sample rate");
+
+        std::vector<std::string> deeperTopology;
+        for (int level = 0; level < 8; ++level)
+            deeperTopology.push_back (std::string (static_cast<size_t> (level), 'L') + "H");
+        deeperTopology.push_back (std::string (8, 'L'));
+
+        expect (processor->applyTopologyCandidateForTest (deeperTopology), "Deeper topology should be accepted");
+        const double deeperTail = processor->getTailLengthSeconds();
+        expect (deeperTail > defaultTail, "A deeper topology rings longer");
+        expectWithinAbsoluteError (deeperTail,
+                                   static_cast<double> (engineTailSamples (deeperTopology, sampleRate)) / sampleRate,
+                                   1.0e-12,
+                                   "Tail seconds must follow the committed topology");
+
+        processor->prepareToPlay (2.0 * sampleRate, kDefaultBlockSize);
+        expectWithinAbsoluteError (processor->getTailLengthSeconds(),
+                                   static_cast<double> (engineTailSamples (deeperTopology, 2.0 * sampleRate)) / (2.0 * sampleRate),
+                                   1.0e-12,
+                                   "Tail seconds must be converted at the new sample rate");
     }
 };
 

@@ -74,6 +74,11 @@ public:
     int getLatency() const;
 
     /**
+     * @brief Placeholder (red step): tail length is not implemented yet.
+     */
+    int getTailLengthSamples() const;
+
+    /**
      * @brief Register a band processor. Takes ownership.
      *
      * If prepareToPlay() was already called, immediately calls prepare() on the processor.
