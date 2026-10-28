@@ -110,6 +110,13 @@ bool MorphAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::stri
         config.maxDepth = dtcwpt::topology_limits::kSupportedMaxDepth;
 
         auto newEngine = std::make_unique<dtcwpt::DTCWPTProcessor>();
+#if DTCWPT_ENABLE_TEST_SEAMS
+        if (engineBuildFailuresRemainingForTest_ > 0)
+        {
+            --engineBuildFailuresRemainingForTest_;
+            newEngine->setPrepareCandidateFailpointForTesting (engineBuildFailpointForTest_);
+        }
+#endif
         auto newMorphProcessor = std::make_unique<MorphBandProcessor>();
         auto* const observedMorphProcessor = newMorphProcessor.get();
         newEngine->setBandProcessor (std::move (newMorphProcessor));

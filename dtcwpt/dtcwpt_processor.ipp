@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <new>
 #include <set>
 #include <stdexcept>
 
@@ -311,6 +312,11 @@ DTCWPTProcessor::DTCWPTProcessor()
 void DTCWPTProcessor::setPrepareCandidateFailpointForTesting(PrepareCandidateFailpoint failpoint) noexcept
 {
     prepareCandidateFailpoint_ = failpoint;
+}
+
+void DTCWPTProcessor::setAnalysisFaultForTesting(AnalysisFaultForTesting fault) noexcept
+{
+    analysisFaultForTesting_ = fault;
 }
 
 void DTCWPTProcessor::setAnalysisTraceSinkForTesting(AnalysisTraceSink* sink) noexcept
@@ -616,6 +622,10 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
     if (prepareCandidateFailpoint_ == PrepareCandidateFailpoint::beforeCommit) {
         prepareCandidateFailpoint_ = PrepareCandidateFailpoint::none;
         throw std::runtime_error("prepare candidate failpoint");
+    }
+    if (prepareCandidateFailpoint_ == PrepareCandidateFailpoint::beforeCommitBadAlloc) {
+        prepareCandidateFailpoint_ = PrepareCandidateFailpoint::none;
+        throw std::bad_alloc();
     }
 #endif
 
@@ -1114,7 +1124,12 @@ void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
         while (runtime.frontierSize > 0) {
             const AnalysisWorkItem workItem = dequeueInternalArrival(runtime);
             const int nodeId = workItem.nodeId;
-            const int internalIndex = metadata.nodeIdToInternalIndex[static_cast<size_t>(nodeId)];
+            int internalIndex = metadata.nodeIdToInternalIndex[static_cast<size_t>(nodeId)];
+#if DTCWPT_ENABLE_TEST_SEAMS
+            if (analysisFaultForTesting_ == AnalysisFaultForTesting::internalNodeLookup) {
+                internalIndex = -1;
+            }
+#endif
             if (internalIndex < 0 || static_cast<size_t>(internalIndex) >= nodeGroup.nodes.size()) {
                 throw std::runtime_error("analysis internal node lookup failed");
             }
@@ -1198,6 +1213,11 @@ void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
             }
 
             size_t cursor = cursors[static_cast<size_t>(destId)];
+#if DTCWPT_ENABLE_TEST_SEAMS
+            if (analysisFaultForTesting_ == AnalysisFaultForTesting::cursorOverflow) {
+                cursor = results[destId].size();
+            }
+#endif
             if (cursor >= results[destId].size()) {
                 throw std::runtime_error("analysis cursor overflow");
             }

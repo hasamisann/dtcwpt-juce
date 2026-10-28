@@ -97,10 +97,19 @@ public:
 #if DTCWPT_ENABLE_TEST_SEAMS
     enum class PrepareCandidateFailpoint {
         none,
-        beforeCommit,
+        beforeCommit,          ///< throws std::runtime_error
+        beforeCommitBadAlloc,  ///< throws std::bad_alloc
+    };
+
+    /// Faults forced into analysisProcess() to exercise its internal-inconsistency fallbacks.
+    enum class AnalysisFaultForTesting {
+        none,
+        internalNodeLookup,  ///< every internal-node lookup reports "not found"
+        cursorOverflow,      ///< every destination write reports a full result buffer
     };
 
     void setPrepareCandidateFailpointForTesting(PrepareCandidateFailpoint failpoint) noexcept;
+    void setAnalysisFaultForTesting(AnalysisFaultForTesting fault) noexcept;
     void setAnalysisTraceSinkForTesting(AnalysisTraceSink* sink) noexcept;
 #endif
 
@@ -223,6 +232,7 @@ private:
 
 #if DTCWPT_ENABLE_TEST_SEAMS
     PrepareCandidateFailpoint prepareCandidateFailpoint_ = PrepareCandidateFailpoint::none;
+    AnalysisFaultForTesting analysisFaultForTesting_ = AnalysisFaultForTesting::none;
     AnalysisTraceSink* analysisTraceSink_ = nullptr;
 #endif
 

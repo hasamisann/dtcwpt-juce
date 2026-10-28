@@ -277,6 +277,23 @@ public:
     bool consumeSpectrumSnapshotForTest (std::array<float, SpectrumDataBridge::kSlotSize>& inputOut,
                                          std::array<float, SpectrumDataBridge::kSlotSize>& outputOut);
 
+#if DTCWPT_ENABLE_TEST_SEAMS
+    /**
+     * @brief Makes the next @p count engine constructions fail with @p failpoint.
+     *
+     * Each construction attempt (candidate or fallback default topology) consumes one count.
+     */
+    void failNextEngineBuildsForTest (dtcwpt::DTCWPTProcessor::PrepareCandidateFailpoint failpoint,
+                                      int count) noexcept
+    {
+        engineBuildFailpointForTest_ = failpoint;
+        engineBuildFailuresRemainingForTest_ = count;
+    }
+#endif
+
+    /** Placeholder until engine availability is tracked. */
+    bool isEngineAvailable() const noexcept { return true; }
+
 private:
     //==============================================================================
     // Private helpers
@@ -375,6 +392,12 @@ private:
 
     /** Tracks whether a valid topology has already been committed into the engine. */
     bool hasCommittedValidTopology_ { false };
+
+#if DTCWPT_ENABLE_TEST_SEAMS
+    dtcwpt::DTCWPTProcessor::PrepareCandidateFailpoint engineBuildFailpointForTest_
+        { dtcwpt::DTCWPTProcessor::PrepareCandidateFailpoint::none };
+    int engineBuildFailuresRemainingForTest_ { 0 };
+#endif
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MorphAudioProcessor)
 };

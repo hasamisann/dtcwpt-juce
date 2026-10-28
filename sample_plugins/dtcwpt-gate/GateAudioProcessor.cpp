@@ -96,6 +96,13 @@ bool GateAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::strin
         config.maxDepth = kGateTopologyMaxDepth;
 
         auto newEngine = std::make_unique<dtcwpt::DTCWPTProcessor>();
+#if DTCWPT_ENABLE_TEST_SEAMS
+        if (engineBuildFailuresRemainingForTest_ > 0)
+        {
+            --engineBuildFailuresRemainingForTest_;
+            newEngine->setPrepareCandidateFailpointForTesting (engineBuildFailpointForTest_);
+        }
+#endif
         auto newGateProcessor = std::make_unique<GateBandProcessor>();
         auto* const observedGateProcessor = newGateProcessor.get();
         newEngine->setBandProcessor (std::move (newGateProcessor));
