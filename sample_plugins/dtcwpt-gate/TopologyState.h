@@ -26,6 +26,7 @@
 #include <atomic>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 #if DTCWPT_ENABLE_TEST_SEAMS
  #include <new>
@@ -59,20 +60,32 @@ struct TopologyState
      * @brief Store new destinations and mark the state as dirty.
      *
      * Called on the **GUI thread** after the user edits the topology tree.
-     * Locks `mutex`, copies `newDestinations` into the internal vector, then
-     * atomically sets `dirty = true`.
+     * Copies `newDestinations` first (so nothing is modified if the copy fails), then
+     * locks `mutex`, swaps the copy in, and atomically sets `dirty = true`.
+     *
+     * Never throws. If allocation or locking fails, the previously stored destinations and
+     * the `dirty` flag are left exactly as they were.
      *
      * @param newDestinations New set of destination path strings (e.g., {"H","LH","LL"}).
+     * @return `true` if the request was stored; `false` if it failed and nothing changed.
      */
     bool requestChange (const std::vector<std::string>& newDestinations) noexcept
     {
+        try
         {
-            std::lock_guard<std::mutex> lock (mutex);
-            throwInjectedFailureIfAny();
-            destinations = newDestinations;
+            std::vector<std::string> copy (newDestinations);
+            {
+                std::lock_guard<std::mutex> lock (mutex);
+                throwInjectedFailureIfAny();
+                destinations.swap (copy);
+            }
+            dirty.store (true, std::memory_order_release);
+            return true;
         }
-        dirty.store (true, std::memory_order_release);
-        return true;
+        catch (...)
+        {
+            return false;
+        }
     }
 
     /**
@@ -83,6 +96,9 @@ struct TopologyState
      * `dirty`, and returns `true`. If `dirty` is false, returns immediately
      * without locking.
      *
+     * Never throws. If copying or locking fails, `out` is not modified, `dirty` stays set
+     * (the request is not lost) and `false` is returned, so the next call retries.
+     *
      * @param out  Receives the new destinations if the flag was set.
      * @return     `true` if a new topology was consumed; `false` otherwise.
      */
@@ -91,13 +107,22 @@ struct TopologyState
         if (! dirty.load (std::memory_order_acquire))
             return false;
 
+        try
         {
-            std::lock_guard<std::mutex> lock (mutex);
-            throwInjectedFailureIfAny();
-            out = destinations;
+            std::vector<std::string> copy;
+            {
+                std::lock_guard<std::mutex> lock (mutex);
+                throwInjectedFailureIfAny();
+                copy = destinations;
+            }
+            out = std::move (copy);
+            dirty.store (false, std::memory_order_release);
+            return true;
         }
-        dirty.store (false, std::memory_order_release);
-        return true;
+        catch (...)
+        {
+            return false;
+        }
     }
 
     //==============================================================================

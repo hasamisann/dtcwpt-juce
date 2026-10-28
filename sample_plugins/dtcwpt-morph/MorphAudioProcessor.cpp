@@ -97,59 +97,84 @@ void MorphAudioProcessor::releaseResources()
 
 void MorphAudioProcessor::rebuildDTCWPT()
 {
-    if (! tryApplyPendingTopologyCandidate())
-        (void) tryApplyTopologyCandidate (currentDestinations_);
+    if (tryApplyPendingTopologyCandidate() || tryApplyTopologyCandidate (currentDestinations_))
+        return;
+
+    // An engine left over from an earlier prepareToPlay() was built for the previous sample
+    // rate / block size, so it must not keep processing audio with the new settings.
+    dtcwptMain_.reset();
+    morphProcessor_ = nullptr;
+    engineAvailable_.store (false, std::memory_order_release);
+}
+
+void MorphAudioProcessor::buildAndCommitTopology (const std::vector<std::string>& candidateDestinations)
+{
+    dtcwpt::TopologyConfig config;
+    config.destinations = candidateDestinations;
+    config.maxDepth = dtcwpt::topology_limits::kSupportedMaxDepth;
+
+    auto newEngine = std::make_unique<dtcwpt::DTCWPTProcessor>();
+#if DTCWPT_ENABLE_TEST_SEAMS
+    if (engineBuildFailuresRemainingForTest_ > 0)
+    {
+        --engineBuildFailuresRemainingForTest_;
+        newEngine->setPrepareCandidateFailpointForTesting (engineBuildFailpointForTest_);
+    }
+#endif
+    auto newMorphProcessor = std::make_unique<MorphBandProcessor>();
+    auto* const observedMorphProcessor = newMorphProcessor.get();
+    newEngine->setBandProcessor (std::move (newMorphProcessor));
+    newEngine->prepareToPlay (currentSampleRate_, currentBlockSize_, config, 2);
+
+    const int newLatency = newEngine->getLatency();
+    const int newAnalyzerMaxDelay = std::max (analyzerInputAlignerMaxDelay_, newLatency);
+
+    AnalyzerLatencyAligner newAnalyzerAligner;
+    newAnalyzerAligner.prepare (currentBlockSize_, newAnalyzerMaxDelay);
+    newAnalyzerAligner.setDelaySamples (newLatency);
+
+    auto newDestinations = candidateDestinations;
+    const auto serializedTopology = topology::serializeTopologyDestinations (candidateDestinations);
+
+    // Everything above may throw and has not touched the committed state yet. The property write
+    // is the only fallible step below, so it goes first; the rest only moves objects.
+    apvts_.state.setProperty (topology::kTopologyPropertyKey, serializedTopology, nullptr);
+
+    dtcwptMain_ = std::move (newEngine);
+    morphProcessor_ = observedMorphProcessor;
+    currentDestinations_ = std::move (newDestinations);
+    analyzerInputAligner_ = std::move (newAnalyzerAligner);
+    analyzerInputAlignerMaxDelay_ = newAnalyzerMaxDelay;
+    hasCommittedValidTopology_ = true;
+    engineAvailable_.store (true, std::memory_order_release);
+    setLatencySamples (newLatency);
 }
 
 bool MorphAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::string>& candidateDestinations) noexcept
 {
     try
     {
-        dtcwpt::TopologyConfig config;
-        config.destinations = candidateDestinations;
-        config.maxDepth = dtcwpt::topology_limits::kSupportedMaxDepth;
-
-        auto newEngine = std::make_unique<dtcwpt::DTCWPTProcessor>();
-#if DTCWPT_ENABLE_TEST_SEAMS
-        if (engineBuildFailuresRemainingForTest_ > 0)
-        {
-            --engineBuildFailuresRemainingForTest_;
-            newEngine->setPrepareCandidateFailpointForTesting (engineBuildFailpointForTest_);
-        }
-#endif
-        auto newMorphProcessor = std::make_unique<MorphBandProcessor>();
-        auto* const observedMorphProcessor = newMorphProcessor.get();
-        newEngine->setBandProcessor (std::move (newMorphProcessor));
-        newEngine->prepareToPlay (currentSampleRate_, currentBlockSize_, config, 2);
-
-        const int newLatency = newEngine->getLatency();
-        const int newAnalyzerMaxDelay = std::max (analyzerInputAlignerMaxDelay_, newLatency);
-
-        AnalyzerLatencyAligner newAnalyzerAligner;
-        newAnalyzerAligner.prepare (currentBlockSize_, newAnalyzerMaxDelay);
-        newAnalyzerAligner.setDelaySamples (newLatency);
-
-        const auto serializedTopology = topology::serializeTopologyDestinations (candidateDestinations);
-
-        dtcwptMain_ = std::move (newEngine);
-        morphProcessor_ = observedMorphProcessor;
-        currentDestinations_ = candidateDestinations;
-        analyzerInputAligner_ = std::move (newAnalyzerAligner);
-        analyzerInputAlignerMaxDelay_ = newAnalyzerMaxDelay;
-        apvts_.state.setProperty (topology::kTopologyPropertyKey, serializedTopology, nullptr);
-        setLatencySamples (newLatency);
-        hasCommittedValidTopology_ = true;
+        buildAndCommitTopology (candidateDestinations);
         return true;
     }
     catch (const std::invalid_argument&)
     {
         topology::emitInvalidTopologyDiagnostic ("Morph");
-
-        if (! hasCommittedValidTopology_)
-            return tryApplyTopologyCandidate (kDefaultTopology);
-
-        return false;
     }
+    catch (...)
+    {
+        // std::bad_alloc, std::length_error, ... : the committed state was not touched, so the
+        // previous engine, topology, property and latency all stay in place.
+    }
+
+    // Without any committed topology there is nothing to fall back on, so try the built-in default.
+    if (! hasCommittedValidTopology_ && candidateDestinations != kDefaultTopology)
+        return tryApplyTopologyCandidate (kDefaultTopology);
+
+    if (dtcwptMain_ == nullptr)
+        engineAvailable_.store (false, std::memory_order_release);
+
+    return false;
 }
 
 bool MorphAudioProcessor::tryApplyPendingTopologyCandidate() noexcept
@@ -170,9 +195,12 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 {
     juce::ScopedNoDenormals noDenormals;
 
-    // Safety check: processor must be prepared
+    // No usable engine (not prepared, or construction failed): mute instead of passing the input through.
     if (dtcwptMain_ == nullptr || morphProcessor_ == nullptr)
+    {
+        buffer.clear();
         return;
+    }
 
     const int numSamples  = buffer.getNumSamples();
     const int numChannels = buffer.getNumChannels();

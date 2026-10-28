@@ -84,49 +84,61 @@ void GateAudioProcessor::releaseResources()
 
 void GateAudioProcessor::rebuildDTCWPT()
 {
-    (void) tryApplyTopologyCandidate (currentDestinations_);
+    if (tryApplyTopologyCandidate (currentDestinations_))
+        return;
+
+    // An engine left over from an earlier prepareToPlay() was built for the previous sample
+    // rate / block size, so it must not keep processing audio with the new settings.
+    dtcwptMain_.reset();
+    gateProcessor_ = nullptr;
+    engineAvailable_.store (false, std::memory_order_release);
+}
+
+void GateAudioProcessor::buildAndCommitTopology (const std::vector<std::string>& destinations)
+{
+    dtcwpt::TopologyConfig config;
+    config.destinations = destinations;
+    config.maxDepth = kGateTopologyMaxDepth;
+
+    auto newEngine = std::make_unique<dtcwpt::DTCWPTProcessor>();
+#if DTCWPT_ENABLE_TEST_SEAMS
+    if (engineBuildFailuresRemainingForTest_ > 0)
+    {
+        --engineBuildFailuresRemainingForTest_;
+        newEngine->setPrepareCandidateFailpointForTesting (engineBuildFailpointForTest_);
+    }
+#endif
+    auto newGateProcessor = std::make_unique<GateBandProcessor>();
+    auto* const observedGateProcessor = newGateProcessor.get();
+    newEngine->setBandProcessor (std::move (newGateProcessor));
+    newEngine->prepareToPlay (currentSampleRate_, currentBlockSize_, config, 2);
+
+    const int newLatency = newEngine->getLatency();
+    const int newAnalyzerMaxDelay = std::max (currentBlockSize_ * 8, newLatency);
+
+    AnalyzerLatencyAligner newAnalyzerAligner;
+    newAnalyzerAligner.prepare (currentBlockSize_, newAnalyzerMaxDelay);
+    newAnalyzerAligner.setDelaySamples (newLatency);
+
+    auto newDestinations = destinations;
+    const auto serializedTopology = topology::serializeTopologyDestinations (destinations);
+
+    // Everything above may throw and has not touched the committed state yet. The property write
+    // is the only fallible step below, so it goes first; the rest only moves objects.
+    apvts_.state.setProperty (topology::kTopologyPropertyKey, serializedTopology, nullptr);
+
+    dtcwptMain_ = std::move (newEngine);
+    gateProcessor_ = observedGateProcessor;
+    currentDestinations_ = std::move (newDestinations);
+    analyzerInputAligner_ = std::move (newAnalyzerAligner);
+    analyzerInputAlignerMaxDelay_ = newAnalyzerMaxDelay;
+    hasCommittedValidTopology_ = true;
+    engineAvailable_.store (true, std::memory_order_release);
+    setLatencySamples (newLatency);
 }
 
 bool GateAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::string>& candidateDestinations) noexcept
 {
-    auto buildAndCommitTopology = [this] (const std::vector<std::string>& destinations)
-    {
-        dtcwpt::TopologyConfig config;
-        config.destinations = destinations;
-        config.maxDepth = kGateTopologyMaxDepth;
-
-        auto newEngine = std::make_unique<dtcwpt::DTCWPTProcessor>();
-#if DTCWPT_ENABLE_TEST_SEAMS
-        if (engineBuildFailuresRemainingForTest_ > 0)
-        {
-            --engineBuildFailuresRemainingForTest_;
-            newEngine->setPrepareCandidateFailpointForTesting (engineBuildFailpointForTest_);
-        }
-#endif
-        auto newGateProcessor = std::make_unique<GateBandProcessor>();
-        auto* const observedGateProcessor = newGateProcessor.get();
-        newEngine->setBandProcessor (std::move (newGateProcessor));
-        newEngine->prepareToPlay (currentSampleRate_, currentBlockSize_, config, 2);
-
-        const int newLatency = newEngine->getLatency();
-        const int newAnalyzerMaxDelay = std::max (currentBlockSize_ * 8, newLatency);
-
-        AnalyzerLatencyAligner newAnalyzerAligner;
-        newAnalyzerAligner.prepare (currentBlockSize_, newAnalyzerMaxDelay);
-        newAnalyzerAligner.setDelaySamples (newLatency);
-
-        dtcwptMain_ = std::move (newEngine);
-        gateProcessor_ = observedGateProcessor;
-        currentDestinations_ = destinations;
-        analyzerInputAligner_ = std::move (newAnalyzerAligner);
-        analyzerInputAlignerMaxDelay_ = newAnalyzerMaxDelay;
-        apvts_.state.setProperty (topology::kTopologyPropertyKey,
-                                  topology::serializeTopologyDestinations (destinations),
-                                  nullptr);
-        setLatencySamples (newLatency);
-        hasCommittedValidTopology_ = true;
-    };
-
     try
     {
         buildAndCommitTopology (candidateDestinations);
@@ -135,22 +147,21 @@ bool GateAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::strin
     catch (const std::invalid_argument&)
     {
         topology::emitInvalidTopologyDiagnostic ("Gate");
-
-        if (! hasCommittedValidTopology_)
-        {
-            try
-            {
-                buildAndCommitTopology (kDefaultTopology);
-                return true;
-            }
-            catch (const std::invalid_argument&)
-            {
-                return false;
-            }
-        }
-
-        return false;
     }
+    catch (...)
+    {
+        // std::bad_alloc, std::length_error, ... : the committed state was not touched, so the
+        // previous engine, topology, property and latency all stay in place.
+    }
+
+    // Without any committed topology there is nothing to fall back on, so try the built-in default.
+    if (! hasCommittedValidTopology_ && candidateDestinations != kDefaultTopology)
+        return tryApplyTopologyCandidate (kDefaultTopology);
+
+    if (dtcwptMain_ == nullptr)
+        engineAvailable_.store (false, std::memory_order_release);
+
+    return false;
 }
 
 //==============================================================================
@@ -162,8 +173,12 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 {
     juce::ScopedNoDenormals noDenormals;
 
+    // No usable engine (not prepared, or construction failed): mute instead of passing the input through.
     if (dtcwptMain_ == nullptr || gateProcessor_ == nullptr)
+    {
+        buffer.clear();
         return;
+    }
 
     const int numSamples  = buffer.getNumSamples();
     const int numChannels = buffer.getNumChannels();

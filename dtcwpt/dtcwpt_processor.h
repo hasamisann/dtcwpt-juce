@@ -69,7 +69,14 @@ public:
     void prepareToPlay(double sampleRate, int maxBlockSize,
                        const TopologyConfig& config, int channelNum);
 
-    void processBlock(juce::AudioBuffer<double>& buffer);
+    /**
+     * @brief Process one block on the audio thread.
+     *
+     * Never throws: nothing on this path allocates or validates by throwing. Internal
+     * inconsistencies that prepareToPlay() rules out structurally are asserted with jassert and
+     * degrade to dropping the affected sample.
+     */
+    void processBlock(juce::AudioBuffer<double>& buffer) noexcept;
 
     int getLatency() const;
 
@@ -90,9 +97,11 @@ public:
      * Channel count is adjusted to match main input (duplicate last / truncate).
      * Must be called BEFORE processBlock() for the same block.
      *
+     * Never throws (see processBlock()).
+     *
      * @param sidechainBuffer The sidechain audio buffer to process
      */
-    void processSidechain(juce::AudioBuffer<double>& sidechainBuffer);
+    void processSidechain(juce::AudioBuffer<double>& sidechainBuffer) noexcept;
 
 #if DTCWPT_ENABLE_TEST_SEAMS
     enum class PrepareCandidateFailpoint {
@@ -238,13 +247,13 @@ private:
 
     // Helper methods
     /// Analysis + delay compensation phase for one channel.
-    void processChannelAnalysisAndDelay(int ch, const std::vector<double>& inputBlock);
+    void processChannelAnalysisAndDelay(int ch, const std::vector<double>& inputBlock) noexcept;
 
     /// Sidechain analysis phase for one channel (no delay compensation - sidechain is control signal).
-    void processSidechainAnalysisAndDelay(int ch, const std::vector<double>& inputBlock);
+    void processSidechainAnalysisAndDelay(int ch, const std::vector<double>& inputBlock) noexcept;
 
     /// Synthesis + output averaging phase for one channel.
-    void processChannelSynthesisAndAverage(int ch, juce::AudioBuffer<double>& output);
+    void processChannelSynthesisAndAverage(int ch, juce::AudioBuffer<double>& output) noexcept;
 
     void analysisProcess(const std::vector<double>& inputBlock,
                          AnalysisNodeGroup& nodeGroup,
@@ -253,12 +262,12 @@ private:
                          std::vector<size_t>& cursors,
                          AnalysisRuntimeState& runtime,
                          AnalysisPathId path,
-                         int channel);
+                         int channel) noexcept;
 
     void synthesisProcess(std::vector<std::vector<double>>& analysedData,
                           SynthesisNodeGroup& nodeGroup,
                           const std::vector<int>& nodeIds,
-                          std::vector<size_t>& cursors);
+                          std::vector<size_t>& cursors) noexcept;
 
     static int getNodeLevel(int nodeId);
     

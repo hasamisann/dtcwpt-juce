@@ -4,6 +4,7 @@
 #include "../GateAudioProcessor.h"
 #include "SpectrumAnalyzerWidget.h"
 #include "GraphicEqWidget.h"
+#include "../../common/EngineStatusBanner.h"
 #include <functional>
 
 /**
@@ -39,6 +40,9 @@ private:
     GraphicEqWidget graphicEqWidget_;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAttachment_;
+
+    /** Message shown over the view while the DSP engine is unavailable. */
+    EngineStatusBanner engineStatusBanner_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (GateMainView)
 };

@@ -29,6 +29,7 @@
 #include "../common/AnalyzerLatencyAligner.h"
 
 // Standard library
+#include <atomic>
 #include <memory>
 #include <array>
 #include <string>
@@ -291,8 +292,14 @@ public:
     }
 #endif
 
-    /** Placeholder until engine availability is tracked. */
-    bool isEngineAvailable() const noexcept { return true; }
+    /**
+     * @brief Whether the processor has (or can still be expected to have) a working DSP engine.
+     *
+     * Starts as `true`. Becomes `false` when no engine could be constructed (neither the
+     * requested nor the default topology), in which case processBlock() outputs silence. Becomes
+     * `true` again after a successful topology build. Safe to read from any thread (e.g. the editor).
+     */
+    bool isEngineAvailable() const noexcept { return engineAvailable_.load (std::memory_order_acquire); }
 
 private:
     //==============================================================================
@@ -307,6 +314,20 @@ private:
      * flag is set and the mutex can be briefly held.
      */
     void rebuildDTCWPT();
+    /**
+     * @brief Builds an engine for the candidate topology and commits it.
+     *
+     * May throw. The committed state (engine, topology, property, latency) is modified only after
+     * every fallible step has succeeded.
+     */
+    void buildAndCommitTopology (const std::vector<std::string>& candidateDestinations);
+
+    /**
+     * @brief Applies a candidate topology; never throws.
+     *
+     * Any failure keeps the previously committed state. Only std::invalid_argument is reported
+     * as an invalid-topology diagnostic.
+     */
     bool tryApplyTopologyCandidate (const std::vector<std::string>& candidateDestinations) noexcept;
     bool tryApplyPendingTopologyCandidate() noexcept;
 
@@ -392,6 +413,9 @@ private:
 
     /** Tracks whether a valid topology has already been committed into the engine. */
     bool hasCommittedValidTopology_ { false };
+
+    /** See isEngineAvailable(). */
+    std::atomic<bool> engineAvailable_ { true };
 
 #if DTCWPT_ENABLE_TEST_SEAMS
     dtcwpt::DTCWPTProcessor::PrepareCandidateFailpoint engineBuildFailpointForTest_

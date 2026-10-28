@@ -26,6 +26,7 @@
 
 #include "MorphAudioProcessor.h"
 #include "FontHelper.h"
+#include "../../common/EngineStatusBanner.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -333,6 +334,9 @@ private:
 
     /** Callback for About (ℹ) button click. */
     std::function<void()> onAbout_;
+
+    /** Message shown over the view while the DSP engine is unavailable. */
+    EngineStatusBanner engineStatusBanner_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainView)
 };

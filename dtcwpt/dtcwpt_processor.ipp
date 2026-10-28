@@ -724,7 +724,7 @@ void DTCWPTProcessor::setBandProcessor(std::unique_ptr<BandProcessor> processor)
     }
 }
 
-void DTCWPTProcessor::processSidechain(juce::AudioBuffer<double>& sidechainBuffer) {
+void DTCWPTProcessor::processSidechain(juce::AudioBuffer<double>& sidechainBuffer) noexcept {
     const int numSamples = sidechainBuffer.getNumSamples();
     const int numChannels = sidechainBuffer.getNumChannels();
 
@@ -829,7 +829,7 @@ int DTCWPTProcessor::calculateDelayForNode(int targetIdx, const SynthesisNodeGro
 }
 
 // Analysis + delay compensation phase for one channel.
-void DTCWPTProcessor::processChannelAnalysisAndDelay(int ch, const std::vector<double>& inputBlock) {
+void DTCWPTProcessor::processChannelAnalysisAndDelay(int ch, const std::vector<double>& inputBlock) noexcept {
     // Init cursors for all targets
     for (int target : analysisOrder_) {
         cursorsRe_[ch][static_cast<size_t>(target)] = 0;
@@ -872,7 +872,7 @@ void DTCWPTProcessor::processChannelAnalysisAndDelay(int ch, const std::vector<d
 }
 
 // Sidechain analysis phase for one channel (no delay compensation - sidechain is control signal).
-void DTCWPTProcessor::processSidechainAnalysisAndDelay(int ch, const std::vector<double>& inputBlock) {
+void DTCWPTProcessor::processSidechainAnalysisAndDelay(int ch, const std::vector<double>& inputBlock) noexcept {
     // Init cursors for all targets
     for (int target : analysisOrder_) {
         scCursorsRe_[ch][static_cast<size_t>(target)] = 0;
@@ -915,7 +915,7 @@ void DTCWPTProcessor::processSidechainAnalysisAndDelay(int ch, const std::vector
 }
 
 // Synthesis + output averaging phase for one channel.
-void DTCWPTProcessor::processChannelSynthesisAndAverage(int ch, juce::AudioBuffer<double>& output) {
+void DTCWPTProcessor::processChannelSynthesisAndAverage(int ch, juce::AudioBuffer<double>& output) noexcept {
     const int numSamples = output.getNumSamples();
 
     // Synthesis for both trees (pass per-channel results/cursors)
@@ -932,7 +932,7 @@ void DTCWPTProcessor::processChannelSynthesisAndAverage(int ch, juce::AudioBuffe
 }
 
 // Public entry point: accumulates input into FIFO, processes aligned blocks, drains output FIFO.
-void DTCWPTProcessor::processBlock(juce::AudioBuffer<double>& buffer) {
+void DTCWPTProcessor::processBlock(juce::AudioBuffer<double>& buffer) noexcept {
     const int numSamples  = buffer.getNumSamples();
     const int numChannels = std::min(buffer.getNumChannels(), channelNum_);
 
@@ -1046,8 +1046,13 @@ void DTCWPTProcessor::processBlock(juce::AudioBuffer<double>& buffer) {
                 }
             }
 
-            // Call BandProcessor
-            bandProcessor_->processAllBands(cachedBandData_);
+            // Call BandProcessor. Its implementation is user code and must not throw, but this
+            // function is noexcept, so contain a violation instead of terminating the host.
+            try {
+                bandProcessor_->processAllBands(cachedBandData_);
+            } catch (...) {
+                jassertfalse;
+            }
         }
         
         // Step 3: Synthesis + output averaging for all channels
@@ -1112,7 +1117,7 @@ void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
                                       std::vector<size_t>& cursors,
                                       AnalysisRuntimeState& runtime,
                                       AnalysisPathId path,
-                                      int channel) {
+                                      int channel) noexcept {
     for (int sampleIndex = 0; sampleIndex < static_cast<int>(inputBlock.size()); ++sampleIndex) {
         const double x = inputBlock[static_cast<size_t>(sampleIndex)];
         beginAnalysisSample(runtime);
@@ -1121,6 +1126,7 @@ void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
         runtime.frontierHead = 0;
         runtime.frontierSize = 1;
 
+        bool abandonSample = false;
         while (runtime.frontierSize > 0) {
             const AnalysisWorkItem workItem = dequeueInternalArrival(runtime);
             const int nodeId = workItem.nodeId;
@@ -1131,7 +1137,12 @@ void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
             }
 #endif
             if (internalIndex < 0 || static_cast<size_t>(internalIndex) >= nodeGroup.nodes.size()) {
-                throw std::runtime_error("analysis internal node lookup failed");
+                // Unreachable: the scheduler metadata and node group are built together in
+                // prepareToPlay() and every enqueued work item is an internal node.
+                // This runs on the audio thread, so never throw; abandon this sample instead.
+                jassertfalse;
+                abandonSample = true;
+                break;
             }
 
 #if DTCWPT_ENABLE_TEST_SEAMS
@@ -1206,6 +1217,10 @@ void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
                 rightIsInternal ? std::optional<AnalysisWorkItem>(AnalysisWorkItem{rightIdx, outputs.high}) : std::nullopt);
         }
 
+        if (abandonSample) {
+            continue;
+        }
+
         // Save results for destination nodes
         for (const int destId : metadata.destinationIdsInOrder) {
             if (!hasCurrentSampleArrival(runtime, destId)) {
@@ -1219,7 +1234,11 @@ void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
             }
 #endif
             if (cursor >= results[destId].size()) {
-                throw std::runtime_error("analysis cursor overflow");
+                // Unreachable: result buffers are sized for internalBlockSize_ in prepareToPlay()
+                // and at most one value per destination is written per input sample.
+                // Drop the value rather than throwing on the audio thread.
+                jassertfalse;
+                continue;
             }
 
 #if DTCWPT_ENABLE_TEST_SEAMS
@@ -1248,7 +1267,7 @@ void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
 void DTCWPTProcessor::synthesisProcess(std::vector<std::vector<double>>& analysedData,
                                        SynthesisNodeGroup& nodeGroup,
                                        const std::vector<int>& nodeIds,
-                                       std::vector<size_t>& cursors) {
+                                       std::vector<size_t>& cursors) noexcept {
     const size_t nodeCount = std::min(nodeIds.size(), nodeGroup.nodes.size());
     for (size_t i = 0; i < nodeCount; ++i) {
         int nodeId = nodeIds[i];

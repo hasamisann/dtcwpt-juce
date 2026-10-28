@@ -196,8 +196,14 @@ public:
     }
 #endif
 
-    /** Placeholder until engine availability is tracked. */
-    bool isEngineAvailable() const noexcept { return true; }
+    /**
+     * @brief Whether the processor has (or can still be expected to have) a working DSP engine.
+     *
+     * Starts as `true`. Becomes `false` when no engine could be constructed (neither the
+     * requested nor the default topology), in which case processBlock() outputs silence. Becomes
+     * `true` again after a successful topology build. Safe to read from any thread (e.g. the editor).
+     */
+    bool isEngineAvailable() const noexcept { return engineAvailable_.load (std::memory_order_acquire); }
 
 private:
     //==============================================================================
@@ -208,6 +214,20 @@ private:
      * @brief (Re)creates the DTCWPTProcessor using currentDestinations_.
      */
     void rebuildDTCWPT();
+    /**
+     * @brief Builds an engine for the given topology and commits it.
+     *
+     * May throw. The committed state (engine, topology, property, latency) is modified only after
+     * every fallible step has succeeded.
+     */
+    void buildAndCommitTopology (const std::vector<std::string>& destinations);
+
+    /**
+     * @brief Applies a candidate topology; never throws.
+     *
+     * Any failure keeps the previously committed state. Only std::invalid_argument is reported
+     * as an invalid-topology diagnostic.
+     */
     bool tryApplyTopologyCandidate (const std::vector<std::string>& candidateDestinations) noexcept;
 
     //==============================================================================
@@ -264,6 +284,9 @@ private:
     double currentSampleRate_ { 44100.0 };
     int currentBlockSize_ { 512 };
     bool hasCommittedValidTopology_ { false };
+
+    /** See isEngineAvailable(). */
+    std::atomic<bool> engineAvailable_ { true };
 
 #if DTCWPT_ENABLE_TEST_SEAMS
     dtcwpt::DTCWPTProcessor::PrepareCandidateFailpoint engineBuildFailpointForTest_

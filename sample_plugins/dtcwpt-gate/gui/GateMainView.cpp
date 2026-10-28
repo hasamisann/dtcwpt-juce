@@ -12,7 +12,8 @@ namespace
 GateMainView::GateMainView (GateAudioProcessor& processor, double sampleRate)
     : processor_ (processor),
       spectrumWidget_ (processor.getSpectrumBridge()),
-      graphicEqWidget_ (processor, static_cast<float>(sampleRate))
+      graphicEqWidget_ (processor, static_cast<float>(sampleRate)),
+      engineStatusBanner_ ([&processor] { return processor.isEngineAvailable(); })
 {
     spectrumWidget_.setSampleRate (sampleRate);
     // Setup title
@@ -102,6 +103,9 @@ GateMainView::GateMainView (GateAudioProcessor& processor, double sampleRate)
 
     addAndMakeVisible (spectrumWidget_);
     addAndMakeVisible (graphicEqWidget_);
+
+    // Shown only while the DSP engine could not be created; stays on top of the other children.
+    addChildComponent (engineStatusBanner_);
 }
 
 GateMainView::~GateMainView()
@@ -142,4 +146,6 @@ void GateMainView::resized()
     // Graphic EQ
     bounds.removeFromTop (10); // add_space(10.0)
     graphicEqWidget_.setBounds (bounds);
+
+    engineStatusBanner_.setBounds (spectrumWidget_.getBounds().withSizeKeepingCentre (juce::jmin (getWidth() - 32, 320), 80));
 }
