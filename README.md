@@ -446,6 +446,14 @@ int getLatency() const;
 ---
 
 ```cpp
+int getTailLengthSamples() const;
+```
+
+`getLatency()` の位置より後ろに出力が続く長さ（サンプル数）の上界を返します。無加工のときは純粋な遅延ですが、`BandProcessor` がサブバンド係数を変更すると、フィルタバンクの応答がレイテンシ位置の後ろにも広がります。ホストへ報告するテール長（`getTailLengthSeconds()` など）に使用してください。`prepareToPlay()` 前は 0 です。
+
+---
+
+```cpp
 void setBandProcessor(std::unique_ptr<BandProcessor> processor);
 ```
 

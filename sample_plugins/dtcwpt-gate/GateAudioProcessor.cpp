@@ -102,6 +102,7 @@ bool GateAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::strin
         newEngine->prepareToPlay (currentSampleRate_, currentBlockSize_, config, 2);
 
         const int newLatency = newEngine->getLatency();
+        const int newTail = newEngine->getTailLengthSamples();
         const int newAnalyzerMaxDelay = std::max (currentBlockSize_ * 8, newLatency);
 
         AnalyzerLatencyAligner newAnalyzerAligner;
@@ -117,6 +118,7 @@ bool GateAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::strin
                                   topology::serializeTopologyDestinations (destinations),
                                   nullptr);
         setLatencySamples (newLatency);
+        committedTailLength_.store (newTail, currentSampleRate_);
         hasCommittedValidTopology_ = true;
     };
 
@@ -277,7 +279,7 @@ bool GateAudioProcessor::isMidiEffect() const { return false; }
 
 double GateAudioProcessor::getTailLengthSeconds() const
 {
-    return 0.0;
+    return committedTailLength_.getSeconds();
 }
 
 //==============================================================================

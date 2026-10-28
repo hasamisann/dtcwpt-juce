@@ -5,6 +5,7 @@
 #include "dtcwpt_analysis_node_factory.h"
 
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -58,6 +59,7 @@ struct PreparedProcessorState {
     std::vector<double> delaySliceBuffer;
 
     int maxDelay = 0;
+    int tailLength = 0;
     size_t alignUnit = 1;
     size_t internalBlockSize = 0;
     std::vector<std::vector<double>> inputFifo;
@@ -241,6 +243,58 @@ int calculateMaxSamplesPerBand(const std::vector<int>& destinations, size_t inte
     return maxSamplesPerBand;
 }
 
+/// Index of the last non-zero tap; trailing zero taps do not extend a filter's response.
+int lastNonZeroTap(const std::vector<double>& kernel) {
+    for (size_t i = kernel.size(); i > 0; --i) {
+        if (kernel[i - 1] != 0.0) {
+            return static_cast<int>(i - 1);
+        }
+    }
+    return 0;
+}
+
+/// Position of the last non-zero tap of the cascaded analysis (and synthesis) kernel of a destination.
+/// Stage j (0 = root) puts its taps 2^j input samples apart, so its last tap index counts 2^j times.
+struct PathKernelEnd {
+    int analysis = 0;
+    int synthesis = 0;
+};
+
+PathKernelEnd calculatePathKernelEnd(int dest, AnalysisTreeKind treeKind) {
+    const int depth = static_cast<int>(std::bit_width(static_cast<unsigned int>(dest))) - 1;
+    PathKernelEnd end;
+    for (int stage = 0; stage < depth; ++stage) {
+        const int nodeId = dest >> (depth - stage);
+        const bool high = ((dest >> (depth - 1 - stage)) & 1) != 0;
+        const auto& coefs = filterCoefficientsForNode(nodeId, treeKind);
+        end.analysis += lastNonZeroTap(high ? coefs.h1 : coefs.h0) << stage;
+        end.synthesis += lastNonZeroTap(high ? coefs.g1 : coefs.g0) << stage;
+    }
+    return end;
+}
+
+/// Filter-bank tail beyond the unmodified output position; see DTCWPTProcessor::getTailLengthSamples().
+int calculateTailLength(const std::vector<int>& destinations,
+                        const std::vector<int>& pathDelaysRe,
+                        const std::vector<int>& pathDelaysIm,
+                        int maxDelay) {
+    int tail = 0;
+    for (size_t i = 0; i < destinations.size(); ++i) {
+        const int dest = destinations[i];
+        const int depth = static_cast<int>(std::bit_width(static_cast<unsigned int>(dest))) - 1;
+        const int rateFactor = 1 << depth;
+
+        const int pathDelays[2] = {pathDelaysRe[i], pathDelaysIm[i]};
+        const AnalysisTreeKind trees[2] = {AnalysisTreeKind::real, AnalysisTreeKind::imag};
+        for (int t = 0; t < 2; ++t) {
+            const PathKernelEnd end = calculatePathKernelEnd(dest, trees[t]);
+            const int bandDelaySamples = (maxDelay - pathDelays[t]) / rateFactor * rateFactor;
+            tail = std::max(tail, end.analysis + end.synthesis + bandDelaySamples - maxDelay);
+        }
+    }
+    return tail;
+}
+
 } // namespace
 
 DTCWPTProcessor::DTCWPTProcessor()
@@ -272,6 +326,7 @@ DTCWPTProcessor::DTCWPTProcessor()
     , inputBlockBuffer_()
     , delaySliceBuffer_()
     , maxDelay_(0)
+    , tailLengthSamples_(0)
     , alignUnit_(1)
     , internalBlockSize_(0)
     , inputFifo_()
@@ -431,6 +486,9 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
         pathDelaysIm[i] = delayIm;
         candidate.maxDelay = std::max(candidate.maxDelay, std::max(delayRe, delayIm));
     }
+
+    candidate.tailLength = calculateTailLength(candidate.destinations, pathDelaysRe, pathDelaysIm,
+                                               candidate.maxDelay);
 
     for (size_t i = 0; i < candidate.destinations.size(); ++i) {
         const int dest = candidate.destinations[i];
@@ -647,6 +705,7 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
     inputBlockBuffer_ = std::move(candidate.inputBlockBuffer);
     delaySliceBuffer_ = std::move(candidate.delaySliceBuffer);
     maxDelay_ = candidate.maxDelay;
+    tailLengthSamples_ = candidate.tailLength;
     alignUnit_ = candidate.alignUnit;
     internalBlockSize_ = candidate.internalBlockSize;
     inputFifo_ = std::move(candidate.inputFifo);
@@ -1275,7 +1334,7 @@ int DTCWPTProcessor::getLatency() const {
 }
 
 int DTCWPTProcessor::getTailLengthSamples() const {
-    return 0;
+    return tailLengthSamples_;
 }
 
 } // namespace dtcwpt

@@ -19,6 +19,15 @@ enum class AnalysisTreeKind {
 };
 
 /**
+ * @brief Returns the filter family for the given node ID and tree.
+ *
+ * Applies the node-ID-to-filter-family rules listed on createAnalysisNodeForId().
+ * The synthesis nodes built in DTCWPTProcessor::prepareToPlay() use the same
+ * mapping, so the returned g0/g1/d0/d1 describe them as well.
+ */
+const filters::FilterCoefficients& filterCoefficientsForNode(int nodeId, AnalysisTreeKind treeKind);
+
+/**
  * @brief Create an analysis node with the correct filter family for the given node ID and tree.
  * 
  * Filter-family selection rules:

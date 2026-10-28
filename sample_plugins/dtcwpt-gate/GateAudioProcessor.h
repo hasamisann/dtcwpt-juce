@@ -28,6 +28,7 @@
 #include "SpectrumDataBridge.h"
 #include "BandLevelBridge.h"
 #include "../common/AnalyzerLatencyAligner.h"
+#include "../common/CommittedTailLength.h"
 
 // Standard library
 #include <memory>
@@ -247,6 +248,9 @@ private:
     double currentSampleRate_ { 44100.0 };
     int currentBlockSize_ { 512 };
     bool hasCommittedValidTopology_ { false };
+
+    /** Filter-bank tail of the committed engine; see DTCWPTProcessor::getTailLengthSamples(). */
+    CommittedTailLength committedTailLength_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (GateAudioProcessor)
 };

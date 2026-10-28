@@ -74,7 +74,40 @@ public:
     int getLatency() const;
 
     /**
-     * @brief Placeholder (red step): tail length is not implemented yet.
+     * @brief Upper bound, in samples, of how long the output rings on after getLatency().
+     *
+     * Without band processing the engine is a pure delay of getLatency() samples. If a
+     * BandProcessor changes subband coefficients, the response of each destination band
+     * (analysis cascade, decimation, delay compensation, synthesis cascade) is no longer
+     * cancelled by the other bands and spreads past that position. This value bounds how long
+     * the output can keep going after the input has gone silent, for any processing that maps
+     * zero subband input to zero output (i.e. the filter bank only; envelopes or other state
+     * kept inside a BandProcessor are not included). Returns 0 before prepareToPlay().
+     *
+     * Derivation, for destination d at depth D with path nodes n_0 (root) ... n_{D-1}:
+     *  - Stage j (0-based) filters with the analysis kernel a_j (h0 or h1 of n_j, chosen by the
+     *    path bit) and the synthesis kernel s_j (g0 or g1). Decimating/upsampling by 2 at every
+     *    stage puts stage j's taps 2^j input samples apart (noble identity), so the equivalent
+     *    analysis kernel is a_0 * (a_1 upsampled by 2) * ... and the equivalent synthesis kernel
+     *    is built the same way.
+     *  - Let ea_j / es_j be the index of the last non-zero tap of a_j / s_j. Trailing zero taps
+     *    (CDF 9/7 padding) do not extend the response; leading zero taps are a real delay and stay
+     *    inside the index. The last non-zero tap of the equivalent kernels is
+     *    Ea = sum_j ea_j * 2^j and Es = sum_j es_j * 2^j.
+     *  - An input that ends at sample T makes the band coefficient with index m non-zero only while
+     *    2^D * m - T <= Ea, i.e. up to m = floor((T + Ea) / 2^D). The band delay buffer then adds
+     *    k = floor((maxDelay - pathDelay) / 2^D) band samples, and the synthesis cascade ends Es
+     *    samples after the position 2^D * (m + k).
+     *  - Relative to the unmodified output at T + maxDelay this ends at
+     *    Ea + Es + 2^D * k - maxDelay - ((T + Ea) mod 2^D). The decimation phase term is largest
+     *    (zero) for T = -Ea mod 2^D, which an input can always have, so it is dropped to get an
+     *    upper bound that holds for every phase.
+     *  - The result is the maximum over all destinations and both trees, never negative. The
+     *    bound is exact for the filter-bank support; the part above -120 dB is shorter because the
+     *    outer taps of the cascaded kernels are tiny.
+     *
+     * The value is relative to getLatency(): the FIFO delay of the block alignment is already
+     * part of the latency and does not change the tail.
      */
     int getTailLengthSamples() const;
 
@@ -159,6 +192,9 @@ private:
 
     // Latency
     int maxDelay_;
+
+    /// Filter-bank tail beyond getLatency() (see getTailLengthSamples())
+    int tailLengthSamples_;
 
     // --- Block alignment ring buffer ---
     /// Alignment unit = 2^actualDepth; internal block must be a multiple of this.

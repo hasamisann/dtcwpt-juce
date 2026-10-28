@@ -27,6 +27,7 @@
 #include "TopologyState.h"
 #include "SpectrumDataBridge.h"
 #include "../common/AnalyzerLatencyAligner.h"
+#include "../common/CommittedTailLength.h"
 
 // Standard library
 #include <memory>
@@ -372,6 +373,9 @@ private:
 
     /** Current maximum block size (cached from prepareToPlay). */
     int currentBlockSize_ { 512 };
+
+    /** Filter-bank tail of the committed engine; see DTCWPTProcessor::getTailLengthSamples(). */
+    CommittedTailLength committedTailLength_;
 
     /** Tracks whether a valid topology has already been committed into the engine. */
     bool hasCommittedValidTopology_ { false };

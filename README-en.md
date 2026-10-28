@@ -453,6 +453,14 @@ Returns the processing latency in samples. Use this for host latency compensatio
 ---
 
 ```cpp
+int getTailLengthSamples() const;
+```
+
+Returns an upper bound, in samples, of how long the output keeps ringing after the position given by `getLatency()`. Without band processing the engine is a pure delay, but once a `BandProcessor` changes subband coefficients the filter-bank response spreads past the latency position. Use this for the tail length reported to the host (e.g. `getTailLengthSeconds()`). Returns 0 before `prepareToPlay()`.
+
+---
+
+```cpp
 void setBandProcessor(std::unique_ptr<BandProcessor> processor);
 ```
 

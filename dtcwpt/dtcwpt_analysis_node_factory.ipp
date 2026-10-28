@@ -8,24 +8,20 @@
 
 namespace dtcwpt {
 
-AnalysisNode createAnalysisNodeForId(int nodeId, AnalysisTreeKind treeKind) {
+const filters::FilterCoefficients& filterCoefficientsForNode(int nodeId, AnalysisTreeKind treeKind) {
     if (nodeId == 1) {
-        if (treeKind == AnalysisTreeKind::real) {
-            return AnalysisNode(filters::CDF_RE, true);
-        }
-
-        return AnalysisNode(filters::CDF_IM, true);
+        return treeKind == AnalysisTreeKind::real ? filters::CDF_RE : filters::CDF_IM;
     }
 
     if (nodeId % 2 == 1) {
-        return AnalysisNode(filters::PACKET, false);
+        return filters::PACKET;
     }
 
-    if (treeKind == AnalysisTreeKind::real) {
-        return AnalysisNode(filters::QSHIFT14_RE, false);
-    }
+    return treeKind == AnalysisTreeKind::real ? filters::QSHIFT14_RE : filters::QSHIFT14_IM;
+}
 
-    return AnalysisNode(filters::QSHIFT14_IM, false);
+AnalysisNode createAnalysisNodeForId(int nodeId, AnalysisTreeKind treeKind) {
+    return AnalysisNode(filterCoefficientsForNode(nodeId, treeKind), nodeId == 1);
 }
 
 } // namespace dtcwpt

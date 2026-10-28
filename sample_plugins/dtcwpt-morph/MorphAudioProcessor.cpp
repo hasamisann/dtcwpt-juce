@@ -116,6 +116,7 @@ bool MorphAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::stri
         newEngine->prepareToPlay (currentSampleRate_, currentBlockSize_, config, 2);
 
         const int newLatency = newEngine->getLatency();
+        const int newTail = newEngine->getTailLengthSamples();
         const int newAnalyzerMaxDelay = std::max (analyzerInputAlignerMaxDelay_, newLatency);
 
         AnalyzerLatencyAligner newAnalyzerAligner;
@@ -131,6 +132,7 @@ bool MorphAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::stri
         analyzerInputAlignerMaxDelay_ = newAnalyzerMaxDelay;
         apvts_.state.setProperty (topology::kTopologyPropertyKey, serializedTopology, nullptr);
         setLatencySamples (newLatency);
+        committedTailLength_.store (newTail, currentSampleRate_);
         hasCommittedValidTopology_ = true;
         return true;
     }
@@ -329,7 +331,7 @@ bool MorphAudioProcessor::isMidiEffect() const { return false; }
 
 double MorphAudioProcessor::getTailLengthSeconds() const
 {
-    return 0.0;
+    return committedTailLength_.getSeconds();
 }
 
 //==============================================================================
