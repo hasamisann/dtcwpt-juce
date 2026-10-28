@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <algorithm>
 #include <juce_core/juce_core.h>
@@ -23,6 +24,9 @@ public:
     /** Audio thread: update band levels. Non-blocking (try_lock). */
     void update(const float* levelsDb, int numBands) noexcept
     {
+#if DTCWPT_ENABLE_TEST_SEAMS
+        updateCount_.fetch_add(1, std::memory_order_relaxed);
+#endif
         const int n = std::min(numBands, kMaxBands);
         if (mutex_.try_lock())
         {
@@ -42,10 +46,18 @@ public:
         return n;
     }
 
+#if DTCWPT_ENABLE_TEST_SEAMS
+    /** Test seam: number of update() calls since construction. */
+    std::uint64_t getUpdateCountForTest() const noexcept { return updateCount_.load(std::memory_order_relaxed); }
+#endif
+
 private:
     mutable std::mutex mutex_;
     std::array<float, kMaxBands> levelsDb_;
     std::atomic<int> numBands_ { 0 };
+#if DTCWPT_ENABLE_TEST_SEAMS
+    std::atomic<std::uint64_t> updateCount_ { 0 };
+#endif
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(BandLevelBridge)
 };

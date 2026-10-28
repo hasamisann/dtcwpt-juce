@@ -19,6 +19,10 @@ void SpectrumDataBridge::push (const float* inputMono,
     if (numSamples <= 0)
         return;
 
+#if DTCWPT_ENABLE_TEST_SEAMS
+    pushCallCount_.fetch_add (1, std::memory_order_relaxed);
+#endif
+
     int remaining = numSamples;
     int srcOffset = 0;
 
@@ -76,7 +80,11 @@ bool SpectrumDataBridge::tryConsume (std::array<float, kSlotSize>& inputOut,
     const int latestCompleted = (write - 1 + kRingSlots) % kRingSlots;
     const Slot& slot = slots_[static_cast<std::size_t> (latestCompleted)];
 
-    inputOut  = slot.input;
+    inputOut = slot.input;
+#if DTCWPT_ENABLE_TEST_SEAMS
+    if (consumeMidCopyHook_)
+        consumeMidCopyHook_();
+#endif
     outputOut = slot.output;
 
     // Clear the new-data flag and advance readSlot_ to match writeSlot_

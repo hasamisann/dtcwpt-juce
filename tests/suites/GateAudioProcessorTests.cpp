@@ -43,6 +43,9 @@ public:
 
         beginTest ("Gate rejects valid core topology beyond depth-8 limit");
         testGateRejectsValidCoreTopologyBeyondDepthEightLimit();
+
+        beginTest ("Without an open editor processBlock does not feed the display bridges");
+        testNoDisplayDataWithoutEditor();
     }
 
 private:
@@ -621,6 +624,23 @@ private:
         expectEquals (juce::String (topology::getLastInvalidTopologyDiagnosticCategoryForTest()),
                       juce::String (topology::invalidTopologyDiagnosticCategory()),
                       "Depth-limit rejection should use the shared invalid-topology diagnostic category");
+    }
+
+    void testNoDisplayDataWithoutEditor()
+    {
+        auto processor = createPreparedProcessor();
+
+        // No editor has been created, so nothing consumes the display data.
+        for (int block = 0; block < 8; ++block)
+        {
+            auto processed = processMonoSignal (*processor, makeConstantSignal (kDefaultBlockSize, 0.5f));
+            ignoreUnused (processed);
+        }
+
+        expectEquals (static_cast<int> (processor->getSpectrumBridge().getPushCallCountForTest()), 0,
+                      "processBlock must not mono-mix, align and push spectrum data while no editor is open");
+        expectEquals (static_cast<int> (processor->getBandLevelBridge().getUpdateCountForTest()), 0,
+                      "processBlock must not publish band levels while no editor is open");
     }
 };
 

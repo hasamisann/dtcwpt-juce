@@ -30,6 +30,8 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
+#include <functional>
 
 class SpectrumDataBridge
 {
@@ -90,6 +92,14 @@ public:
     bool tryConsume (std::array<float, kSlotSize>& inputOut,
                      std::array<float, kSlotSize>& outputOut);
 
+#if DTCWPT_ENABLE_TEST_SEAMS
+    /** Test seam: called by tryConsume() after the input half has been copied and before the output half. */
+    void setConsumeMidCopyHookForTest (std::function<void()> hook) { consumeMidCopyHook_ = std::move (hook); }
+
+    /** Test seam: number of push() calls with numSamples > 0 since construction. */
+    std::uint64_t getPushCallCountForTest() const noexcept { return pushCallCount_.load (std::memory_order_relaxed); }
+#endif
+
 private:
     //==============================================================================
     // Internal slot type
@@ -120,4 +130,9 @@ private:
     /// Needed to distinguish "no new data" from the case where writeSlot_
     /// has wrapped all the way around back to equal readSlot_.
     std::atomic<bool> hasNewData_ { false };
+
+#if DTCWPT_ENABLE_TEST_SEAMS
+    std::function<void()> consumeMidCopyHook_;
+    std::atomic<std::uint64_t> pushCallCount_ { 0 };
+#endif
 };

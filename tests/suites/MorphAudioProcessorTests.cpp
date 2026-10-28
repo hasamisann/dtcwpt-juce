@@ -49,6 +49,9 @@ public:
 
         beginTest ("Mixed-depth committed Morph topology remains deterministic under the worklist scheduler");
         testMixedDepthCommittedMorphTopologyRemainsDeterministicUnderTheWorklistScheduler();
+
+        beginTest ("Without an open editor processBlock does not feed the spectrum bridge");
+        testNoSpectrumPushWithoutEditor();
     }
 
 private:
@@ -592,6 +595,26 @@ private:
                       "Second Morph processor should persist the mixed-depth topology string");
         expectEquals (firstRun.latencySamples, secondRun.latencySamples,
                       "Mixed-depth committed Morph runs should preserve latency deterministically");
+    }
+
+    void testNoSpectrumPushWithoutEditor()
+    {
+        auto processor = createPreparedProcessor();
+
+        // No editor has been created, so nothing consumes the display data.
+        for (int block = 0; block < 8; ++block)
+        {
+            juce::AudioBuffer<float> buffer (2, kBlockSize);
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < kBlockSize; ++i)
+                    buffer.setSample (ch, i, 0.25f * std::sin (0.05f * static_cast<float> (i)));
+
+            juce::MidiBuffer midi;
+            processor->processBlock (buffer, midi);
+        }
+
+        expectEquals (static_cast<int> (processor->getSpectrumBridge().getPushCallCountForTest()), 0,
+                      "processBlock must not mono-mix, align and push spectrum data while no editor is open");
     }
 };
 
