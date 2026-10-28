@@ -179,6 +179,7 @@ public:
     int getAnalyzerInputDelaySamplesForTest() const noexcept;
     double getLastThresholdLinearForTest (int bandIndex) const noexcept;
     bool getLastBypassLowestForTest() const noexcept;
+    GateBandProcessor::DynamicsParams getLastDynamicsForTest() const noexcept { return {}; }
     const GateBandProcessor* getObservedGateProcessorForTest() const noexcept { return gateProcessor_; }
     const dtcwpt::DTCWPTProcessor* getEngineIdentityForTest() const noexcept { return dtcwptMain_.get(); }
 

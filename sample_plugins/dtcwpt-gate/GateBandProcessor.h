@@ -2,6 +2,7 @@
 
 #include "dtcwpt/dtcwpt_band_processor.h"
 #include <array>
+#include <limits>
 #include <juce_core/juce_core.h>
 
 /**
@@ -40,6 +41,19 @@ public:
      * @return The number of bands written to outLevelsDb.
      */
     int getBandLevelsDb(float* outLevelsDb) const noexcept;
+
+    /** Time-domain parameters shared by all bands (TODO: not yet used). */
+    struct DynamicsParams
+    {
+        double attackMs = 1.0;
+        double holdMs = 50.0;
+        double releaseMs = 100.0;
+        double hysteresisDb = 3.0;
+        double rangeDb = -std::numeric_limits<double>::infinity();
+        bool stereoLink = true;
+    };
+
+    void setDynamics(const DynamicsParams&) noexcept {}
 
     /** Enable or disable processing on the lowest-frequency band. */
     void setBypassLowest(bool bypass) noexcept { bypassLow_ = bypass; }

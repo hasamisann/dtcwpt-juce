@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -43,6 +44,18 @@ public:
 
         beginTest ("Gate rejects valid core topology beyond depth-8 limit");
         testGateRejectsValidCoreTopologyBeyondDepthEightLimit();
+
+        beginTest ("Gate dynamics parameters exist with the documented defaults and ranges");
+        testDynamicsParametersExist();
+
+        beginTest ("Gate dynamics parameter text conversion parses the numeric part only");
+        testDynamicsParameterTextConversion();
+
+        beginTest ("Gate dynamics parameters reach the GateBandProcessor");
+        testDynamicsParametersReachBandProcessor();
+
+        beginTest ("Stereo link keeps the quiet channel open when the other channel opens the gate");
+        testStereoLinkEndToEnd();
     }
 
 private:
@@ -310,6 +323,153 @@ private:
         const auto levels = readBandLevels (processor);
         expectEquals (static_cast<int> (levels.size()), static_cast<int> (observation.committedDestinations.size()),
                       context + ": band-level bridge count should follow the committed topology");
+    }
+
+    static juce::RangedAudioParameter* findParameter (GateAudioProcessor& processor, const juce::String& id)
+    {
+        return processor.getAPVTS().getParameter (id);
+    }
+
+    static float getParameterPlainValue (GateAudioProcessor& processor, const juce::String& id)
+    {
+        auto* parameter = findParameter (processor, id);
+        return parameter != nullptr ? parameter->convertFrom0to1 (parameter->getValue()) : std::numeric_limits<float>::quiet_NaN();
+    }
+
+    static void setParameterPlainValue (GateAudioProcessor& processor, const juce::String& id, float value)
+    {
+        if (auto* parameter = findParameter (processor, id))
+            parameter->setValueNotifyingHost (parameter->convertTo0to1 (value));
+    }
+
+    static float textToPlainValue (GateAudioProcessor& processor, const juce::String& id, const juce::String& text)
+    {
+        auto* parameter = findParameter (processor, id);
+        return parameter != nullptr ? parameter->convertFrom0to1 (parameter->getValueForText (text))
+                                    : std::numeric_limits<float>::quiet_NaN();
+    }
+
+    void testDynamicsParametersExist()
+    {
+        GateAudioProcessor processor;
+
+        struct Expected { const char* id; float defaultValue; float minimum; float maximum; };
+        const Expected expected[] = {
+            { "attack",     1.0f,    0.1f,   100.0f },
+            { "hold",       50.0f,   0.0f,   1000.0f },
+            { "release",    100.0f,  1.0f,   2000.0f },
+            { "hysteresis", 3.0f,    0.0f,   24.0f },
+            { "range",      -100.0f, -100.0f, 0.0f },
+        };
+
+        for (const auto& e : expected)
+        {
+            auto* parameter = findParameter (processor, e.id);
+            expect (parameter != nullptr, juce::String ("parameter exists: ") + e.id);
+            if (parameter == nullptr)
+                continue;
+
+            expectWithinAbsoluteError (parameter->convertFrom0to1 (parameter->getDefaultValue()), e.defaultValue, 1.0e-3f,
+                                       juce::String ("default of ") + e.id);
+            expectWithinAbsoluteError (parameter->convertFrom0to1 (0.0f), e.minimum, 1.0e-3f, juce::String ("minimum of ") + e.id);
+            expectWithinAbsoluteError (parameter->convertFrom0to1 (1.0f), e.maximum, 1.0e-3f, juce::String ("maximum of ") + e.id);
+        }
+
+        auto* link = dynamic_cast<juce::AudioParameterBool*> (findParameter (processor, "stereo_link"));
+        expect (link != nullptr, "stereo_link bool parameter exists");
+        if (link != nullptr)
+            expect (link->get(), "stereo link is on by default");
+    }
+
+    void testDynamicsParameterTextConversion()
+    {
+        GateAudioProcessor processor;
+
+        expectWithinAbsoluteError (textToPlainValue (processor, "attack", "5 ms"), 5.0f, 1.0e-3f, "\"5 ms\" parses to 5");
+        expectWithinAbsoluteError (textToPlainValue (processor, "attack", "5"), 5.0f, 1.0e-3f, "a bare number parses to the same value");
+        expectWithinAbsoluteError (textToPlainValue (processor, "release", "250.5 ms"), 250.5f, 0.06f, "release parses the numeric part");
+        expectWithinAbsoluteError (textToPlainValue (processor, "hysteresis", "6 dB"), 6.0f, 1.0e-3f, "hysteresis parses dB text");
+        expectWithinAbsoluteError (textToPlainValue (processor, "range", "-12.5 dB"), -12.5f, 0.06f, "range parses negative dB text");
+        expectWithinAbsoluteError (textToPlainValue (processor, "range", "-inf dB"), -100.0f, 1.0e-3f, "\"-inf dB\" selects the minimum (infinite attenuation)");
+
+        auto* range = findParameter (processor, "range");
+        if (range != nullptr)
+        {
+            expect (range->getText (0.0f, 32).containsIgnoreCase ("inf"), "the minimum range is displayed as -inf");
+            expect (range->getText (range->convertTo0to1 (-12.0f), 32).contains ("-12"), "other values are displayed numerically");
+        }
+    }
+
+    void testDynamicsParametersReachBandProcessor()
+    {
+        auto processor = createPreparedProcessor();
+        setParameterPlainValue (*processor, "attack", 7.0f);
+        setParameterPlainValue (*processor, "hold", 120.0f);
+        setParameterPlainValue (*processor, "release", 300.0f);
+        setParameterPlainValue (*processor, "hysteresis", 9.0f);
+        setParameterPlainValue (*processor, "range", -24.0f);
+        setParameterPlainValue (*processor, "stereo_link", 0.0f);
+
+        processMonoSignal (*processor, makeConstantSignal (kDefaultBlockSize, 0.1f));
+
+        const auto dynamics = processor->getLastDynamicsForTest();
+        expectWithinAbsoluteError (dynamics.attackMs, 7.0, 1.0e-3, "attack reaches the band processor");
+        expectWithinAbsoluteError (dynamics.holdMs, 120.0, 1.0e-3, "hold reaches the band processor");
+        expectWithinAbsoluteError (dynamics.releaseMs, 300.0, 1.0e-3, "release reaches the band processor");
+        expectWithinAbsoluteError (dynamics.hysteresisDb, 9.0, 1.0e-3, "hysteresis reaches the band processor");
+        expectWithinAbsoluteError (dynamics.rangeDb, -24.0, 1.0e-3, "range reaches the band processor");
+        expect (! dynamics.stereoLink, "stereo link reaches the band processor");
+
+        setParameterPlainValue (*processor, "range", -100.0f);
+        processMonoSignal (*processor, makeConstantSignal (kDefaultBlockSize, 0.1f));
+        expect (std::isinf (processor->getLastDynamicsForTest().rangeDb) && processor->getLastDynamicsForTest().rangeDb < 0.0,
+                "the minimum range is passed on as -inf dB");
+    }
+
+    void testStereoLinkEndToEnd()
+    {
+        const int numBlocks = 24;
+        const int numSamples = kDefaultBlockSize * numBlocks;
+        const double duration = static_cast<double> (numSamples) / TestUtils::TestConfig::SAMPLE_RATE;
+        const auto loud = toFloatSignal (TestUtils::generateSine (110.0, duration, TestUtils::TestConfig::SAMPLE_RATE), 0.5f);
+        const auto quiet = toFloatSignal (TestUtils::generateSine (110.0, duration, TestUtils::TestConfig::SAMPLE_RATE), 0.0002f);
+
+        auto rightChannelRms = [&] (bool linked)
+        {
+            auto processor = createPreparedProcessor();
+            setParameterPlainValue (*processor, "stereo_link", linked ? 1.0f : 0.0f);
+            setParameterPlainValue (*processor, "attack", 0.1f);
+            setParameterPlainValue (*processor, "hold", 0.0f);
+            setParameterPlainValue (*processor, "release", 5.0f);
+
+            double sumSquares = 0.0;
+            int count = 0;
+            for (int block = 0; block < numBlocks; ++block)
+            {
+                juce::AudioBuffer<float> buffer (2, kDefaultBlockSize);
+                buffer.copyFrom (0, 0, loud.data() + block * kDefaultBlockSize, kDefaultBlockSize);
+                buffer.copyFrom (1, 0, quiet.data() + block * kDefaultBlockSize, kDefaultBlockSize);
+                juce::MidiBuffer midi;
+                processor->processBlock (buffer, midi);
+
+                if (block >= numBlocks / 2)
+                    for (int i = 0; i < kDefaultBlockSize; ++i)
+                    {
+                        const double v = static_cast<double> (buffer.getSample (1, i));
+                        sumSquares += v * v;
+                        ++count;
+                    }
+            }
+            return std::sqrt (sumSquares / static_cast<double> (count));
+        };
+
+        const double linkedRms = rightChannelRms (true);
+        const double unlinkedRms = rightChannelRms (false);
+
+        expect (linkedRms > 1.0e-4, "linked: the quiet channel passes while the loud channel keeps the gate open");
+        expect (linkedRms > 10.0 * unlinkedRms,
+                "unlinked: the quiet channel (below threshold on its own) is attenuated much more than when linked ("
+                    + juce::String (linkedRms) + " vs " + juce::String (unlinkedRms) + ")");
     }
 
     void testThresholdFanoutAndLowestBandBypass()
