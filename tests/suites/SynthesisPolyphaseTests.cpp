@@ -17,6 +17,7 @@
 #include <juce_core/juce_core.h>
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <random>
 #include <string>
@@ -44,7 +45,7 @@ const std::vector<NamedCoefs>& allFilterSets() {
 size_t nonZeroSpan(const std::vector<double>& v) {
     size_t first = v.size(), last = 0;
     for (size_t i = 0; i < v.size(); ++i) {
-        if (v[i] != 0.0) {
+        if (std::fpclassify(v[i]) != FP_ZERO) {
             if (first == v.size()) first = i;
             last = i;
         }

@@ -11,6 +11,10 @@ namespace dtcwpt {
  * Implements FIR convolution using a mirrored ring buffer technique
  * to eliminate boundary checks during filtering. Maintains internal
  * state for continuous sample-by-sample processing.
+ *
+ * Leading and trailing zero taps of the kernel are removed at construction
+ * (they never contribute to the output); the output is bit-identical to
+ * convolving with the full kernel.
  */
 class StatefulFilter {
 public:
@@ -72,11 +76,12 @@ public:
 #endif
 
 private:
-    std::vector<double> kernel_;       ///< Filter coefficients
+    std::vector<double> kernel_;       ///< Filter coefficients without leading/trailing zero taps
     std::vector<double> mirrorBuffer_; ///< Ring buffer with mirroring (size * 2)
-    size_t size_;                      ///< Buffer size (kernel length)
-    size_t cursor_;                    ///< Current write position
-    int delay_;                        ///< Filter delay
+    size_t size_ = 1;                  ///< Ring buffer size (history reached by the trimmed kernel)
+    size_t cursor_ = 0;                ///< Current write position
+    size_t readOffset_ = 0;            ///< Number of removed leading zero taps (read start offset)
+    int delay_ = 0;                    ///< Filter delay
 #if DTCWPT_ENABLE_TEST_SEAMS
     unsigned long long macCount_ = 0;  ///< Test seam: multiply-accumulate counter
 #endif

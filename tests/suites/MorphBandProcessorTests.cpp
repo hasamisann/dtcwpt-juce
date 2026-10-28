@@ -611,8 +611,13 @@ private:
     // Runs MorphBandProcessor on one band of samples with fixed (non-ramping)
     // parameters and compares every output with polarReference().
     // Returns the number of samples whose error exceeds 1e-12 relative to the
-    // output magnitude, and the largest relative error seen. Samples whose
-    // interpolated unit vector (almost) cancels to zero are skipped: their
+    // output magnitude, and the largest relative error seen.
+    //
+    // The direction of the interpolated vector is ill-conditioned when the two
+    // unit vectors nearly cancel: a rounding error of 1e-16 in either
+    // implementation moves the direction by about 1e-16 / |lerp|. The tolerance
+    // is therefore 1e-12 for |lerp| >= 1e-3 and grows as 1e-3 / |lerp| below
+    // that. Samples whose vector cancels to (almost) zero are skipped: their
     // direction is rounding noise in the reference and is pinned down by test 11.
     std::pair<int, double> compareWithReference (const std::vector<double>& mainRe,
                                                  const std::vector<double>& mainIm,
@@ -644,7 +649,8 @@ private:
                                            sb.mainIm[0][0][i] - ref.im);
             const double rel = refMag > 0.0 ? err / refMag : err;
             worst = std::max (worst, rel);
-            if (! (rel <= 1.0e-12))
+            const double tolerance = 1.0e-12 * std::max (1.0, 1.0e-3 / ref.lerpLength);
+            if (! (rel <= tolerance))
                 ++bad;
         }
         return { bad, worst };
@@ -683,7 +689,7 @@ private:
                     totalBad += r.first;
                     worst = std::max (worst, r.second);
                 }
-        expectEquals (totalBad, 0, "Random data: samples differing from the polar reference by more than 1e-12 (worst "
+        expectEquals (totalBad, 0, "Random data: samples differing from the polar reference by more than 1e-12 (worst relative error "
                                        + juce::String (worst) + ")");
 
         // Boundary cases: axes, negative real axis, zeros, equal and opposite-ish

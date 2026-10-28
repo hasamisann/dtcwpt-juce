@@ -21,13 +21,6 @@ void MorphBandProcessor::prepare (double sampleRate,
     sampleRate_        = sampleRate;
     maxSamplesPerBand_ = maxSamplesPerBand;
 
-    // Allocate scratch buffers (one-time allocation — zero cost on audio thread)
-    const auto bufSize = static_cast<std::size_t> (maxSamplesPerBand);
-    mainMag_.assign   (bufSize, 0.0);
-    mainPhase_.assign (bufSize, 0.0);
-    scMag_.assign     (bufSize, 0.0);
-    scPhase_.assign   (bufSize, 0.0);
-
     // Initialise SmoothedValues with 20 ms ramp time
     constexpr double kRampMs = 20.0;
     const double rampSamples = sampleRate * (kRampMs / 1000.0);
@@ -82,13 +75,7 @@ void MorphBandProcessor::processAllBands (dtcwpt::BandData& data)
 
             const std::size_t n = mainView.numSamples;
 
-            // Step 1: Convert both inputs to polar form (using scratch buffers)
-            dtcwpt::complexToMagPhase (mainView.re, mainView.im,
-                                       mainMag_.data(), mainPhase_.data(), n);
-            dtcwpt::complexToMagPhase (scView.re, scView.im,
-                                       scMag_.data(), scPhase_.data(), n);
-
-            // Step 2–6: Per-sample morph
+            // Per-sample morph
             const bool isFirstChannel = (ch == 0);
 
             for (std::size_t s = 0; s < n; ++s)
@@ -108,15 +95,38 @@ void MorphBandProcessor::processAllBands (dtcwpt::BandData& data)
                     thr = thresholdSmoothed_.getCurrentValue();
                 }
 
-                const double mainM = mainMag_[s];
-                const double mainP = mainPhase_[s];
-                const double scM   = scMag_[s];
-                const double scP   = scPhase_[s];
+                // Step 1: Magnitudes and unit direction vectors of both inputs.
+                // The direction (re/|c|, im/|c|) equals (cos(arg c), sin(arg c))
+                // without any trigonometry. A zero vector has no direction; it is
+                // defined as (1, 0), i.e. phase 0 (the value atan2(0, 0) returns).
+                const double mainRe = mainView.re[s];
+                const double mainIm = mainView.im[s];
+                const double scRe   = scView.re[s];
+                const double scIm   = scView.im[s];
 
-                // Step 3: Magnitude lerp
+                const double mainM = std::sqrt (mainRe * mainRe + mainIm * mainIm);
+                const double scM   = std::sqrt (scRe * scRe + scIm * scIm);
+
+                double rx = 1.0, ry = 0.0;
+                if (mainM > 0.0)
+                {
+                    const double inv = 1.0 / mainM;
+                    rx = mainRe * inv;
+                    ry = mainIm * inv;
+                }
+
+                double sx = 1.0, sy = 0.0;
+                if (scM > 0.0)
+                {
+                    const double inv = 1.0 / scM;
+                    sx = scRe * inv;
+                    sy = scIm * inv;
+                }
+
+                // Step 2: Magnitude lerp
                 const double outMag = mainM + mag * (scM - mainM);
 
-                // Step 4: Threshold gate
+                // Step 3: Threshold gate
                 double effPhase = ph;
                 if (scM < thr && thr > 0.0)
                 {
@@ -124,18 +134,24 @@ void MorphBandProcessor::processAllBands (dtcwpt::BandData& data)
                     effPhase  = std::clamp (effPhase, 0.0, ph);
                 }
 
-                // Step 5: Phase N-Lerp via unit-vector interpolation
-                const double rx = std::cos (mainP);
-                const double ry = std::sin (mainP);
-                const double sx = std::cos (scP);
-                const double sy = std::sin (scP);
+                // Step 4: Phase N-Lerp via unit-vector interpolation. The lerped
+                // vector is normalised back to a unit direction; if it cancels to
+                // zero length the direction is again defined as (1, 0).
                 const double lx = rx + effPhase * (sx - rx);
                 const double ly = ry + effPhase * (sy - ry);
-                const double outPhase = std::atan2 (ly, lx);
+                const double lenSq = lx * lx + ly * ly;
 
-                // Step 6: Convert back to Re/Im (write in-place to main bands)
-                mainView.re[s] = outMag * std::cos (outPhase);
-                mainView.im[s] = outMag * std::sin (outPhase);
+                double ux = 1.0, uy = 0.0;
+                if (lenSq > 0.0)
+                {
+                    const double inv = 1.0 / std::sqrt (lenSq);
+                    ux = lx * inv;
+                    uy = ly * inv;
+                }
+
+                // Step 5: Write back to Re/Im (in-place to main bands)
+                mainView.re[s] = outMag * ux;
+                mainView.im[s] = outMag * uy;
             }
         }
     }

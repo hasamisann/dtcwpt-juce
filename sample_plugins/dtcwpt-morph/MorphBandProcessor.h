@@ -8,13 +8,15 @@
  * implements per-subband spectral morphing between a main and sidechain input.
  *
  * The morph algorithm:
- * 1. Converts main and sidechain Re/Im subbands to magnitude/phase (polar form).
+ * 1. Computes the magnitude and the unit direction vector (re/|c|, im/|c|) of
+ *    the main and sidechain Re/Im subbands. No angle is ever computed; a zero
+ *    vector has the direction (1, 0).
  * 2. Linearly interpolates (lerps) magnitudes: outMag = lerp(mainMag, scMag, magnitude).
  * 3. Applies a threshold gate to attenuate phase influence when the sidechain
  *    signal is below a minimum level.
- * 4. N-Lerps phases by representing them as unit vectors, lerping, then taking
- *    atan2 of the result (no renorm step required since atan2 is normalisation).
- * 5. Converts back to Re/Im.
+ * 4. N-Lerps phases by lerping the unit direction vectors and normalising the
+ *    result back to unit length (a zero-length result is again (1, 0)).
+ * 5. Outputs Re/Im = outMag * normalised direction.
  *
  * SmoothedValue targets are set once per host block via setTargets().
  * Per-sample advancement (getNextValue()) happens inside processAllBands() for
@@ -89,10 +91,10 @@ public:
     //==============================================================================
 
     /**
-     * @brief Allocates scratch buffers and initialises SmoothedValues.
+     * @brief Initialises SmoothedValues.
      *
-     * Called by dtcwpt::DTCWPTProcessor::prepareToPlay(). Scratch buffers are
-     * sized to maxSamplesPerBand; SmoothedValues are set to 20 ms ramp time.
+     * Called by dtcwpt::DTCWPTProcessor::prepareToPlay(). SmoothedValues are
+     * set to 20 ms ramp time.
      *
      * @param sampleRate        Host sample rate (Hz)
      * @param maxSamplesPerBand Maximum number of subband samples per block
@@ -107,11 +109,11 @@ public:
      *
      * For each non-bypassed band, for each channel, for each sample:
      *   1. Advances SmoothedValues by one step (per-sample smoothing).
-     *   2. Converts main and sidechain Re/Im to polar form.
+     *   2. Computes main and sidechain magnitudes and unit direction vectors.
      *   3. Lerps magnitudes.
      *   4. Applies threshold gate to attenuate phase influence.
-     *   5. N-Lerps phases via unit-vector lerp + atan2.
-     *   6. Converts back to Re/Im.
+     *   5. N-Lerps phases via unit-vector lerp + normalisation.
+     *   6. Writes back Re/Im = outMag * normalised direction.
      *
      * Called on the audio thread — real-time safe (noexcept, no allocations).
      *
@@ -175,15 +177,6 @@ private:
 
     /** If true, the H-only (highest-frequency) subband is passed through unchanged. */
     bool bypassHigh_ { false };
-
-    //==============================================================================
-    // Pre-allocated scratch buffers (allocated in prepare(); zero-alloc on audio thread)
-    //==============================================================================
-
-    std::vector<double> mainMag_;   ///< Scratch buffer for main subband magnitudes
-    std::vector<double> mainPhase_; ///< Scratch buffer for main subband phases
-    std::vector<double> scMag_;     ///< Scratch buffer for sidechain subband magnitudes
-    std::vector<double> scPhase_;   ///< Scratch buffer for sidechain subband phases
 
     //==============================================================================
     // Cached prepare() parameters
