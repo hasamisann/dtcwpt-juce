@@ -16,7 +16,9 @@
 #include "../util/TestUtils.h"
 
 #include <juce_core/juce_core.h>
+#include <algorithm>
 #include <cmath>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -42,15 +44,27 @@ struct SynthBandData
     void init (int numChannels, int numBands, int numSamples,
                const std::vector<int>& destIds)
     {
+        init (numChannels,
+              std::vector<int> (static_cast<std::size_t> (numBands), numSamples),
+              destIds);
+    }
+
+    // Variable sample counts per band (e.g. bands at different tree depths).
+    void init (int numChannels, const std::vector<int>& samplesPerBand,
+               const std::vector<int>& destIds)
+    {
         destinationIds = destIds;
+        const int numBands = static_cast<int> (samplesPerBand.size());
 
         auto alloc = [&](auto& arr)
         {
             arr.resize (static_cast<std::size_t> (numChannels));
             for (auto& ch : arr)
             {
-                ch.resize (static_cast<std::size_t> (numBands),
-                           std::vector<double> (static_cast<std::size_t> (numSamples), 0.0));
+                ch.resize (static_cast<std::size_t> (numBands));
+                for (int b = 0; b < numBands; ++b)
+                    ch[static_cast<std::size_t> (b)].assign (
+                        static_cast<std::size_t> (samplesPerBand[static_cast<std::size_t> (b)]), 0.0);
             }
         };
 
@@ -71,7 +85,7 @@ struct SynthBandData
                     auto bs = static_cast<std::size_t> (b);
                     views[cs][bs] = { re[cs][bs].data(),
                                       im[cs][bs].data(),
-                                      static_cast<std::size_t> (numSamples) };
+                                      re[cs][bs].size() };
                 }
             }
             return views;
@@ -83,6 +97,21 @@ struct SynthBandData
         data.numBands      = numBands;
         data.hasSidechain  = true;
         data.destinationIds = &destinationIds;
+    }
+
+    // Fill every main sample with (mainAmp, 0) and every sidechain sample with
+    // (scAmp, 0). Both have phase 0, so with phase ratio 0 the output magnitude
+    // is mainAmp + m * (scAmp - mainAmp) and m can be recovered from the output.
+    void fillConstant (double mainAmp, double scAmp)
+    {
+        for (auto* arr : { &mainRe, &scRe })
+            for (auto& ch : *arr)
+                for (auto& band : ch)
+                    std::fill (band.begin(), band.end(), arr == &mainRe ? mainAmp : scAmp);
+        for (auto* arr : { &mainIm, &scIm })
+            for (auto& ch : *arr)
+                for (auto& band : ch)
+                    std::fill (band.begin(), band.end(), 0.0);
     }
 
     // Fill main Re/Im with a sinusoidal pattern
@@ -155,6 +184,18 @@ public:
 
         beginTest ("9. Threshold boundary preserves full phase replacement");
         testThresholdBoundaryPreservesPhaseReplacement();
+
+        beginTest ("10. Magnitude ramp follows time, not band processing order");
+        testRampIsTimeBasedAcrossBands();
+
+        beginTest ("11. All channels use the same ramp value at the same time");
+        testRampIsIdenticalAcrossChannels();
+
+        beginTest ("12. Bypass settings do not change the ramp timing");
+        testBypassDoesNotAffectRampTiming();
+
+        beginTest ("13. 20 ms ramp completes after 20 ms of host samples");
+        testRampDurationIsHostTime();
     }
 
 private:
@@ -530,6 +571,169 @@ private:
             expectWithinAbsoluteError (outMag, expScMag, tol,
                                        "After reset(), first sample should be at full morph");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Time-axis tests (issue #13)
+    //
+    // Band layout of a complete leaf set over one internal block of T = 8k host
+    // samples (k = 8, T = 64):
+    //   node 3 (H)   level 1, 4k samples
+    //   node 5 (LH)  level 2, 2k samples
+    //   node 8 (LLL) level 3,  k samples
+    //   node 9 (LLH) level 3,  k samples
+    // Subband sample s of a band at level L sits at time tau = (s + 0.5) * 2^L.
+    //
+    // Sample rate 1000 Hz makes the 20 ms ramp 20 host samples long, so the
+    // ramp starts and ends inside the block.
+    // -----------------------------------------------------------------------
+    static constexpr int    kK            = 8;
+    static constexpr double kRampSr       = 1000.0;
+    static constexpr double kRampSamples  = 20.0;   // kRampSr * 0.02
+    static constexpr double kMainAmp      = 1.0;
+    static constexpr double kScAmp        = 3.0;
+
+    static std::vector<int> timeBandIds()     { return { 3, 5, 8, 9 }; }
+    static std::vector<int> timeBandLevels()  { return { 1, 2, 3, 3 }; }
+    static std::vector<int> timeBandSamples() { return { 4 * kK, 2 * kK, kK, kK }; }
+
+    // Magnitude ratio the morph used for a sample, recovered from the output.
+    static double usedMagnitude (const SynthBandData& sb, int ch, int b, std::size_t s)
+    {
+        const auto cs = static_cast<std::size_t> (ch);
+        const auto bs = static_cast<std::size_t> (b);
+        const double out = std::hypot (sb.mainRe[cs][bs][s], sb.mainIm[cs][bs][s]);
+        return (out - kMainAmp) / (kScAmp - kMainAmp);
+    }
+
+    static double expectedRamp (double tau) { return std::min (1.0, tau / kRampSamples); }
+
+    static double sampleTime (int level, std::size_t s)
+    {
+        return (static_cast<double> (s) + 0.5) * static_cast<double> (1 << level);
+    }
+
+    // Runs one internal block with the magnitude stepping 0 -> 1.
+    static void runMagnitudeStep (SynthBandData& sb, bool bypassLow, bool bypassHigh)
+    {
+        sb.init (2, timeBandSamples(), timeBandIds());
+        sb.fillConstant (kMainAmp, kScAmp);
+
+        MorphBandProcessor proc;
+        proc.prepare (kRampSr, 4 * kK, 4, 2);
+        proc.setTargets (1.0, 0.0, 0.0, bypassLow, bypassHigh);
+        proc.processAllBands (sb.data);
+    }
+
+    void testRampIsTimeBasedAcrossBands()
+    {
+        SynthBandData sb;
+        runMagnitudeStep (sb, false, false);
+
+        constexpr double tol = 1e-9;
+        const auto levels  = timeBandLevels();
+        const auto samples = timeBandSamples();
+
+        int mismatches = 0;
+        std::vector<std::pair<double, double>> timeline; // (tau, used magnitude), channel 0
+        for (int b = 0; b < 4; ++b)
+        {
+            for (std::size_t s = 0; s < static_cast<std::size_t> (samples[static_cast<std::size_t> (b)]); ++s)
+            {
+                const double tau  = sampleTime (levels[static_cast<std::size_t> (b)], s);
+                const double used = usedMagnitude (sb, 0, b, s);
+                timeline.emplace_back (tau, used);
+                if (std::abs (used - expectedRamp (tau)) > tol)
+                    ++mismatches;
+            }
+        }
+        expectEquals (mismatches, 0,
+                      "Magnitude used for a subband sample must be the ramp value at its time tau");
+
+        // Low bands must not be ahead of high bands: along the time axis the
+        // used magnitude never decreases and never exceeds what time allows.
+        std::sort (timeline.begin(), timeline.end());
+        bool monotonic = true;
+        for (std::size_t i = 1; i < timeline.size(); ++i)
+            if (timeline[i].second < timeline[i - 1].second - tol)
+                monotonic = false;
+        expect (monotonic, "Used magnitude must be non-decreasing in time across all bands");
+    }
+
+    void testRampIsIdenticalAcrossChannels()
+    {
+        SynthBandData sb;
+        runMagnitudeStep (sb, false, false);
+
+        constexpr double tol = 1e-9;
+        const auto samples = timeBandSamples();
+        int mismatches = 0;
+        for (int b = 0; b < 4; ++b)
+            for (std::size_t s = 0; s < static_cast<std::size_t> (samples[static_cast<std::size_t> (b)]); ++s)
+                if (std::abs (usedMagnitude (sb, 1, b, s) - usedMagnitude (sb, 0, b, s)) > tol)
+                    ++mismatches;
+        expectEquals (mismatches, 0, "Channel 1 must use the same ramp value as channel 0");
+
+        // Channel 1 must actually ramp (it used to hold one constant value per band).
+        const double first = usedMagnitude (sb, 1, 0, 0);
+        const double last  = usedMagnitude (sb, 1, 0, 4 * kK - 1);
+        expect (last > first + 0.1, "Channel 1 must ramp within a band");
+    }
+
+    void testBypassDoesNotAffectRampTiming()
+    {
+        constexpr double tol = 1e-9;
+        const auto levels  = timeBandLevels();
+        const auto samples = timeBandSamples();
+
+        // Bands 1 (node 5) and 3 (node 9) are never bypassed.
+        for (const bool bypass : { false, true })
+        {
+            SynthBandData sb;
+            runMagnitudeStep (sb, /*bypassLow=*/bypass, /*bypassHigh=*/bypass);
+
+            int mismatches = 0;
+            for (const int b : { 1, 3 })
+            {
+                for (std::size_t s = 0; s < static_cast<std::size_t> (samples[static_cast<std::size_t> (b)]); ++s)
+                {
+                    const double tau = sampleTime (levels[static_cast<std::size_t> (b)], s);
+                    if (std::abs (usedMagnitude (sb, 0, b, s) - expectedRamp (tau)) > tol)
+                        ++mismatches;
+                }
+            }
+            expectEquals (mismatches, 0,
+                          bypass ? "Ramp timing must not change when bypassLow/bypassHigh skip bands"
+                                 : "Ramp timing without bypass must follow the time axis");
+        }
+    }
+
+    void testRampDurationIsHostTime()
+    {
+        SynthBandData sb;
+        runMagnitudeStep (sb, false, false);
+
+        constexpr double tol = 1e-9;
+        const auto levels  = timeBandLevels();
+        const auto samples = timeBandSamples();
+
+        // Every sample whose time is at or after 20 ms of host samples must be
+        // at the full target.
+        int notFinished = 0;
+        int checked = 0;
+        for (int b = 0; b < 4; ++b)
+        {
+            for (std::size_t s = 0; s < static_cast<std::size_t> (samples[static_cast<std::size_t> (b)]); ++s)
+            {
+                if (sampleTime (levels[static_cast<std::size_t> (b)], s) < kRampSamples)
+                    continue;
+                ++checked;
+                if (std::abs (usedMagnitude (sb, 0, b, s) - 1.0) > tol)
+                    ++notFinished;
+            }
+        }
+        expect (checked > 0, "Test block must extend past the end of the ramp");
+        expectEquals (notFinished, 0, "Ramp must be complete after sampleRate * 0.02 host samples");
     }
 
     void testThresholdBoundaryPreservesPhaseReplacement()
