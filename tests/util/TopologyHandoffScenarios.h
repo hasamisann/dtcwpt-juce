@@ -281,6 +281,9 @@ private:
         for (std::size_t i = switchIndex; i < sine.output.size(); ++i)
             maxStep = std::max (maxStep, std::abs (sine.output[i] - sine.output[i - 1]));
 
+        logMessage ("block " + juce::String (blockSize) + ": max adjacent sample step across the switch = "
+                    + juce::String (maxStep, 4));
+
         // A 0.5 amplitude 440 Hz sine moves by at most ~0.032 per sample. A hard cut or a hard start
         // of the new engine produces steps of the order of the signal amplitude.
         expect (maxStep < 0.08f,

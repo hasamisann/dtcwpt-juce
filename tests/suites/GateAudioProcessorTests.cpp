@@ -73,16 +73,25 @@ private:
         return processor;
     }
 
-    static ProcessorObservation captureObservation (const GateAudioProcessor& processor)
+    static ProcessorObservation captureObservation (GateAudioProcessor& processor)
     {
         return {
-            processor.getCommittedDestinationsForTest(),
-            processor.getPersistedTopologyStringForTest(),
+            processor.getCommittedTopology(),
+            readPersistedTopologyString (processor),
             processor.getLatencySamples(),
             processor.getAnalyzerInputDelaySamplesForTest(),
             processor.getObservedGateProcessorForTest(),
             processor.getEngineIdentityForTest()
         };
+    }
+
+    /** The topology string a host would persist: read back from the saved state, not from internals. */
+    static juce::String readPersistedTopologyString (GateAudioProcessor& processor)
+    {
+        juce::MemoryBlock state;
+        processor.getStateInformation (state);
+        const auto tree = juce::ValueTree::readFromData (state.getData(), state.getSize());
+        return tree.getProperty (topology::kTopologyPropertyKey).toString();
     }
 
     static juce::MemoryBlock createStateWithTopology (const juce::var& topologyProperty)
@@ -365,7 +374,8 @@ private:
         const auto baselineObservation = captureObservation (*processor);
 
         topology::resetInvalidTopologyDiagnosticsForTest();
-        processor->getTopologyState().requestChange ({ "L", "HL" });
+        expect (! processor->requestTopologyChange ({ "L", "HL" }),
+                "Invalid hot-swap request should be rejected");
 
         auto buffer = makeStereoBuffer (makeDeterministicSignal (kDefaultBlockSize));
         juce::MidiBuffer midi;

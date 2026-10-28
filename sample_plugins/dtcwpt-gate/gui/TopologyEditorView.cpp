@@ -51,8 +51,8 @@ namespace
 // Constructor
 //==============================================================================
 
-TopologyEditorView::TopologyEditorView (TopologyState& topoState, double sampleRate)
-    : topoState_   (topoState)
+TopologyEditorView::TopologyEditorView (TopologyRequestHandler requestTopology, double sampleRate)
+    : requestTopology_ (std::move (requestTopology))
     , sampleRate_  (gate_gui::sanitizeSampleRateAndNyquist (static_cast<float> (sampleRate)).sampleRate)
 {
     buildTree (kDefaultTopology);
@@ -94,8 +94,7 @@ TopologyEditorView::TopologyEditorView (TopologyState& topoState, double sampleR
         layoutTree();
         repaint();
 
-        topoState_.requestChange (dests);
-        if (onTopologyChanged_) onTopologyChanged_ (dests);
+        if (requestTopology_) requestTopology_ (dests);
     };
 
     typeCombo_.onChange  = applyPreset;
@@ -136,12 +135,6 @@ void TopologyEditorView::setTopology (const std::vector<std::string>& destinatio
 void TopologyEditorView::setBackButtonCallback (std::function<void()> cb)
 {
     onBack_ = std::move (cb);
-}
-
-void TopologyEditorView::setTopologyChangedCallback (
-    std::function<void(const std::vector<std::string>&)> cb)
-{
-    onTopologyChanged_ = std::move (cb);
 }
 
 //==============================================================================
@@ -208,8 +201,7 @@ void TopologyEditorView::mouseDown (const juce::MouseEvent& e)
         {
             splitNode (hitId);
             const auto dests = collectDestinations();
-            topoState_.requestChange (dests);
-            if (onTopologyChanged_) onTopologyChanged_ (dests);
+            if (requestTopology_) requestTopology_ (dests);
             layoutTree();
             repaint();
         }
@@ -219,8 +211,7 @@ void TopologyEditorView::mouseDown (const juce::MouseEvent& e)
         // Merge all descendants back to a leaf
         mergeNode (hitId);
         const auto dests = collectDestinations();
-        topoState_.requestChange (dests);
-        if (onTopologyChanged_) onTopologyChanged_ (dests);
+        if (requestTopology_) requestTopology_ (dests);
         layoutTree();
         repaint();
     }

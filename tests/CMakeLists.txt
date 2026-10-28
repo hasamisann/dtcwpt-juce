@@ -63,7 +63,7 @@ target_sources(dtcwpt_tests
         suites/MorphBandProcessorTests.cpp
         suites/StatefulFilterTests.cpp
         suites/TopologyPlannerTests.cpp
-        suites/TopologyStateTests.cpp
+        suites/EngineHandoffTests.cpp
         suites/MorphTopologyHandoffTests.cpp
         suites/GateTopologyHandoffTests.cpp
         suites/TopologySplitOrderTests.cpp

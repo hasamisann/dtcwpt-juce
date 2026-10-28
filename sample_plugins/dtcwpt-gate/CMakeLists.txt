@@ -24,7 +24,6 @@ juce_add_plugin(DtcwptGate
 
 target_sources(DtcwptGate
     PRIVATE
-        TopologyState.h
         SpectrumDataBridge.h
         SpectrumDataBridge.cpp
         BandLevelBridge.h

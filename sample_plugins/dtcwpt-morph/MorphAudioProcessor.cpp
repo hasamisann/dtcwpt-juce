@@ -22,6 +22,12 @@ namespace
     const std::vector<std::string> kDefaultTopology =
         { "H", "LH", "LLH", "LLLH", "LLLLH", "LLLLLH", "LLLLLL" };
 
+    /** Length of the cross-fade when the audio thread switches to a new engine. */
+    constexpr double kSwitchFadeSeconds = 0.010;
+
+    /** How often the message thread destroys engines retired by the audio thread. */
+    constexpr int kReclaimIntervalMs = 250;
+
     int getTopologyDepth (const std::vector<std::string>& destinations) noexcept
     {
         int depth = 0;
@@ -35,7 +41,7 @@ namespace
 } // namespace
 
 //==============================================================================
-// Constructor
+// Constructor / Destructor
 //==============================================================================
 
 MorphAudioProcessor::MorphAudioProcessor()
@@ -44,13 +50,18 @@ MorphAudioProcessor::MorphAudioProcessor()
                           .withOutput ("Output",    juce::AudioChannelSet::stereo(), true)
                           .withInput  ("Sidechain", juce::AudioChannelSet::stereo(), false)),
       apvts_ (*this, nullptr, "MorphParams", createParameterLayout()),
-      currentDestinations_ (kDefaultTopology)
+      committedDestinations_ (kDefaultTopology)
 {
-    // Store the default topology as a ValueTree property so it is
-    // included in getStateInformation() right from the start.
-    apvts_.state.setProperty (topology::kTopologyPropertyKey,
-                               topology::serializeTopologyDestinations (currentDestinations_),
-                               nullptr);
+    // Engines retired by the audio thread are destroyed on the message thread.
+    startTimer (kReclaimIntervalMs);
+}
+
+MorphAudioProcessor::~MorphAudioProcessor()
+{
+    stopTimer();
+
+    std::lock_guard<std::mutex> lock (controlMutex_);
+    releaseEnginesLocked();
 }
 
 //==============================================================================
@@ -59,99 +70,242 @@ MorphAudioProcessor::MorphAudioProcessor()
 
 void MorphAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
+    std::lock_guard<std::mutex> lock (controlMutex_);
+
     currentSampleRate_ = sampleRate;
     currentBlockSize_  = samplesPerBlock;
 
     // Allocate double-precision conversion buffers
     mainDoubleBuffer_.setSize (2, samplesPerBlock);
     scDoubleBuffer_.setSize   (2, samplesPerBlock);
+    fadeOutBuffer_.setSize    (2, samplesPerBlock);
 
     // Pre-allocate mono scratch buffers for spectrum bridge (avoids heap alloc in processBlock)
     inputMonoScratch_.setSize  (1, samplesPerBlock);
     outputMonoScratch_.setSize (1, samplesPerBlock);
     alignedInputMonoScratch_.setSize (1, samplesPerBlock);
 
-    analyzerInputAlignerMaxDelay_ = std::max (samplesPerBlock * 8, 0);
-    analyzerInputAligner_.prepare (samplesPerBlock, analyzerInputAlignerMaxDelay_);
-    analyzerInputAligner_.setDelaySamples (0);
+    fadeLength_ = std::max (1, juce::roundToInt (sampleRate * kSwitchFadeSeconds));
+    prepared_ = true;
 
-    // Build the DTCWPTProcessor
-    rebuildDTCWPT();
+    // The audio thread is not running here, so the new engine is installed directly.
+    releaseEnginesLocked();
+    installEngineForPrepareLocked();
 }
 
 void MorphAudioProcessor::releaseResources()
 {
-    dtcwptMain_.reset();
-    morphProcessor_ = nullptr;
+    std::lock_guard<std::mutex> lock (controlMutex_);
+
+    prepared_ = false;
+    releaseEnginesLocked();
     mainDoubleBuffer_.setSize (0, 0);
     scDoubleBuffer_.setSize   (0, 0);
+    fadeOutBuffer_.setSize    (0, 0);
     inputMonoScratch_.setSize  (0, 0);
     outputMonoScratch_.setSize (0, 0);
     alignedInputMonoScratch_.setSize (0, 0);
-    analyzerInputAligner_.reset();
 }
 
 //==============================================================================
-// Private helper: rebuild DTCWPTProcessor
+// Topology (control side: message / host threads)
 //==============================================================================
 
-void MorphAudioProcessor::rebuildDTCWPT()
+std::unique_ptr<MorphAudioProcessor::EngineBundle>
+MorphAudioProcessor::buildEngineBundle (const std::vector<std::string>& destinations) const
 {
-    if (! tryApplyPendingTopologyCandidate())
-        (void) tryApplyTopologyCandidate (currentDestinations_);
+    dtcwpt::TopologyConfig config;
+    config.destinations = destinations;
+    config.maxDepth = dtcwpt::topology_limits::kSupportedMaxDepth;
+
+    auto bundle = std::make_unique<EngineBundle>();
+    bundle->engine = std::make_unique<dtcwpt::DTCWPTProcessor>();
+
+    auto morphProcessor = std::make_unique<MorphBandProcessor>();
+    bundle->morph = morphProcessor.get();
+    bundle->engine->setBandProcessor (std::move (morphProcessor));
+    bundle->engine->prepareToPlay (currentSampleRate_, currentBlockSize_, config, 2);
+
+    bundle->latency = bundle->engine->getLatency();
+    bundle->aligner.prepare (currentBlockSize_, std::max (currentBlockSize_ * 8, bundle->latency));
+    bundle->aligner.setDelaySamples (bundle->latency);
+
+    return bundle;
 }
 
-bool MorphAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::string>& candidateDestinations) noexcept
+bool MorphAudioProcessor::requestTopologyChange (const std::vector<std::string>& destinations)
 {
+    std::lock_guard<std::mutex> lock (controlMutex_);
+    return commitTopologyLocked (destinations);
+}
+
+std::vector<std::string> MorphAudioProcessor::getCommittedTopology() const
+{
+    std::lock_guard<std::mutex> lock (controlMutex_);
+    return committedDestinations_;
+}
+
+bool MorphAudioProcessor::commitTopologyLocked (const std::vector<std::string>& candidate)
+{
+    std::unique_ptr<EngineBundle> bundle;
+
+    if (prepared_)
+    {
+        try
+        {
+            bundle = buildEngineBundle (candidate);
+        }
+        catch (const std::invalid_argument&)
+        {
+            topology::emitInvalidTopologyDiagnostic ("Morph");
+            return false;
+        }
+    }
+    else if (! topology::detail::validatePersistedTopologyDestinations (candidate))
+    {
+        // No sample rate / block size yet, so no engine can be built. Obviously malformed topologies are
+        // rejected here; the rest is accepted and validated for real in prepareToPlay().
+        topology::emitInvalidTopologyDiagnostic ("Morph");
+        return false;
+    }
+
+    setCommittedTopologyLocked (candidate);
+
+    if (bundle != nullptr)
+    {
+        lastBuiltDestinations_ = candidate;
+        hasCommittedValidTopology_ = true;
+        setLatencySamples (bundle->latency);
+        publishBundleLocked (std::move (bundle));
+    }
+
+    return true;
+}
+
+void MorphAudioProcessor::setCommittedTopologyLocked (const std::vector<std::string>& destinations)
+{
+    committedDestinations_ = destinations;
+    topologyGeneration_.fetch_add (1, std::memory_order_acq_rel);
+}
+
+void MorphAudioProcessor::publishBundleLocked (std::unique_ptr<EngineBundle> bundle)
+{
+    handoff_.reclaim();
+
+    // A bundle that is still deferred belongs to an older request and is superseded.
+    deferredBundle_.reset();
+
+    if (! handoff_.publish (bundle))
+        deferredBundle_ = std::move (bundle);   // too many engines alive; reclaimLocked() retries
+}
+
+void MorphAudioProcessor::installEngineForPrepareLocked()
+{
+    std::unique_ptr<EngineBundle> bundle;
+
     try
     {
-        dtcwpt::TopologyConfig config;
-        config.destinations = candidateDestinations;
-        config.maxDepth = dtcwpt::topology_limits::kSupportedMaxDepth;
-
-        auto newEngine = std::make_unique<dtcwpt::DTCWPTProcessor>();
-        auto newMorphProcessor = std::make_unique<MorphBandProcessor>();
-        auto* const observedMorphProcessor = newMorphProcessor.get();
-        newEngine->setBandProcessor (std::move (newMorphProcessor));
-        newEngine->prepareToPlay (currentSampleRate_, currentBlockSize_, config, 2);
-
-        const int newLatency = newEngine->getLatency();
-        const int newAnalyzerMaxDelay = std::max (analyzerInputAlignerMaxDelay_, newLatency);
-
-        AnalyzerLatencyAligner newAnalyzerAligner;
-        newAnalyzerAligner.prepare (currentBlockSize_, newAnalyzerMaxDelay);
-        newAnalyzerAligner.setDelaySamples (newLatency);
-
-        const auto serializedTopology = topology::serializeTopologyDestinations (candidateDestinations);
-
-        dtcwptMain_ = std::move (newEngine);
-        morphProcessor_ = observedMorphProcessor;
-        currentDestinations_ = candidateDestinations;
-        analyzerInputAligner_ = std::move (newAnalyzerAligner);
-        analyzerInputAlignerMaxDelay_ = newAnalyzerMaxDelay;
-        apvts_.state.setProperty (topology::kTopologyPropertyKey, serializedTopology, nullptr);
-        setLatencySamples (newLatency);
-        hasCommittedValidTopology_ = true;
-        return true;
+        bundle = buildEngineBundle (committedDestinations_);
     }
     catch (const std::invalid_argument&)
     {
         topology::emitInvalidTopologyDiagnostic ("Morph");
-
-        if (! hasCommittedValidTopology_)
-            return tryApplyTopologyCandidate (kDefaultTopology);
-
-        return false;
+        setCommittedTopologyLocked (hasCommittedValidTopology_ ? lastBuiltDestinations_ : kDefaultTopology);
+        bundle = buildEngineBundle (committedDestinations_);
     }
+
+    lastBuiltDestinations_ = committedDestinations_;
+    hasCommittedValidTopology_ = true;
+    setLatencySamples (bundle->latency);
+    publishBundleLocked (std::move (bundle));
+    (void) acquirePendingEngine (true);
 }
 
-bool MorphAudioProcessor::tryApplyPendingTopologyCandidate() noexcept
+void MorphAudioProcessor::releaseEnginesLocked()
 {
-    std::vector<std::string> candidateDestinations;
-    if (! topoState_.tryConsume (candidateDestinations))
+    // Only called while the audio thread is not running, so this thread may act as its consumer.
+    if (fadingOut_ != nullptr)
+    {
+        (void) handoff_.retire (fadingOut_);
+        fadingOut_ = nullptr;
+    }
+
+    if (active_ != nullptr)
+    {
+        (void) handoff_.retire (active_);
+        active_ = nullptr;
+    }
+
+    fadePosition_ = 0;
+    activeHasProcessed_ = false;
+
+    handoff_.discardPending();
+    deferredBundle_.reset();
+    handoff_.reclaim();
+}
+
+void MorphAudioProcessor::reclaimLocked()
+{
+    handoff_.reclaim();
+
+    if (deferredBundle_ != nullptr)
+        (void) handoff_.publish (deferredBundle_);
+}
+
+void MorphAudioProcessor::timerCallback()
+{
+    std::unique_lock<std::mutex> lock (controlMutex_, std::try_to_lock);
+
+    if (lock.owns_lock())
+        reclaimLocked();
+}
+
+//==============================================================================
+// Topology (audio side)
+//==============================================================================
+
+bool MorphAudioProcessor::acquirePendingEngine (bool immediate) noexcept
+{
+    if (fadingOut_ != nullptr)
+    {
+        // Finish the running switch first; the latest pending engine waits in the hand-off.
+        if (! immediate)
+            return false;
+
+        (void) handoff_.retire (fadingOut_);
+        fadingOut_ = nullptr;
+        fadePosition_ = 0;
+    }
+
+    EngineBundle* const incoming = handoff_.acquire();
+    if (incoming == nullptr)
         return false;
 
-    return tryApplyTopologyCandidate (candidateDestinations);
+    if (active_ == nullptr || immediate || ! activeHasProcessed_)
+    {
+        // Nothing audible to fade from.
+        if (active_ != nullptr)
+            (void) handoff_.retire (active_);
+
+        active_ = incoming;
+    }
+    else
+    {
+        fadingOut_ = active_;
+        active_ = incoming;
+        fadePosition_ = 0;
+    }
+
+    activeHasProcessed_ = false;
+    return true;
+}
+
+double MorphAudioProcessor::fadeInGain (int position) const noexcept
+{
+    if (position + 1 >= fadeLength_)
+        return 1.0;
+
+    return static_cast<double> (position + 1) / static_cast<double> (fadeLength_);
 }
 
 //==============================================================================
@@ -164,19 +318,20 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     juce::ScopedNoDenormals noDenormals;
 
     // Safety check: processor must be prepared
-    if (dtcwptMain_ == nullptr || morphProcessor_ == nullptr)
+    if (active_ == nullptr)
         return;
 
     const int numSamples  = buffer.getNumSamples();
     const int numChannels = buffer.getNumChannels();
 
     // -------------------------------------------------------------------------
-    // 1. Topology dirty check — rebuild if the GUI has requested a change
+    // 1. Take an engine built by the control side, if there is one. Switching to it
+    //    is a short cross-fade; nothing is built, freed or reported to the host here.
     // -------------------------------------------------------------------------
-    (void) tryApplyPendingTopologyCandidate();
+    (void) acquirePendingEngine (false);
 
     // -------------------------------------------------------------------------
-    // 2. Read APVTS atomic float parameters → set targets on MorphBandProcessor
+    // 2. Read APVTS atomic float parameters → set targets on MorphBandProcessor(s)
     // -------------------------------------------------------------------------
     const float magnitudeF  = apvts_.getRawParameterValue (ParamID::Magnitude)->load();
     const float phaseF      = apvts_.getRawParameterValue (ParamID::Phase)->load();
@@ -186,12 +341,22 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     const double threshLinear = juce::Decibels::decibelsToGain (thresholdDB);
 
-    morphProcessor_->setTargets (static_cast<double> (magnitudeF),
-                                  static_cast<double> (phaseF),
-                                  threshLinear,
-                                  bypassLow,
-                                  bypassHigh);
+    active_->morph->setTargets (static_cast<double> (magnitudeF),
+                                static_cast<double> (phaseF),
+                                threshLinear,
+                                bypassLow,
+                                bypassHigh);
 
+    EngineBundle* const outgoing = fadingOut_;
+
+    if (outgoing != nullptr)
+    {
+        outgoing->morph->setTargets (static_cast<double> (magnitudeF),
+                                     static_cast<double> (phaseF),
+                                     threshLinear,
+                                     bypassLow,
+                                     bypassHigh);
+    }
 
     // -------------------------------------------------------------------------
     // 3. Save a copy of the float input for the spectrum bridge (mono-averaged)
@@ -248,17 +413,59 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
 
     // -------------------------------------------------------------------------
-    // 6. Process sidechain (must be called BEFORE processBlock)
+    // 6. Process sidechain (must be called BEFORE processBlock) and main audio.
+    //    During a switch the outgoing engine keeps running on the unfaded input
+    //    and the incoming engine gets the input faded in.
     // -------------------------------------------------------------------------
-    dtcwptMain_->processSidechain (scDoubleBuffer_);
+    if (outgoing != nullptr)
+    {
+        fadeOutBuffer_.setSize (2, numSamples, false, false, true);
+
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const double* main = mainDoubleBuffer_.getReadPointer (ch);
+            double* const old = fadeOutBuffer_.getWritePointer (ch);
+            std::copy (main, main + numSamples, old);
+        }
+
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            double* const main = mainDoubleBuffer_.getWritePointer (ch);
+            for (int i = 0; i < numSamples; ++i)
+                main[i] *= fadeInGain (fadePosition_ + i);
+        }
+
+        outgoing->engine->processSidechain (scDoubleBuffer_);
+        outgoing->engine->processBlock (fadeOutBuffer_);
+    }
+
+    active_->engine->processSidechain (scDoubleBuffer_);
+    active_->engine->processBlock (mainDoubleBuffer_);
+
+    if (outgoing != nullptr)
+    {
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            double* const main = mainDoubleBuffer_.getWritePointer (ch);
+            const double* const old = fadeOutBuffer_.getReadPointer (ch);
+            for (int i = 0; i < numSamples; ++i)
+                main[i] += old[i] * (1.0 - fadeInGain (fadePosition_ + i));
+        }
+
+        fadePosition_ += numSamples;
+
+        if (fadePosition_ >= fadeLength_)
+        {
+            (void) handoff_.retire (outgoing);
+            fadingOut_ = nullptr;
+            fadePosition_ = 0;
+        }
+    }
+
+    activeHasProcessed_ = true;
 
     // -------------------------------------------------------------------------
-    // 7. Process main audio
-    // -------------------------------------------------------------------------
-    dtcwptMain_->processBlock (mainDoubleBuffer_);
-
-    // -------------------------------------------------------------------------
-    // 8. Convert double output → float main buffer (channels 0 & 1 only)
+    // 7. Convert double output → float main buffer (channels 0 & 1 only)
     // -------------------------------------------------------------------------
     for (int ch = 0; ch < 2; ++ch)
     {
@@ -269,7 +476,7 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
 
     // -------------------------------------------------------------------------
-    // 9. Push mono-averaged input + output to SpectrumDataBridge
+    // 8. Push mono-averaged input + output to SpectrumDataBridge
     //    Use pre-allocated outputMonoScratch_ member to avoid heap allocation
     //    on the audio thread.
     // -------------------------------------------------------------------------
@@ -283,9 +490,9 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                      0.5f);
     }
 
-    analyzerInputAligner_.processBlock (inputMonoScratch_.getReadPointer (0),
-                                        alignedInputMonoScratch_.getWritePointer (0),
-                                        numSamples);
+    active_->aligner.processBlock (inputMonoScratch_.getReadPointer (0),
+                                   alignedInputMonoScratch_.getWritePointer (0),
+                                   numSamples);
 
     spectrumBridge_.push (alignedInputMonoScratch_.getReadPointer (0),
                            outputMonoScratch_.getReadPointer (0),
@@ -354,79 +561,64 @@ void MorphAudioProcessor::changeProgramName (int /*index*/, const juce::String& 
 
 void MorphAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    // APVTS copyState serialises all parameters AND any ValueTree properties,
-    // including the "topology" string property we set on apvts_.state.
+    std::lock_guard<std::mutex> lock (controlMutex_);
+
+    // Save a copy: the committed topology is attached to the copy, the live ValueTree is not written to.
+    juce::ValueTree state = apvts_.copyState();
+    state.setProperty (topology::kTopologyPropertyKey,
+                       topology::serializeTopologyDestinations (committedDestinations_),
+                       nullptr);
+
     juce::MemoryOutputStream stream (destData, true);
-    apvts_.state.writeToStream (stream);
+    state.writeToStream (stream);
 }
 
 void MorphAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     juce::ValueTree state = juce::ValueTree::readFromData (data,
                                                             static_cast<std::size_t> (sizeInBytes));
-    if (state.isValid())
+    if (! state.isValid())
+        return;
+
+    std::lock_guard<std::mutex> lock (controlMutex_);
+
+    const auto restoredTopology = topology::resolvePersistedTopology (state, committedDestinations_);
+    apvts_.replaceState (state);
+
+    if (restoredTopology.persistedState == topology::PersistedTopologyState::invalid)
     {
-        apvts_.replaceState (state);
+        topology::emitInvalidTopologyDiagnostic ("Morph");
 
-        const auto restoredTopology = topology::resolvePersistedTopology (apvts_.state, currentDestinations_);
-        if (restoredTopology.persistedState != topology::PersistedTopologyState::valid)
-        {
-            apvts_.state.setProperty (topology::kTopologyPropertyKey,
-                                      topology::serializeTopologyDestinations (currentDestinations_),
-                                      nullptr);
-        }
+        if (! hasCommittedValidTopology_)
+            setCommittedTopologyLocked (kDefaultTopology);
 
-        if (restoredTopology.persistedState == topology::PersistedTopologyState::invalid)
-            topoState_.requestChange ({});
-        else
-            topoState_.requestChange (restoredTopology.destinations);
+        return;
     }
+
+    if (restoredTopology.persistedState == topology::PersistedTopologyState::valid)
+        (void) commitTopologyLocked (restoredTopology.destinations);
 }
 
-std::vector<std::string> MorphAudioProcessor::getStoredTopologyDestinations() const
+bool MorphAudioProcessor::applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations)
 {
-    return topology::resolvePersistedTopology (apvts_.state, currentDestinations_).destinations;
+    const bool accepted = requestTopologyChange (candidateDestinations);
+    (void) adoptPendingEngineForTest();
+    return accepted;
 }
 
-bool MorphAudioProcessor::requestTopologyChange (const std::vector<std::string>& destinations)
+bool MorphAudioProcessor::adoptPendingEngineForTest() noexcept
 {
-    topoState_.requestChange (destinations);
-    return true;
+    return acquirePendingEngine (true);
 }
 
-std::vector<std::string> MorphAudioProcessor::getCommittedTopology() const
+int MorphAudioProcessor::getCommittedTopologyDepthForTest() const
 {
-    return getStoredTopologyDestinations();
-}
-
-std::uint64_t MorphAudioProcessor::getTopologyGeneration() const noexcept
-{
-    return 0;
-}
-
-bool MorphAudioProcessor::applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations) noexcept
-{
-    return tryApplyTopologyCandidate (candidateDestinations);
-}
-
-bool MorphAudioProcessor::rebuildPendingTopologyForTest() noexcept
-{
-    return tryApplyPendingTopologyCandidate();
-}
-
-juce::String MorphAudioProcessor::getPersistedTopologyStringForTest() const
-{
-    return apvts_.state.getProperty (topology::kTopologyPropertyKey).toString();
-}
-
-int MorphAudioProcessor::getCommittedTopologyDepthForTest() const noexcept
-{
-    return getTopologyDepth (currentDestinations_);
+    return getTopologyDepth (getCommittedTopology());
 }
 
 int MorphAudioProcessor::getAnalyzerInputDelaySamplesForTest() const noexcept
 {
-    return analyzerInputAligner_.getDelaySamples();
+    return active_ != nullptr ? active_->aligner.getDelaySamples() : 0;
 }
 
 bool MorphAudioProcessor::consumeSpectrumSnapshotForTest (

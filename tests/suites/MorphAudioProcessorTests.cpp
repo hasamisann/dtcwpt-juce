@@ -213,11 +213,20 @@ private:
 
         ProcessRunResult result;
         result.output = captureQuantizedMainOutput (buffer);
-        result.committedDestinations = processor.getCommittedDestinationsForTest();
-        result.persistedTopology = processor.getPersistedTopologyStringForTest();
+        result.committedDestinations = processor.getCommittedTopology();
+        result.persistedTopology = readPersistedTopologyString (processor);
         result.latencySamples = processor.getLatencySamples();
         result.analyzerDelaySamples = processor.getAnalyzerInputDelaySamplesForTest();
         return result;
+    }
+
+    /** The topology string a host would persist: read back from the saved state, not from internals. */
+    static juce::String readPersistedTopologyString (MorphAudioProcessor& processor)
+    {
+        juce::MemoryBlock state;
+        processor.getStateInformation (state);
+        const auto tree = juce::ValueTree::readFromData (state.getData(), state.getSize());
+        return tree.getProperty (topology::kTopologyPropertyKey).toString();
     }
 
     static juce::MemoryBlock getStateInformationCopy (MorphAudioProcessor& processor)
@@ -395,7 +404,8 @@ private:
         const auto* originalMorphProcessor = guardedProcessor->getObservedMorphProcessorForTest();
 
         topology::resetInvalidTopologyDiagnosticsForTest();
-        guardedProcessor->getTopologyState().requestChange ({ "LLLLLLLLLLLLL" });
+        expect (! guardedProcessor->requestTopologyChange ({ "LLLLLLLLLLLLL" }),
+                "Over-deep hot-swap request should be rejected");
 
         const auto baselineRun = processOnce (*baselineProcessor, mainSignal, sidechainSignal);
         const auto guardedRun = processOnce (*guardedProcessor, mainSignal, sidechainSignal);
@@ -441,9 +451,9 @@ private:
                 "Processor should keep a valid engine after invalid restore fallback");
         expect (processor->getObservedMorphProcessorForTest() != nullptr,
                 "Processor should keep a valid band processor after invalid restore fallback");
-        expect (processor->getCommittedDestinationsForTest() == getDefaultTopology(),
+        expect (processor->getCommittedTopology() == getDefaultTopology(),
                 "Invalid persisted topology should fall back to the built-in default topology");
-        expect (processor->getPersistedTopologyStringForTest() == expectedDefaultTopology,
+        expect (readPersistedTopologyString (*processor) == expectedDefaultTopology,
                 "Fallback should store the built-in default topology back into APVTS state");
         expectQuantizedOutputsEqual (referenceRun.output, fallbackRun.output,
                                      "Invalid restore fallback should remain behaviorally identical to a fresh default processor");
@@ -480,9 +490,9 @@ private:
         const auto restoredRun = processOnce (*restoredProcessor, mainSignal, sidechainSignal);
         const auto referenceRun = processOnce (*referenceProcessor, mainSignal, sidechainSignal);
 
-        expect (restoredProcessor->getCommittedDestinationsForTest() == topologyCandidate,
+        expect (restoredProcessor->getCommittedTopology() == topologyCandidate,
                 "Restored processor should commit the topology stored in the persisted state");
-        expectEquals (restoredProcessor->getPersistedTopologyStringForTest(), expectedPersistedTopology,
+        expectEquals (readPersistedTopologyString (*restoredProcessor), expectedPersistedTopology,
                       "Restored processor should round-trip the persisted topology string");
         expectQuantizedOutputsEqual (referenceRun.output, restoredRun.output,
                                      "Valid restored state should preserve observable processor behavior");
@@ -512,7 +522,7 @@ private:
         auto restoredProcessor = std::make_unique<MorphAudioProcessor>();
         restoredProcessor->setStateInformation (stateData.getData(), static_cast<int> (stateData.getSize()));
         restoredProcessor->prepareToPlay (TestUtils::TestConfig::SAMPLE_RATE, kBlockSize);
-        expect (restoredProcessor->getCommittedDestinationsForTest() == restoredTopology,
+        expect (restoredProcessor->getCommittedTopology() == restoredTopology,
                 "Restore flow should commit the topology stored in state before bridge observation");
         expectLatencyAlignedSnapshot (*restoredProcessor, "State-restore flow");
     }
@@ -548,9 +558,9 @@ private:
         expect (counter.getCount() == 0,
                 "Committed Morph processBlock scenarios should remain allocation-free; found "
                     + juce::String (static_cast<int> (counter.getCount())) + " allocations");
-        expect (noSidechainProcessor->getCommittedDestinationsForTest() == topologyCandidate,
+        expect (noSidechainProcessor->getCommittedTopology() == topologyCandidate,
                 "Allocation-free no-sidechain coverage should preserve the committed topology");
-        expect (duplicatedSidechainProcessor->getCommittedDestinationsForTest() == topologyCandidate,
+        expect (duplicatedSidechainProcessor->getCommittedTopology() == topologyCandidate,
                 "Allocation-free explicit-sidechain coverage should preserve the committed topology");
     }
 

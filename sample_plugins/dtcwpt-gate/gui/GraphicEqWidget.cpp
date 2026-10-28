@@ -29,14 +29,10 @@ GraphicEqWidget::GraphicEqWidget (GateAudioProcessor& processor, float sampleRat
 
     activeBandGestures_.fill (false);
 
-    // Fetch initial destinations from topology state
-    // We get a fresh copy each timer tick so we don't query it per-paint
-    processor_.getTopologyState().tryConsume (currentDestinations_);
-    if (currentDestinations_.empty())
-    {
-        // default fallback if state hasn't tickled us yet
-        currentDestinations_ = { "H", "LH", "LLH", "LLLH", "LLLLH", "LLLLLH", "LLLLLL" };
-    }
+    // Fetch the committed topology. The generation is read first so that a change landing in
+    // between is picked up by the next timer tick instead of being missed.
+    lastTopologyGeneration_ = processor_.getTopologyGeneration();
+    currentDestinations_ = processor_.getCommittedTopology();
 
     // Cache parameters
     for (int i = 0; i < GateBandProcessor::kMaxBands; ++i)
@@ -471,42 +467,13 @@ void GraphicEqWidget::mouseExit (const juce::MouseEvent&)
 
 void GraphicEqWidget::timerCallback()
 {
-    // Also poll topology state in case we need to add/remove bands visually
-    std::vector<std::string> pendingDestinations;
-    
-    // We can't actually consume the main topo state here safely since the audio thread
-    // is ALSO trying to consume it. BUT the topo change comes FROM the GUI and should 
-    // be persistent globally. Ideally we ask GateAudioProcessor for the current known destinations.
-    // Hack around to avoid reading from topo state directly, instead we rely on audio processor
-    // Wait... this GUI widget might occasionally miss band destinations if they change dynamically.
-    // In our specific case, GateAudioProcessor doesn't expose it. We could read from TopoState directly, 
-    // but the AudioWorker might steal it first.
-    // Let's implement TopoState peek or just read from ValueTree.
-    
-    // Actually, reading from TopoState `tryConsume` is flawed if multiple consumers exist.
-    // A better approach is to read the ValueTree topology property, but we can't do that easily without a lock.
-    // For now, let's just use the current APVTS ValueTree property `topology`.
-    
-    juce::var prop = processor_.getAPVTS().state.getProperty ("topology");
-    if (prop.isString())
+    // Pick up topology changes (editor edits, state restore, preset load) via the generation counter.
+    const auto generation = processor_.getTopologyGeneration();
+    if (generation != lastTopologyGeneration_)
     {
-        std::vector<std::string> newDests;
-        if (prop.toString().isEmpty())
-        {
-            newDests.push_back ("");
-        }
-        else
-        {
-            auto tokens = juce::StringArray::fromTokens (prop.toString(), ",", "");
-            for (const auto& t : tokens)
-                newDests.push_back (t.toStdString());
-        }
-        
-        if (newDests != currentDestinations_)
-        {
-            currentDestinations_ = newDests;
-        }
+        lastTopologyGeneration_ = generation;
+        currentDestinations_ = processor_.getCommittedTopology();
     }
-    
+
     repaint();
 }

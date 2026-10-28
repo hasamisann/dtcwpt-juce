@@ -18,6 +18,7 @@
 #include "../GateAudioProcessor.h"
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -34,7 +35,7 @@ public:
     /**
      * @brief Constructs the GraphicEqWidget.
      *
-     * @param processor  Reference to the main audio processor (for APVTS, TopologyState, etc.)
+     * @param processor  Reference to the main audio processor (for APVTS, committed topology, etc.)
      * @param sampleRate The current audio sample rate (used for calculating Nyquist frequency mappings)
      */
     GraphicEqWidget (GateAudioProcessor& processor, float sampleRate);
@@ -111,6 +112,9 @@ private:
 
     // Cached current destinations for stable drawing (refreshed in paint)
     std::vector<std::string> currentDestinations_;
+
+    /** Topology generation currentDestinations_ was read at. */
+    std::uint64_t lastTopologyGeneration_ { 0 };
 
     //==============================================================================
     // Cached Parameters
