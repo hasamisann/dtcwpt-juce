@@ -71,6 +71,8 @@ public:
 
     void processBlock(juce::AudioBuffer<double>& buffer);
 
+    void processBlock(juce::AudioBuffer<double>& buffer, const juce::AudioBuffer<double>* sidechain);
+
     int getLatency() const;
 
     /**

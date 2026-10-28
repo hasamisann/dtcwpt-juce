@@ -1094,6 +1094,14 @@ void DTCWPTProcessor::processBlock(juce::AudioBuffer<double>& buffer) {
     }
 }
 
+void DTCWPTProcessor::processBlock(juce::AudioBuffer<double>& buffer, const juce::AudioBuffer<double>* sidechain) {
+    // TDD red stage: forwards to the legacy two-call sequence (placeholder for the new API).
+    if (sidechain != nullptr) {
+        processSidechain(const_cast<juce::AudioBuffer<double>&>(*sidechain));
+    }
+    processBlock(buffer);
+}
+
 // Performs analysis filter bank processing for a single block
 void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
                                       AnalysisNodeGroup& nodeGroup,
