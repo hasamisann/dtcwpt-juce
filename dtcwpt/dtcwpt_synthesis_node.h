@@ -67,6 +67,19 @@ public:
      */
     int getFilterHighDelay() const { return filterHigh_.getDelay(); }
 
+#if DTCWPT_ENABLE_TEST_SEAMS
+    /// Test seam: total multiply-accumulates executed by this node's filters.
+    unsigned long long getMacCountForTesting() const noexcept {
+        return filterLow_.getMacCountForTesting() + filterHigh_.getMacCountForTesting();
+    }
+
+    /// Test seam: clears the multiply-accumulate counters.
+    void resetMacCountForTesting() noexcept {
+        filterLow_.resetMacCountForTesting();
+        filterHigh_.resetMacCountForTesting();
+    }
+#endif
+
 private:
     StatefulFilter filterLow_;   ///< Low-pass synthesis filter
     StatefulFilter filterHigh_;  ///< High-pass synthesis filter

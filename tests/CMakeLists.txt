@@ -57,11 +57,13 @@ target_sources(dtcwpt_tests
         suites/AnalysisSynthesisTests.cpp
         suites/ComplexUtilsTests.cpp
         suites/DelayBufferTests.cpp
+        suites/DspBenchmarks.cpp
         suites/DTCWPTProcessorTests.cpp
         suites/MorphAudioProcessorTests.cpp
         suites/GateAudioProcessorTests.cpp
         suites/MorphBandProcessorTests.cpp
         suites/StatefulFilterTests.cpp
+        suites/SynthesisPolyphaseTests.cpp
         suites/TopologyPlannerTests.cpp
         suites/TopologyStateTests.cpp
         suites/TopologySplitOrderTests.cpp

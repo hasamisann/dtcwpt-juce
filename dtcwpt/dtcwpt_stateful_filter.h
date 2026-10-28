@@ -58,12 +58,28 @@ public:
      */
     void reset();
 
+#if DTCWPT_ENABLE_TEST_SEAMS
+    /**
+     * @brief Total multiply-accumulate operations executed by filtering() so far.
+     *
+     * Test seam: counts every kernel tap visited, including taps whose
+     * coefficient or input sample happens to be zero.
+     */
+    unsigned long long getMacCountForTesting() const noexcept { return macCount_; }
+
+    /// Test seam: clears the multiply-accumulate counter.
+    void resetMacCountForTesting() noexcept { macCount_ = 0; }
+#endif
+
 private:
     std::vector<double> kernel_;       ///< Filter coefficients
     std::vector<double> mirrorBuffer_; ///< Ring buffer with mirroring (size * 2)
     size_t size_;                      ///< Buffer size (kernel length)
     size_t cursor_;                    ///< Current write position
     int delay_;                        ///< Filter delay
+#if DTCWPT_ENABLE_TEST_SEAMS
+    unsigned long long macCount_ = 0;  ///< Test seam: multiply-accumulate counter
+#endif
 };
 
 } // namespace dtcwpt

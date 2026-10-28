@@ -16,7 +16,10 @@
 #include "../util/TestUtils.h"
 
 #include <juce_core/juce_core.h>
+#include <algorithm>
 #include <cmath>
+#include <random>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -155,6 +158,12 @@ public:
 
         beginTest ("9. Threshold boundary preserves full phase replacement");
         testThresholdBoundaryPreservesPhaseReplacement();
+
+        beginTest ("10. Vector phase interpolation matches the polar (atan2/cos/sin) reference");
+        testMatchesPolarReference();
+
+        beginTest ("11. Zero-length vectors are defined as the unit vector (1, 0)");
+        testZeroLengthVectorsUseUnitX();
     }
 
 private:
@@ -560,6 +569,203 @@ private:
                                        "Threshold equality should preserve the main magnitude");
             expectWithinAbsoluteError (outPhase, PI / 2.0, tol,
                                        "Threshold equality should not attenuate sidechain phase replacement");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Reference: the original polar-form implementation (complexToMagPhase,
+    // cos/sin unit vectors, atan2 of the lerped vector, cos/sin back).
+    // -----------------------------------------------------------------------
+    struct PolarResult { double re, im, lerpLength; };
+
+    static PolarResult polarReference (double mainRe, double mainIm,
+                                       double scRe, double scIm,
+                                       double mag, double ph, double thr)
+    {
+        const double mainM = std::sqrt (mainRe * mainRe + mainIm * mainIm);
+        const double mainP = std::atan2 (mainIm, mainRe);
+        const double scM   = std::sqrt (scRe * scRe + scIm * scIm);
+        const double scP   = std::atan2 (scIm, scRe);
+
+        const double outMag = mainM + mag * (scM - mainM);
+
+        double effPhase = ph;
+        if (scM < thr && thr > 0.0)
+        {
+            effPhase *= (scM * 0.5 / thr);
+            effPhase  = std::clamp (effPhase, 0.0, ph);
+        }
+
+        const double rx = std::cos (mainP);
+        const double ry = std::sin (mainP);
+        const double sx = std::cos (scP);
+        const double sy = std::sin (scP);
+        const double lx = rx + effPhase * (sx - rx);
+        const double ly = ry + effPhase * (sy - ry);
+        const double outPhase = std::atan2 (ly, lx);
+
+        return { outMag * std::cos (outPhase), outMag * std::sin (outPhase),
+                 std::hypot (lx, ly) };
+    }
+
+    // Runs MorphBandProcessor on one band of samples with fixed (non-ramping)
+    // parameters and compares every output with polarReference().
+    // Returns the number of samples whose error exceeds 1e-12 relative to the
+    // output magnitude, and the largest relative error seen. Samples whose
+    // interpolated unit vector (almost) cancels to zero are skipped: their
+    // direction is rounding noise in the reference and is pinned down by test 11.
+    std::pair<int, double> compareWithReference (const std::vector<double>& mainRe,
+                                                 const std::vector<double>& mainIm,
+                                                 const std::vector<double>& scRe,
+                                                 const std::vector<double>& scIm,
+                                                 double mag, double ph, double thr)
+    {
+        const auto n = mainRe.size();
+        SynthBandData sb;
+        sb.init (1, 1, static_cast<int> (n), {5});
+        sb.mainRe[0][0] = mainRe;  sb.mainIm[0][0] = mainIm;
+        sb.scRe[0][0]   = scRe;    sb.scIm[0][0]   = scIm;
+
+        MorphBandProcessor proc;
+        proc.prepare (48000.0, static_cast<int> (n), 1, 1);
+        proc.setTargets (mag, ph, thr, false, false);
+        proc.reset();   // snap the smoothers to the targets: constant parameters
+        proc.processAllBands (sb.data);
+
+        int bad = 0;
+        double worst = 0.0;
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            const auto ref = polarReference (mainRe[i], mainIm[i], scRe[i], scIm[i], mag, ph, thr);
+            if (ref.lerpLength < 1.0e-9)
+                continue;
+            const double refMag = std::hypot (ref.re, ref.im);
+            const double err = std::hypot (sb.mainRe[0][0][i] - ref.re,
+                                           sb.mainIm[0][0][i] - ref.im);
+            const double rel = refMag > 0.0 ? err / refMag : err;
+            worst = std::max (worst, rel);
+            if (! (rel <= 1.0e-12))
+                ++bad;
+        }
+        return { bad, worst };
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 10: Equivalence with the polar implementation
+    // -----------------------------------------------------------------------
+    void testMatchesPolarReference()
+    {
+        std::mt19937 rng (TestUtils::TestConfig::RANDOM_SEED);
+        std::uniform_real_distribution<double> unit (-1.0, 1.0);
+        std::uniform_real_distribution<double> exponent (-6.0, 1.0);
+
+        constexpr std::size_t n = 512;
+        std::vector<double> mRe (n), mIm (n), sRe (n), sIm (n);
+        auto fill = [&] (std::vector<double>& re, std::vector<double>& im)
+        {
+            for (std::size_t i = 0; i < n; ++i)
+            {
+                const double scale = std::pow (10.0, exponent (rng));
+                re[i] = scale * unit (rng);
+                im[i] = scale * unit (rng);
+            }
+        };
+
+        int totalBad = 0;
+        double worst = 0.0;
+        for (double mag : { 0.0, 0.25, 0.5, 1.0 })
+            for (double ph : { 0.0, 0.3, 0.5, 0.8, 1.0 })
+                for (double thr : { 0.0, 0.01, 0.5, 5.0 })
+                {
+                    fill (mRe, mIm);
+                    fill (sRe, sIm);
+                    const auto r = compareWithReference (mRe, mIm, sRe, sIm, mag, ph, thr);
+                    totalBad += r.first;
+                    worst = std::max (worst, r.second);
+                }
+        expectEquals (totalBad, 0, "Random data: samples differing from the polar reference by more than 1e-12 (worst "
+                                       + juce::String (worst) + ")");
+
+        // Boundary cases: axes, negative real axis, zeros, equal and opposite-ish
+        // vectors, and tiny magnitudes.
+        const std::vector<std::pair<double, double>> points = {
+            { 0.0, 0.0 }, { 1.0, 0.0 }, { 0.0, 1.0 }, { -1.0, 0.0 }, { 0.0, -1.0 },
+            { 1.0, 1.0 }, { -1.0, 1.0 }, { 1.0, -1.0 }, { -1.0, -1.0 },
+            { 3.0, 4.0 }, { 1.0e-100, -2.0e-100 }, { 1.0e-9, 0.0 }, { 1.0e6, -1.0e6 },
+            { -1.0, 1.0e-10 }, { -1.0, -1.0e-10 }
+        };
+        std::vector<double> bmRe, bmIm, bsRe, bsIm;
+        for (const auto& a : points)
+            for (const auto& b : points)
+            {
+                bmRe.push_back (a.first);  bmIm.push_back (a.second);
+                bsRe.push_back (b.first);  bsIm.push_back (b.second);
+            }
+
+        int boundaryBad = 0;
+        for (double mag : { 0.0, 0.5, 1.0 })
+            for (double ph : { 0.0, 0.3, 0.7, 1.0 })
+                for (double thr : { 0.0, 0.5, 10.0 })
+                {
+                    auto r = compareWithReference (bmRe, bmIm, bsRe, bsIm, mag, ph, thr);
+                    boundaryBad += r.first;
+                }
+        expectEquals (boundaryBad, 0,
+                      "Boundary cases: samples differing from the polar reference by more than 1e-12");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 11: |c| = 0 handling
+    // -----------------------------------------------------------------------
+    void testZeroLengthVectorsUseUnitX()
+    {
+        // Main (2, 0) vs sidechain (-3, 0), phase 0.5: the interpolated unit
+        // vector is exactly (0, 0). It is defined as (1, 0), so the output keeps
+        // the interpolated magnitude on the real axis.
+        {
+            SynthBandData sb;
+            sb.init (1, 1, 1, {5});
+            sb.mainRe[0][0][0] = 2.0;  sb.mainIm[0][0][0] = 0.0;
+            sb.scRe[0][0][0]   = -3.0; sb.scIm[0][0][0]   = 0.0;
+
+            MorphBandProcessor proc;
+            proc.prepare (48000.0, 1, 1, 1);
+            proc.setTargets (0.0, 0.5, 0.0, false, false);
+            proc.reset();
+            proc.processAllBands (sb.data);
+
+            expectWithinAbsoluteError (sb.mainRe[0][0][0], 2.0, 1.0e-12,
+                                       "Cancelling lerp: output must lie on the real axis with the main magnitude");
+            expectWithinAbsoluteError (sb.mainIm[0][0][0], 0.0, 1.0e-12,
+                                       "Cancelling lerp: no imaginary component");
+        }
+
+        // Zero main / zero sidechain samples.
+        {
+            SynthBandData sb;
+            sb.init (1, 1, 3, {5});
+            // sample 0: main zero, sc non-zero -> direction of a zero vector is (1, 0)
+            sb.mainRe[0][0][0] = 0.0;  sb.mainIm[0][0][0] = 0.0;
+            sb.scRe[0][0][0]   = 0.0;  sb.scIm[0][0][0]   = 4.0;
+            // sample 1: main non-zero, sc zero
+            sb.mainRe[0][0][1] = 0.0;  sb.mainIm[0][0][1] = 3.0;
+            sb.scRe[0][0][1]   = 0.0;  sb.scIm[0][0][1]   = 0.0;
+            // sample 2: both zero
+            sb.mainRe[0][0][2] = 0.0;  sb.mainIm[0][0][2] = 0.0;
+            sb.scRe[0][0][2]   = 0.0;  sb.scIm[0][0][2]   = 0.0;
+
+            MorphBandProcessor proc;
+            proc.prepare (48000.0, 3, 1, 1);
+            proc.setTargets (1.0, 0.0, 0.0, false, false);   // magnitude from sc, phase from main
+            proc.reset();
+            proc.processAllBands (sb.data);
+
+            expectWithinAbsoluteError (sb.mainRe[0][0][0], 4.0, 1.0e-12, "Zero main phase is 0: Re = scMag");
+            expectWithinAbsoluteError (sb.mainIm[0][0][0], 0.0, 1.0e-12, "Zero main phase is 0: Im = 0");
+            expectWithinAbsoluteError (sb.mainRe[0][0][1], 0.0, 1.0e-12, "Zero sidechain magnitude: Re = 0");
+            expectWithinAbsoluteError (sb.mainIm[0][0][1], 0.0, 1.0e-12, "Zero sidechain magnitude: Im = 0");
+            expectWithinAbsoluteError (sb.mainRe[0][0][2], 0.0, 1.0e-12, "Both zero: Re = 0");
+            expectWithinAbsoluteError (sb.mainIm[0][0][2], 0.0, 1.0e-12, "Both zero: Im = 0");
         }
     }
 };

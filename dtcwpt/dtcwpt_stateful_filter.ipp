@@ -45,6 +45,10 @@ double StatefulFilter::filtering() {
         idx = static_cast<int>(cursor_) - 1 + static_cast<int>(size_);
     }
 
+#if DTCWPT_ENABLE_TEST_SEAMS
+    macCount_ += kernel_.size();
+#endif
+
     double result = 0.0;
     for (size_t i = 0; i < kernel_.size(); ++i) {
         result += kernel_[i] * mirrorBuffer_[static_cast<size_t>(idx)];
