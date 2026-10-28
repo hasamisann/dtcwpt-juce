@@ -6,7 +6,7 @@
  *  - Passthrough (magnitude=0, phase=0)
  *  - Full magnitude replacement
  *  - Full phase replacement
- *  - Threshold gate attenuation
+ *  - Threshold gate attenuation (and its continuity / monotonicity at the threshold)
  *  - Bypass Low / Bypass High band
  *  - Per-sample SmoothedValue advancement
  *  - Reset snaps SmoothedValue
@@ -16,6 +16,7 @@
 #include "../util/TestUtils.h"
 
 #include <juce_core/juce_core.h>
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -155,6 +156,15 @@ public:
 
         beginTest ("9. Threshold boundary preserves full phase replacement");
         testThresholdBoundaryPreservesPhaseReplacement();
+
+        beginTest ("10. Threshold gate is continuous across the threshold");
+        testThresholdGateContinuity();
+
+        beginTest ("11. Threshold gate coefficient is monotonic in sidechain magnitude");
+        testThresholdGateMonotonic();
+
+        beginTest ("12. Non-positive threshold disables the gate");
+        testNonPositiveThresholdDisablesGate();
     }
 
 private:
@@ -561,6 +571,120 @@ private:
             expectWithinAbsoluteError (outPhase, PI / 2.0, tol,
                                        "Threshold equality should not attenuate sidechain phase replacement");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper: measure the phase interpolation amount k in [0, 1] per sample.
+    //
+    // Main is the constant unit vector at phase 0, the sidechain has phase
+    // pi/2 and the per-sample magnitude scAmp[s]. With magnitude = 0 and
+    // phase = 1, the output vector is (1 - k, k) up to scale, where k is the
+    // effective phase ratio after the threshold gate:
+    //   k = sin(phi) / (sin(phi) + cos(phi)),  phi = output phase.
+    // The first kSettle samples let the 20 ms SmoothedValues reach their
+    // targets (882 samples at 44.1 kHz), so callers read only s >= kSettle.
+    // -----------------------------------------------------------------------
+    static constexpr std::size_t kSettle = 1000;
+
+    static std::vector<double> measurePhaseRatio (const std::vector<double>& scAmp,
+                                                  double threshold)
+    {
+        const auto n = scAmp.size();
+
+        SynthBandData sb;
+        sb.init (1, 1, static_cast<int> (n), {5});
+        for (std::size_t s = 0; s < n; ++s)
+        {
+            sb.mainRe[0][0][s] = 1.0;
+            sb.mainIm[0][0][s] = 0.0;
+            sb.scRe[0][0][s]   = 0.0;
+            sb.scIm[0][0][s]   = scAmp[s];
+        }
+
+        MorphBandProcessor proc;
+        proc.prepare (44100.0, static_cast<int> (n), 1, 1);
+        proc.setTargets (0.0, 1.0, threshold, false, false);
+        proc.processAllBands (sb.data);
+
+        std::vector<double> k (n, 0.0);
+        for (std::size_t s = 0; s < n; ++s)
+        {
+            const double phi = std::atan2 (sb.mainIm[0][0][s], sb.mainRe[0][0][s]);
+            k[s] = std::sin (phi) / (std::sin (phi) + std::cos (phi));
+        }
+        return k;
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 10: Continuity at the threshold
+    // -----------------------------------------------------------------------
+    void testThresholdGateContinuity()
+    {
+        constexpr double thr = 0.5;
+        constexpr double eps = 1.0e-6;
+        constexpr std::size_t n = kSettle + 100;
+
+        const auto kBelow = measurePhaseRatio (std::vector<double> (n, thr * (1.0 - eps)), thr);
+        const auto kAbove = measurePhaseRatio (std::vector<double> (n, thr * (1.0 + eps)), thr);
+
+        const double below = kBelow[n - 1];
+        const double above = kAbove[n - 1];
+
+        // Just above the threshold the gate is open: full phase replacement.
+        expectWithinAbsoluteError (above, 1.0, 1.0e-5,
+                                   "Just above the threshold the phase ratio should be 1");
+
+        // The ratio must not jump when crossing the threshold.
+        expectWithinAbsoluteError (below, above, 1.0e-3,
+                                   "Phase ratio should be continuous across the threshold");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 11: Monotonic in the sidechain magnitude, 0 .. 1.25 * threshold
+    // -----------------------------------------------------------------------
+    void testThresholdGateMonotonic()
+    {
+        constexpr double thr = 0.5;
+        constexpr std::size_t sweepLen = 256;
+        constexpr std::size_t n = kSettle + sweepLen + 1;
+
+        std::vector<double> scAmp (n, thr);
+        for (std::size_t i = 0; i <= sweepLen; ++i)
+            scAmp[kSettle + i] = 1.25 * thr * static_cast<double> (i) / static_cast<double> (sweepLen);
+        scAmp[kSettle] = 1.0e-9; // avoid an exactly zero sidechain vector
+
+        const auto k = measurePhaseRatio (scAmp, thr);
+
+        bool monotonic = true;
+        bool saturated = true;
+        double maxStep = 0.0;
+        for (std::size_t i = 1; i <= sweepLen; ++i)
+        {
+            const std::size_t s = kSettle + i;
+            if (k[s] < k[s - 1] - 1.0e-9)
+                monotonic = false;
+            maxStep = std::max (maxStep, std::abs (k[s] - k[s - 1]));
+            if (scAmp[s] >= thr && std::abs (k[s] - 1.0) > 1.0e-5)
+                saturated = false;
+        }
+
+        expect (monotonic, "Phase ratio should be non-decreasing as the sidechain magnitude grows");
+        // One sweep step changes scMag / thr by 1.25 / 256 (about 0.005), so a
+        // continuous coefficient moves by a comparable amount per step.
+        expect (maxStep < 0.02, "Phase ratio should not jump between adjacent sweep points");
+        expect (saturated, "Phase ratio should be 1 once the sidechain magnitude reaches the threshold");
+        expect (k[kSettle] < 1.0e-3, "Phase ratio should be about 0 for a vanishing sidechain");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 12: threshold <= 0 means no attenuation
+    // -----------------------------------------------------------------------
+    void testNonPositiveThresholdDisablesGate()
+    {
+        constexpr std::size_t n = kSettle + 100;
+        const auto k = measurePhaseRatio (std::vector<double> (n, 1.0e-4), 0.0);
+        expectWithinAbsoluteError (k[n - 1], 1.0, 1.0e-5,
+                                   "With threshold 0 even a weak sidechain should replace the phase fully");
     }
 };
 
