@@ -8,6 +8,7 @@
 #include "dtcwpt_synthesis_node.ipp"
 #include "dtcwpt_delay_buffer.ipp"
 #include "dtcwpt_topology_planner.ipp"
+#include "dtcwpt_frequency_mapping.ipp"
 #include "dtcwpt_band_processor.ipp"
 #include "dtcwpt_complex_utils.ipp"
 #include "dtcwpt_processor.ipp"

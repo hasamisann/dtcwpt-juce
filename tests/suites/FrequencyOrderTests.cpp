@@ -10,7 +10,7 @@
 
 #include <dtcwpt/dtcwpt_processor.h>
 #include <dtcwpt/dtcwpt_band_processor.h>
-#include "../../sample_plugins/dtcwpt-gate/gui/GateGuiFrequencyMapping.h"
+#include <dtcwpt/dtcwpt_frequency_mapping.h>
 
 #include <juce_core/juce_core.h>
 #include <juce_audio_basics/juce_audio_basics.h>
@@ -72,6 +72,16 @@ struct PeakBands
     size_t im = 0;
 };
 
+std::vector<dtcwpt::NormalizedFrequencyRange> destinationRanges (const std::vector<std::string>& destinations)
+{
+    dtcwpt::TopologyConfig config;
+    config.destinations = destinations;
+
+    dtcwpt::DTCWPTProcessor processor;
+    processor.prepareToPlay (kSampleRate, 512, config, 1);
+    return processor.getDestinationFrequencyRanges();
+}
+
 PeakBands measurePeakBands (const std::vector<std::string>& destinations, double frequencyHz)
 {
     constexpr int blockSize = 512;
@@ -130,7 +140,9 @@ public:
                     p += ((i >> bit) & 1) ? 'H' : 'L';
                 dests.push_back (p);
             }
-            checkTopologyAtBandCentres (dests);
+            // Bands are 1.5 kHz wide here and the level-1 filter's transition band around
+            // 12 kHz is wider than half a band, so probe 70% into each band instead of its centre.
+            checkTopologyAtBandCentres (dests, 0.7);
         }
 
         beginTest ("DWT depth 5 (mixed depths): sine energy peaks in the band reported for that frequency");
@@ -156,19 +168,30 @@ public:
     }
 
 private:
-    void checkTopologyAtBandCentres (const std::vector<std::string>& dests)
+    void checkTopologyAtBandCentres (const std::vector<std::string>& dests, double position = 0.5)
     {
-        for (const auto& path : dests)
+        const auto ranges = destinationRanges (dests);
+        expectEquals (static_cast<int> (ranges.size()), static_cast<int> (dests.size()));
+        if (ranges.size() != dests.size())
+            return;
+
+        for (size_t i = 0; i < dests.size(); ++i)
         {
-            const auto [lo, hi] = gate_gui::getBandFrequencyRange (path, static_cast<float> (kNyquist));
-            const double centre = 0.5 * (static_cast<double> (lo) + static_cast<double> (hi));
-            const auto peak = measurePeakBands (dests, centre);
+            const auto& path = dests[i];
+
+            // The engine's per-destination ranges agree with the per-path lookup.
+            const auto byPath = dtcwpt::getNormalizedFrequencyRange (path);
+            expectEquals (ranges[i].lo, byPath.lo);
+            expectEquals (ranges[i].hi, byPath.hi);
+
+            const double tone = (ranges[i].lo + position * (ranges[i].hi - ranges[i].lo)) * kNyquist;
+            const auto peak = measurePeakBands (dests, tone);
 
             expectEquals (dests[peak.re], path,
-                          "tone at centre of " + juce::String (path) + " (" + juce::String (centre)
+                          "tone in " + juce::String (path) + " (" + juce::String (tone)
                           + " Hz), Re tree peak band");
             expectEquals (dests[peak.im], path,
-                          "tone at centre of " + juce::String (path) + " (" + juce::String (centre)
+                          "tone in " + juce::String (path) + " (" + juce::String (tone)
                           + " Hz), Im tree peak band");
         }
     }

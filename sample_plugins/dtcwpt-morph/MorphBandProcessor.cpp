@@ -161,6 +161,6 @@ bool MorphBandProcessor::isLowBand (int nodeId) noexcept
 
 bool MorphBandProcessor::isHighBand (int nodeId) noexcept
 {
-    // All bits set: (n & (n+1)) == 0 — represents the H-only deep path
-    return nodeId > 0 && (nodeId & (nodeId + 1)) == 0;
+    // The band touching Nyquist; path strings are in Gray-code frequency order
+    return nodeId > 0 && dtcwpt::getNormalizedFrequencyRange (nodeId).hi >= 1.0;
 }

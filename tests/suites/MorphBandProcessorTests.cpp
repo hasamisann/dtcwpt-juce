@@ -144,7 +144,7 @@ public:
         beginTest ("5. Bypass Low: power-of-2 node ID band passes through unchanged");
         testBypassLow();
 
-        beginTest ("6. Bypass High: all-bits-set node ID band passes through unchanged");
+        beginTest ("6. Bypass High: node ID of the band touching Nyquist passes through unchanged");
         testBypassHigh();
 
         beginTest ("7. SmoothedValue ramps — first sample not at full target");
@@ -422,10 +422,10 @@ private:
     // -----------------------------------------------------------------------
     void testBypassHigh()
     {
-        // Band 0: nodeId=127 (binary 01111111 → all bits set → isHighBand → bypassed)
-        // Band 1: nodeId=5   (not high → processed)
+        // Band 0: nodeId=96 (HLLLLL: the band whose upper edge is Nyquist → isHighBand → bypassed)
+        // Band 1: nodeId=5  (not high → processed)
         SynthBandData sb;
-        sb.init (1, 2, 64, {127, 5});
+        sb.init (1, 2, 64, {96, 5});
         sb.fillMainSine (0.5);
         sb.fillScSine (0.8, 0.3);
 
