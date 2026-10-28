@@ -16,7 +16,7 @@ GateEditor::GateEditor (GateAudioProcessor& p)
     // is not guaranteed to be initialised here.
     // Make sure that before the constructor has finished, you've set the
     // editor's size to whatever you need it to be.
-    setSize (500, 420);
+    setSize (500, 498);
 
     // Add views
     addAndMakeVisible (mainView_);
