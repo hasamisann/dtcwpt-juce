@@ -78,6 +78,15 @@ void GateAudioProcessor::releaseResources()
     analyzerInputAligner_.reset();
 }
 
+void GateAudioProcessor::reset()
+{
+    if (dtcwptMain_ != nullptr)
+        dtcwptMain_->reset();
+
+    analyzerInputAligner_.reset();
+    bandLevelBridge_.reset();
+}
+
 //==============================================================================
 // Private helper: rebuild DTCWPTProcessor
 //==============================================================================

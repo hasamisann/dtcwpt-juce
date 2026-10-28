@@ -714,6 +714,81 @@ void DTCWPTProcessor::setBandProcessor(std::unique_ptr<BandProcessor> processor)
     }
 }
 
+void DTCWPTProcessor::reset() {
+    if (!prepared_) {
+        return;
+    }
+
+    // Everything below only overwrites storage allocated by prepareToPlay().
+    auto zero = [](auto& values) { std::fill(values.begin(), values.end(), 0.0); };
+
+    for (int ch = 0; ch < channelNum_; ++ch) {
+        const size_t c = static_cast<size_t>(ch);
+
+        for (auto& node : analysisNodesRe_[c].nodes) node.reset();
+        for (auto& node : analysisNodesIm_[c].nodes) node.reset();
+        for (auto& node : synthesisNodesRe_[c].nodes) node.reset();
+        for (auto& node : synthesisNodesIm_[c].nodes) node.reset();
+        for (auto& node : scAnalysisNodesRe_[c].nodes) node.reset();
+        for (auto& node : scAnalysisNodesIm_[c].nodes) node.reset();
+
+        resetAnalysisRuntimeState(analysisRuntimeStatesRe_[c]);
+        resetAnalysisRuntimeState(analysisRuntimeStatesIm_[c]);
+        resetAnalysisRuntimeState(scAnalysisRuntimeStatesRe_[c]);
+        resetAnalysisRuntimeState(scAnalysisRuntimeStatesIm_[c]);
+
+        for (auto& buffer : delayBuffersRe_[c]) buffer.reset();
+        for (auto& buffer : delayBuffersIm_[c]) buffer.reset();
+        for (auto& buffer : scDelayBuffersRe_[c]) buffer.reset();
+        for (auto& buffer : scDelayBuffersIm_[c]) buffer.reset();
+
+        for (auto& results : resultsRe_[c]) zero(results);
+        for (auto& results : resultsIm_[c]) zero(results);
+        for (auto& results : scResultsRe_[c]) zero(results);
+        for (auto& results : scResultsIm_[c]) zero(results);
+        std::fill(cursorsRe_[c].begin(), cursorsRe_[c].end(), size_t{0});
+        std::fill(cursorsIm_[c].begin(), cursorsIm_[c].end(), size_t{0});
+        std::fill(scCursorsRe_[c].begin(), scCursorsRe_[c].end(), size_t{0});
+        std::fill(scCursorsIm_[c].begin(), scCursorsIm_[c].end(), size_t{0});
+
+        // FIFOs: back to the prepareToPlay() state, i.e. empty input and an output
+        // that still owes one internal block of startup silence.
+        zero(inputFifo_[c]);
+        zero(outputFifo_[c]);
+        zero(scInputFifo_[c]);
+        inputFifoFill_[c] = 0;
+        scInputFifoFill_[c] = 0;
+        outputFifoRead_[c] = 0;
+        outputFifoFill_[c] = internalBlockSize_;
+
+        zero(delayTempBuffer_[c]);
+        zero(scDelayTempBuffer_[c]);
+        zero(scAdjustedChannels_[c]);
+        zero(alignedInputBuffers_[c]);
+        zero(alignedSidechainBuffers_[c]);
+    }
+
+    zero(inputBlockBuffer_);
+    zero(delaySliceBuffer_);
+    zero(scInputBlockBuffer_);
+    zero(scDelaySliceBuffer_);
+    zero(analysisWorkBuffer_);
+    zero(scAnalysisWorkBuffer_);
+    std::fill(analysisActiveFlags_.begin(), analysisActiveFlags_.end(), static_cast<char>(0));
+    std::fill(scAnalysisActiveFlags_.begin(), scAnalysisActiveFlags_.end(), static_cast<char>(0));
+    std::fill(channelHasData_.begin(), channelHasData_.end(), static_cast<char>(0));
+    std::fill(scChannelHasData_.begin(), scChannelHasData_.end(), static_cast<char>(0));
+    alignedOutputBuffer_.clear();
+
+    sidechainActive_ = false;
+    sidechainProcessedThisBlock_ = false;
+    expectedSidechainSamples_ = 0;
+
+    if (bandProcessor_) {
+        bandProcessor_->reset();
+    }
+}
+
 void DTCWPTProcessor::processSidechain(juce::AudioBuffer<double>& sidechainBuffer) {
     const int numSamples = sidechainBuffer.getNumSamples();
     const int numChannels = sidechainBuffer.getNumChannels();

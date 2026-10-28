@@ -67,6 +67,11 @@ public:
      */
     int getFilterHighDelay() const { return filterHigh_.getDelay(); }
 
+    /**
+     * @brief Clears the state of both synthesis filters.
+     */
+    void reset();
+
 private:
     StatefulFilter filterLow_;   ///< Low-pass synthesis filter
     StatefulFilter filterHigh_;  ///< High-pass synthesis filter

@@ -91,6 +91,14 @@ void MorphAudioProcessor::releaseResources()
     analyzerInputAligner_.reset();
 }
 
+void MorphAudioProcessor::reset()
+{
+    if (dtcwptMain_ != nullptr)
+        dtcwptMain_->reset();
+
+    analyzerInputAligner_.reset();
+}
+
 //==============================================================================
 // Private helper: rebuild DTCWPTProcessor
 //==============================================================================

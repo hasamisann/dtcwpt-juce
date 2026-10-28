@@ -52,4 +52,10 @@ bool AnalysisNode::processArrival(double sampleValue, AnalysisChildOutputs& outp
     }
 }
 
+void AnalysisNode::reset() {
+    filterLow_.reset();
+    filterHigh_.reset();
+    parity_ = false;
+}
+
 } // namespace dtcwpt

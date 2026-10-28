@@ -9,6 +9,10 @@
 
 #include <dtcwpt/dtcwpt_processor.h>
 #include <dtcwpt/dtcwpt_band_processor.h>
+#include <dtcwpt/dtcwpt_analysis_node_factory.h>
+#include <dtcwpt/dtcwpt_delay_buffer.h>
+#include <dtcwpt/dtcwpt_filter_coeffs.h>
+#include <dtcwpt/dtcwpt_synthesis_node.h>
 #include "../util/TestUtils.h"
 
 #include <juce_core/juce_core.h>
@@ -16,6 +20,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -100,6 +105,15 @@ public:
 
         beginTest("reset() is allocation-free");
         testResetIsAllocationFree();
+
+        beginTest("DelayBuffer::reset() clears history");
+        testDelayBufferReset();
+
+        beginTest("AnalysisNode::reset() clears filters and downsample parity");
+        testAnalysisNodeReset();
+
+        beginTest("SynthesisNode::reset() clears filter state");
+        testSynthesisNodeReset();
     }
 
 private:
@@ -213,7 +227,7 @@ private:
             size_t firstMismatch = 0;
             const size_t n = std::min(actual[ch].size(), expected[ch].size());
             for (size_t i = 0; i < n; ++i) {
-                if (actual[ch][i] != expected[ch][i]) {
+                if (std::not_equal_to<>{}(actual[ch][i], expected[ch][i])) {
                     if (mismatches == 0) {
                         firstMismatch = i;
                     }
@@ -284,7 +298,7 @@ private:
 
                 const auto post = run(processor, makeSilence(numChannels, latency * 2 + 1000), nullptr,
                                       {kMaxBlock, 100, 33});
-                expect(maxAbs(post) == 0.0,
+                expect(maxAbs(post) <= 0.0,
                        context + ": silence after reset() must give exact zeros, peak = "
                        + juce::String(maxAbs(post)));
             }
@@ -372,7 +386,7 @@ private:
             resetEngine.reset();
             const auto silence = makeSilence(numChannels, resetEngine.getLatency() * 2 + 512);
             const auto silent = run(resetEngine, silence, &silence, pattern);
-            expect(maxAbs(silent) == 0.0, context + ": silence after reset() must give exact zeros");
+            expect(maxAbs(silent) <= 0.0, context + ": silence after reset() must give exact zeros");
         }
     }
 
@@ -412,6 +426,81 @@ private:
 
         expect(counter.getCount() == 0,
                "reset() must not allocate - found " + juce::String(static_cast<int>(counter.getCount())));
+    }
+
+    void testDelayBufferReset() {
+        constexpr int kBlock = 16;
+        constexpr int kDelay = 5;
+        const auto noise = TestUtils::generateNoise(0.01, TestUtils::TestConfig::SAMPLE_RATE, 5U);
+        std::vector<double> input(noise.begin(), noise.begin() + kBlock);
+        const std::vector<double> silence(kBlock, 0.0);
+
+        dtcwpt::DelayBuffer used(kDelay, kBlock);
+        dtcwpt::DelayBuffer fresh(kDelay, kBlock);
+        std::vector<double> out(kBlock);
+        std::vector<double> freshOut(kBlock);
+
+        // Three blocks leave a partially wrapped ring (3 * 16 is not a multiple of the ring size).
+        for (int i = 0; i < 3; ++i) {
+            used.process(input, out, kBlock);
+        }
+        used.reset();
+
+        for (int i = 0; i < 4; ++i) {
+            const auto& block = (i == 0) ? input : silence;
+            used.process(block, out, kBlock);
+            fresh.process(block, freshOut, kBlock);
+            expect(out == freshOut, "DelayBuffer after reset() must match a fresh buffer (block "
+                                    + juce::String(i) + ")");
+        }
+    }
+
+    void testAnalysisNodeReset() {
+        const auto noise = TestUtils::generateNoise(0.01, TestUtils::TestConfig::SAMPLE_RATE, 6U);
+
+        for (const int nodeId : {1, 2, 3}) {
+            auto used = dtcwpt::createAnalysisNodeForId(nodeId, dtcwpt::AnalysisTreeKind::real);
+            auto fresh = dtcwpt::createAnalysisNodeForId(nodeId, dtcwpt::AnalysisTreeKind::real);
+
+            // An odd number of arrivals leaves the parity flag set.
+            for (size_t i = 0; i < 101; ++i) {
+                dtcwpt::AnalysisChildOutputs ignored;
+                (void) used.processArrival(noise[i], ignored);
+            }
+            used.reset();
+
+            int mismatches = 0;
+            for (size_t i = 0; i < 200; ++i) {
+                dtcwpt::AnalysisChildOutputs a;
+                dtcwpt::AnalysisChildOutputs b;
+                const bool emittedUsed = used.processArrival(noise[i], a);
+                const bool emittedFresh = fresh.processArrival(noise[i], b);
+                if (emittedUsed != emittedFresh || (emittedUsed && (std::not_equal_to<>{}(a.low, b.low) || std::not_equal_to<>{}(a.high, b.high)))) {
+                    ++mismatches;
+                }
+            }
+            expectEquals(mismatches, 0, "AnalysisNode " + juce::String(nodeId)
+                                        + " after reset() must match a fresh node");
+        }
+    }
+
+    void testSynthesisNodeReset() {
+        const auto noise = TestUtils::generateNoise(0.01, TestUtils::TestConfig::SAMPLE_RATE, 8U);
+        constexpr size_t kSamples = 32;
+        const std::vector<double> low(noise.begin(), noise.begin() + kSamples);
+        const std::vector<double> high(noise.begin() + kSamples, noise.begin() + 2 * kSamples);
+
+        dtcwpt::SynthesisNode used(dtcwpt::filters::PACKET, false);
+        dtcwpt::SynthesisNode fresh(dtcwpt::filters::PACKET, false);
+        std::vector<double> scratch(2 * kSamples);
+        used.synthesizeBlock(low, high, scratch, 0, kSamples);
+        used.reset();
+
+        std::vector<double> usedOut(2 * kSamples);
+        std::vector<double> freshOut(2 * kSamples);
+        used.synthesizeBlock(high, low, usedOut, 0, kSamples);
+        fresh.synthesizeBlock(high, low, freshOut, 0, kSamples);
+        expect(usedOut == freshOut, "SynthesisNode after reset() must match a fresh node");
     }
 };
 

@@ -1,5 +1,6 @@
 #include "dtcwpt_analysis_scheduler.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace dtcwpt {
@@ -64,6 +65,16 @@ AnalysisRuntimeState buildAnalysisRuntimeState(const AnalysisSchedulerMetadata& 
     state.arrivalGeneration.assign(static_cast<std::size_t>(metadata.maxNodeId), 0);
     state.frontierInternalWorkItems.assign(metadata.frontierCapacity, AnalysisWorkItem{});
     return state;
+}
+
+void resetAnalysisRuntimeState(AnalysisRuntimeState& state) noexcept
+{
+    std::fill(state.transportedValues.begin(), state.transportedValues.end(), 0.0);
+    std::fill(state.arrivalGeneration.begin(), state.arrivalGeneration.end(), std::uint64_t{0});
+    std::fill(state.frontierInternalWorkItems.begin(), state.frontierInternalWorkItems.end(), AnalysisWorkItem{});
+    state.frontierHead = 0;
+    state.frontierSize = 0;
+    state.currentGeneration = 0;
 }
 
 void beginAnalysisSample(AnalysisRuntimeState& state) noexcept

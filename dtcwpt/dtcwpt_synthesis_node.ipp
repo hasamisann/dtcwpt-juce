@@ -29,4 +29,9 @@ void SynthesisNode::synthesizeBlock(const std::vector<double>& lowBuf,
     }
 }
 
+void SynthesisNode::reset() {
+    filterLow_.reset();
+    filterHigh_.reset();
+}
+
 } // namespace dtcwpt

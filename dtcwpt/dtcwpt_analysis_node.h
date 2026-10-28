@@ -84,6 +84,12 @@ public:
      */
     bool processArrival(double sampleValue, AnalysisChildOutputs& outputs) noexcept;
 
+    /**
+     * @brief Clears both filters and returns the downsample parity to its initial
+     *        state (the next arrival is an emitting one), as after construction.
+     */
+    void reset();
+
 private:
     StatefulFilter filterLow_;   ///< Low-pass analysis filter
     StatefulFilter filterHigh_;  ///< High-pass analysis filter

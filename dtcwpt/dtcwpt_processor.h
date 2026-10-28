@@ -73,7 +73,20 @@ public:
 
     int getLatency() const;
 
-    void reset() {}  // red stub: intentionally does nothing yet
+    /**
+     * @brief Clears all streaming state, as if prepareToPlay() had just been called.
+     *
+     * Intended for host transport stop/seek and loop restarts: filter histories,
+     * delay-compensation buffers, analysis decimator parity and scheduler state
+     * (main and sidechain), input/sidechain FIFOs, and the output FIFO (refilled with
+     * its initial latency of zeros) are returned to their post-prepareToPlay state, and
+     * BandProcessor::reset() is called. The topology, latency and registered
+     * BandProcessor are unchanged.
+     *
+     * Does nothing if prepareToPlay() has not been called. Does not allocate.
+     * Must not run concurrently with processBlock() / processSidechain().
+     */
+    void reset();
 
     /**
      * @brief Register a band processor. Takes ownership.

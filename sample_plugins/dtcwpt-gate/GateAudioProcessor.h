@@ -81,6 +81,16 @@ public:
     void releaseResources() override;
 
     /**
+     * @brief Clears all streaming state (host transport stop, seek, loop restart).
+     *
+     * Resets the DTCWPTProcessor (including the GateBandProcessor levels), the analyzer
+     * latency aligner and the BandLevelBridge meters, so audio processed before the
+     * reset is not emitted afterwards. Does not allocate. Does nothing before
+     * prepareToPlay().
+     */
+    void reset() override;
+
+    /**
      * @brief Processes one block of audio.
      */
     void processBlock (juce::AudioBuffer<float>& buffer,

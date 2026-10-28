@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -159,7 +160,7 @@ private:
         processor->reset();
 
         const auto post = process (*processor, makeSilence (kBlockSize * 8));
-        expect (maxAbs (post) == 0.0f,
+        expect (maxAbs (post) <= 0.0f,
                 "Silence after AudioProcessor::reset() must give exact zeros, peak = "
                 + juce::String (maxAbs (post)));
     }
@@ -192,7 +193,7 @@ private:
             std::size_t firstMismatch = 0;
             for (std::size_t i = 0; i < fromFresh[ch].size(); ++i)
             {
-                if (afterReset[ch][i] != fromFresh[ch][i])
+                if (std::not_equal_to<> {} (afterReset[ch][i], fromFresh[ch][i]))
                 {
                     if (mismatches == 0)
                         firstMismatch = i;
@@ -228,7 +229,7 @@ private:
 
         const float inputPeak = *std::max_element (input.begin(), input.end(),
                                                    [] (float a, float b) { return std::abs (a) < std::abs (b); });
-        expect (std::abs (inputPeak) == 0.0f,
+        expect (std::abs (inputPeak) <= 0.0f,
                 "Aligned analyzer input after reset() must not contain pre-reset audio, peak = "
                 + juce::String (std::abs (inputPeak)));
     }

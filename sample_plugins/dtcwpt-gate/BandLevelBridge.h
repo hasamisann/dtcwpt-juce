@@ -33,7 +33,18 @@ public:
         numBands_.store(n, std::memory_order_relaxed);
     }
 
-    void reset() noexcept {}  // red stub: intentionally does nothing yet
+    /**
+     * @brief Resets all band levels to the floor (-80 dB) while keeping the band count,
+     *        so a GUI reading the bridge sees empty meters rather than an empty bridge.
+     *
+     * Called from AudioProcessor::reset(), never concurrently with update().
+     * Takes the lock (briefly contended only by a GUI read) so the reset is not dropped.
+     */
+    void reset() noexcept
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        levelsDb_.fill(-80.0f);
+    }
 
     /** GUI thread: read current band levels. Returns number of active bands. */
     int read(float* outLevelsDb) const
