@@ -63,6 +63,7 @@ void GateAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     analyzerInputAlignerMaxDelay_ = std::max (samplesPerBlock * 8, 0);
     analyzerInputAligner_.prepare (samplesPerBlock, analyzerInputAlignerMaxDelay_);
     analyzerInputAligner_.setDelaySamples (0);
+    displayWasActive_ = false;
 
     rebuildDTCWPT();
 }
@@ -188,15 +189,29 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     lastBypassLowestForTest_ = bypassLowestRaw_ != nullptr && bypassLowestRaw_->load() >= 0.5f;
     gateProcessor_->setBypassLowest(lastBypassLowestForTest_);
 
-    // 3. Snapshot input (mono-averaged) for spectrum
-    inputMonoScratch_.clear();
-    for (int ch = 0; ch < std::min (numChannels, 2); ++ch)
+    // 3. Snapshot input (mono-averaged) for spectrum.
+    //    Display-only data is built only while an editor is open. When the
+    //    display (re)starts, the analyzer history and the half-filled bridge
+    //    slot are dropped so that stale samples are never shown.
+    const bool displayActive = displayConsumers_.isActive();
+    if (displayActive && ! displayWasActive_)
     {
-        inputMonoScratch_.addFrom (0, 0,
-                                    buffer,
-                                    ch, 0,
-                                    numSamples,
-                                    1.0f / static_cast<float> (std::min (numChannels, 2)));
+        analyzerInputAligner_.reset();
+        spectrumBridge_.discardPartialSlot();
+    }
+    displayWasActive_ = displayActive;
+
+    if (displayActive)
+    {
+        inputMonoScratch_.clear();
+        for (int ch = 0; ch < std::min (numChannels, 2); ++ch)
+        {
+            inputMonoScratch_.addFrom (0, 0,
+                                        buffer,
+                                        ch, 0,
+                                        numSamples,
+                                        1.0f / static_cast<float> (std::min (numChannels, 2)));
+        }
     }
 
     // 4. Float → Double conversion for main input
@@ -214,9 +229,12 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     dtcwptMain_->processBlock (mainDoubleBuffer_);
 
     // 6. Push levels to bandLevelBridge_
-    float levels[GateBandProcessor::kMaxBands];
-    int nBands = gateProcessor_->getBandLevelsDb(levels);
-    bandLevelBridge_.update(levels, std::min(nBands, GateBandProcessor::kMaxBands));
+    if (displayActive)
+    {
+        float levels[GateBandProcessor::kMaxBands];
+        int nBands = gateProcessor_->getBandLevelsDb(levels);
+        bandLevelBridge_.update(levels, std::min(nBands, GateBandProcessor::kMaxBands));
+    }
 
     // 7. Double → Float conversion
     for (int ch = 0; ch < std::min(numChannels, 2); ++ch)
@@ -228,23 +246,26 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
 
     // 8. Snapshot output and push spectrum to bridge
-    outputMonoScratch_.clear();
-    for (int ch = 0; ch < std::min(numChannels, 2); ++ch)
+    if (displayActive)
     {
-        outputMonoScratch_.addFrom (0, 0,
-                                     buffer,
-                                     ch, 0,
-                                     numSamples,
-                                     1.0f / static_cast<float>(std::min(numChannels, 2)));
+        outputMonoScratch_.clear();
+        for (int ch = 0; ch < std::min(numChannels, 2); ++ch)
+        {
+            outputMonoScratch_.addFrom (0, 0,
+                                         buffer,
+                                         ch, 0,
+                                         numSamples,
+                                         1.0f / static_cast<float>(std::min(numChannels, 2)));
+        }
+
+        analyzerInputAligner_.processBlock (inputMonoScratch_.getReadPointer (0),
+                                            alignedInputMonoScratch_.getWritePointer (0),
+                                            numSamples);
+
+        spectrumBridge_.push (alignedInputMonoScratch_.getReadPointer (0),
+                               outputMonoScratch_.getReadPointer (0),
+                               numSamples);
     }
-
-    analyzerInputAligner_.processBlock (inputMonoScratch_.getReadPointer (0),
-                                        alignedInputMonoScratch_.getWritePointer (0),
-                                        numSamples);
-
-    spectrumBridge_.push (alignedInputMonoScratch_.getReadPointer (0),
-                           outputMonoScratch_.getReadPointer (0),
-                           numSamples);
 }
 
 //==============================================================================

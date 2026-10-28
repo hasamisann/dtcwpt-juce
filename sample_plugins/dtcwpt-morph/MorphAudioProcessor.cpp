@@ -74,6 +74,7 @@ void MorphAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     analyzerInputAlignerMaxDelay_ = std::max (samplesPerBlock * 8, 0);
     analyzerInputAligner_.prepare (samplesPerBlock, analyzerInputAlignerMaxDelay_);
     analyzerInputAligner_.setDelaySamples (0);
+    displayWasActive_ = false;
 
     // Build the DTCWPTProcessor
     rebuildDTCWPT();
@@ -197,15 +198,29 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // 3. Save a copy of the float input for the spectrum bridge (mono-averaged)
     //    Use the pre-allocated inputMonoScratch_ member to avoid heap allocation
     //    on the audio thread.
+    //    Display-only data is built only while an editor is open. When the
+    //    display (re)starts, the analyzer history and the half-filled bridge
+    //    slot are dropped so that stale samples are never shown.
     // -------------------------------------------------------------------------
-    inputMonoScratch_.clear();
-    for (int ch = 0; ch < std::min (numChannels, 2); ++ch)
+    const bool displayActive = displayConsumers_.isActive();
+    if (displayActive && ! displayWasActive_)
     {
-        inputMonoScratch_.addFrom (0, 0,
-                                    buffer,
-                                    ch, 0,
-                                    numSamples,
-                                    1.0f / static_cast<float> (std::min (numChannels, 2)));
+        analyzerInputAligner_.reset();
+        spectrumBridge_.discardPartialSlot();
+    }
+    displayWasActive_ = displayActive;
+
+    if (displayActive)
+    {
+        inputMonoScratch_.clear();
+        for (int ch = 0; ch < std::min (numChannels, 2); ++ch)
+        {
+            inputMonoScratch_.addFrom (0, 0,
+                                        buffer,
+                                        ch, 0,
+                                        numSamples,
+                                        1.0f / static_cast<float> (std::min (numChannels, 2)));
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -273,23 +288,26 @@ void MorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     //    Use pre-allocated outputMonoScratch_ member to avoid heap allocation
     //    on the audio thread.
     // -------------------------------------------------------------------------
-    outputMonoScratch_.clear();
-    for (int ch = 0; ch < 2; ++ch)
+    if (displayActive)
     {
-        outputMonoScratch_.addFrom (0, 0,
-                                     buffer,
-                                     ch, 0,
-                                     numSamples,
-                                     0.5f);
+        outputMonoScratch_.clear();
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            outputMonoScratch_.addFrom (0, 0,
+                                         buffer,
+                                         ch, 0,
+                                         numSamples,
+                                         0.5f);
+        }
+
+        analyzerInputAligner_.processBlock (inputMonoScratch_.getReadPointer (0),
+                                            alignedInputMonoScratch_.getWritePointer (0),
+                                            numSamples);
+
+        spectrumBridge_.push (alignedInputMonoScratch_.getReadPointer (0),
+                               outputMonoScratch_.getReadPointer (0),
+                               numSamples);
     }
-
-    analyzerInputAligner_.processBlock (inputMonoScratch_.getReadPointer (0),
-                                        alignedInputMonoScratch_.getWritePointer (0),
-                                        numSamples);
-
-    spectrumBridge_.push (alignedInputMonoScratch_.getReadPointer (0),
-                           outputMonoScratch_.getReadPointer (0),
-                           numSamples);
 }
 
 //==============================================================================

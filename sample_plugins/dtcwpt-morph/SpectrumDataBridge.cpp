@@ -1,6 +1,6 @@
 /**
  * @file SpectrumDataBridge.cpp
- * @brief Lock-free ring buffer implementation for audio→GUI spectrum data.
+ * @brief Lock-free triple-buffer implementation for audio→GUI spectrum data.
  */
 
 #include "SpectrumDataBridge.h"
@@ -28,36 +28,24 @@ void SpectrumDataBridge::push (const float* inputMono,
 
     while (remaining > 0)
     {
-        const int writeIdx = writeSlot_.load (std::memory_order_relaxed);
-        Slot&     slot     = slots_[static_cast<std::size_t> (writeIdx)];
+        Slot& slot = slots_.getWriteBuffer();
 
-        // How many samples can we write into the current slot?
-        const int available = kSlotSize - slot.fill.load (std::memory_order_relaxed);
-        const int toCopy    = std::min (remaining, available);
+        const int toCopy = std::min (remaining, kSlotSize - fill_);
 
-        // Copy samples into the current write slot
-        const int currentFill = slot.fill.load (std::memory_order_relaxed);
-        std::memcpy (slot.input.data()  + currentFill, inputMono  + srcOffset,
+        std::memcpy (slot.input.data()  + fill_, inputMono  + srcOffset,
                      static_cast<std::size_t> (toCopy) * sizeof (float));
-        std::memcpy (slot.output.data() + currentFill, outputMono + srcOffset,
+        std::memcpy (slot.output.data() + fill_, outputMono + srcOffset,
                      static_cast<std::size_t> (toCopy) * sizeof (float));
 
-        slot.fill.store (currentFill + toCopy, std::memory_order_relaxed);
+        fill_     += toCopy;
         srcOffset += toCopy;
         remaining -= toCopy;
 
-        // If the slot is now full, advance writeSlot_ to the next slot
-        if (slot.fill.load (std::memory_order_relaxed) >= kSlotSize)
+        if (fill_ >= kSlotSize)
         {
-            const int nextSlot = (writeIdx + 1) % kRingSlots;
-            // Reset the next slot's fill counter before advancing writeSlot_
-            // so the GUI thread never sees a partially-reset next slot.
-            // The subsequent writeSlot_.store(release) provides the necessary
-            // ordering to make this reset visible to the GUI thread.
-            slots_[static_cast<std::size_t> (nextSlot)].fill.store (0, std::memory_order_relaxed);
-            writeSlot_.store (nextSlot, std::memory_order_release);
-            // Signal that new completed data is available
-            hasNewData_.store (true, std::memory_order_release);
+            // Hand the completed slot over and continue in the buffer we get back.
+            slots_.publish();
+            fill_ = 0;
         }
     }
 }
@@ -69,16 +57,12 @@ void SpectrumDataBridge::push (const float* inputMono,
 bool SpectrumDataBridge::tryConsume (std::array<float, kSlotSize>& inputOut,
                                       std::array<float, kSlotSize>& outputOut)
 {
-    // Use hasNewData_ flag to detect new data, which correctly handles the
-    // case where writeSlot_ has wrapped around to equal readSlot_.
-    if (! hasNewData_.load (std::memory_order_acquire))
+    if (! slots_.acquire())
         return false;  // No new completed slot
 
-    const int write = writeSlot_.load (std::memory_order_acquire);
-
-    // The most-recently completed slot is the one just before writeSlot_.
-    const int latestCompleted = (write - 1 + kRingSlots) % kRingSlots;
-    const Slot& slot = slots_[static_cast<std::size_t> (latestCompleted)];
+    // The slot returned by getReadBuffer() belongs to this thread until the
+    // next successful acquire(), so the writer cannot touch it while we copy.
+    const Slot& slot = slots_.getReadBuffer();
 
     inputOut = slot.input;
 #if DTCWPT_ENABLE_TEST_SEAMS
@@ -86,9 +70,5 @@ bool SpectrumDataBridge::tryConsume (std::array<float, kSlotSize>& inputOut,
         consumeMidCopyHook_();
 #endif
     outputOut = slot.output;
-
-    // Clear the new-data flag and advance readSlot_ to match writeSlot_
-    hasNewData_.store (false, std::memory_order_release);
-    readSlot_.store (write, std::memory_order_release);
     return true;
 }

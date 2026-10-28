@@ -13,7 +13,8 @@
  *     (deterministic, via the mid-copy test seam).
  *  8. A slot completed while the reader is mid-consume is not lost
  *     (deterministic, via the mid-copy test seam).
- *  9. Concurrent writer/reader stress: no torn snapshots, tags never go
+ *  9. discardPartialSlot drops a half-filled slot without touching published ones.
+ * 10. Concurrent writer/reader stress: no torn snapshots, tags never go
  *     backwards, and the final slot is always observable (run under TSan).
  */
 
@@ -56,7 +57,10 @@ public:
         beginTest ("8. Slot completed during tryConsume is not lost");
         testSlotCompletedDuringConsumeIsNotLost();
 
-        beginTest ("9. Concurrent writer/reader stress keeps snapshots consistent");
+        beginTest ("9. discardPartialSlot drops only the unfinished slot");
+        testDiscardPartialSlot();
+
+        beginTest ("10. Concurrent writer/reader stress keeps snapshots consistent");
         testConcurrentStress();
     }
 
@@ -278,6 +282,31 @@ private:
 #else
         expect (false, "DTCWPT_ENABLE_TEST_SEAMS must be enabled");
 #endif
+    }
+
+    // -----------------------------------------------------------------------
+    void testDiscardPartialSlot()
+    {
+        SpectrumDataBridge bridge;
+        std::array<float, SpectrumDataBridge::kSlotSize> inOut {}, outOut {};
+
+        // Half a slot of stale samples is discarded; the next full slot is clean.
+        std::vector<float> stale (static_cast<std::size_t> (SpectrumDataBridge::kSlotSize / 2), 9.0f);
+        bridge.push (stale.data(), stale.data(), static_cast<int> (stale.size()));
+        bridge.discardPartialSlot();
+        pushConstantSlot (bridge, 1.0f);
+
+        expect (bridge.tryConsume (inOut, outOut), "A full slot after the discard should be delivered");
+        expectEquals (inOut.front(), 1.0f, "Slot must start with the post-discard samples");
+        expectEquals (inOut.back(), 1.0f, "Slot must not contain pre-discard samples");
+        expect (! bridge.tryConsume (inOut, outOut), "The discarded partial slot must not be published");
+
+        // A completed, not yet consumed slot survives a discard.
+        pushConstantSlot (bridge, 2.0f);
+        bridge.push (stale.data(), stale.data(), static_cast<int> (stale.size()));
+        bridge.discardPartialSlot();
+        expect (bridge.tryConsume (inOut, outOut), "A published slot survives discardPartialSlot");
+        expectEquals (inOut.front(), 2.0f);
     }
 
     // -----------------------------------------------------------------------

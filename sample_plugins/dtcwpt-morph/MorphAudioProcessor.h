@@ -27,6 +27,7 @@
 #include "TopologyState.h"
 #include "SpectrumDataBridge.h"
 #include "../common/AnalyzerLatencyAligner.h"
+#include "../common/DisplayConsumerCount.h"
 
 // Standard library
 #include <memory>
@@ -240,6 +241,15 @@ public:
     SpectrumDataBridge& getSpectrumBridge() noexcept { return spectrumBridge_; }
 
     /**
+     * @brief Registry of the GUI components that display audio-thread data.
+     *
+     * The editor holds a `DisplayConsumerCount::Scoped` for its lifetime. While
+     * no consumer is registered, processBlock() skips building display-only data
+     * (mono mix-down, analyzer alignment, spectrum bridge writes).
+     */
+    DisplayConsumerCount& getDisplayConsumerCount() noexcept { return displayConsumers_; }
+
+    /**
      * @brief Returns a reference to the atomic topology change handoff state.
      *
      * The GUI's TopologyEditorView writes to this; the audio thread reads it.
@@ -328,8 +338,14 @@ private:
     /** Atomic topology change handoff between GUI and audio threads. */
     TopologyState topoState_;
 
-    /** Lock-free ring buffer passing spectrum samples to the GUI thread. */
+    /** Lock-free triple buffer passing spectrum samples to the GUI thread. */
     SpectrumDataBridge spectrumBridge_;
+
+    /** Number of open editors; read by the audio thread to decide whether to build display data. */
+    DisplayConsumerCount displayConsumers_;
+
+    /** Whether display data was generated in the previous processBlock (audio thread only). */
+    bool displayWasActive_ { false };
 
     //==============================================================================
     // Double-precision conversion buffers (pre-allocated in prepareToPlay)

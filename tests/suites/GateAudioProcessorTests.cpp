@@ -46,6 +46,9 @@ public:
 
         beginTest ("Without an open editor processBlock does not feed the display bridges");
         testNoDisplayDataWithoutEditor();
+
+        beginTest ("Reopening the editor drops stale analyzer data");
+        testReopeningEditorDropsStaleAnalyzerData();
     }
 
 private:
@@ -69,9 +72,14 @@ private:
         return kDefaultTopology;
     }
 
-    static std::unique_ptr<GateAudioProcessor> createPreparedProcessor (int blockSize = kDefaultBlockSize)
+    /** The processor only builds display data while an editor is open; tests that observe
+        the bridges keep a display consumer registered for the processor's lifetime. */
+    static std::unique_ptr<GateAudioProcessor> createPreparedProcessor (int blockSize = kDefaultBlockSize,
+                                                                         bool withDisplayConsumer = true)
     {
         auto processor = std::make_unique<GateAudioProcessor>();
+        if (withDisplayConsumer)
+            processor->getDisplayConsumerCount().add();
         processor->prepareToPlay (TestUtils::TestConfig::SAMPLE_RATE, blockSize);
         return processor;
     }
@@ -278,6 +286,7 @@ private:
 
     void expectLatencyAlignedObservation (GateAudioProcessor& processor, const juce::String& context)
     {
+        DisplayConsumerCount::Scoped editorOpen (processor.getDisplayConsumerCount());
         const auto observation = captureObservation (processor);
 
         expectEquals (observation.analyzerInputDelaySamples, observation.latencySamples,
@@ -433,6 +442,7 @@ private:
 
         const auto state = captureState (*reference);
         auto restored = std::make_unique<GateAudioProcessor>();
+        restored->getDisplayConsumerCount().add();
         restored->setStateInformation (state.getData(), static_cast<int> (state.getSize()));
         restored->prepareToPlay (TestUtils::TestConfig::SAMPLE_RATE, kDefaultBlockSize);
 
@@ -628,7 +638,7 @@ private:
 
     void testNoDisplayDataWithoutEditor()
     {
-        auto processor = createPreparedProcessor();
+        auto processor = createPreparedProcessor (kDefaultBlockSize, false);
 
         // No editor has been created, so nothing consumes the display data.
         for (int block = 0; block < 8; ++block)
@@ -641,6 +651,62 @@ private:
                       "processBlock must not mono-mix, align and push spectrum data while no editor is open");
         expectEquals (static_cast<int> (processor->getBandLevelBridge().getUpdateCountForTest()), 0,
                       "processBlock must not publish band levels while no editor is open");
+
+        // Opening an editor starts the display data; closing it stops it again.
+        {
+            DisplayConsumerCount::Scoped editorOpen (processor->getDisplayConsumerCount());
+            auto processed = processMonoSignal (*processor, makeConstantSignal (kDefaultBlockSize, 0.5f));
+            ignoreUnused (processed);
+            expectEquals (static_cast<int> (processor->getSpectrumBridge().getPushCallCountForTest()), 1,
+                          "processBlock should push spectrum data while an editor is open");
+            expectEquals (static_cast<int> (processor->getBandLevelBridge().getUpdateCountForTest()), 1,
+                          "processBlock should publish band levels while an editor is open");
+        }
+
+        auto processed = processMonoSignal (*processor, makeConstantSignal (kDefaultBlockSize, 0.5f));
+        ignoreUnused (processed);
+        expectEquals (static_cast<int> (processor->getSpectrumBridge().getPushCallCountForTest()), 1,
+                      "processBlock should stop pushing spectrum data once the editor is closed");
+        expectEquals (static_cast<int> (processor->getBandLevelBridge().getUpdateCountForTest()), 1,
+                      "processBlock should stop publishing band levels once the editor is closed");
+    }
+
+    void testReopeningEditorDropsStaleAnalyzerData()
+    {
+        auto processor = createPreparedProcessor (kDefaultBlockSize, false);
+        expect (processor->getLatencySamples() > 0, "The default topology must have non-zero latency for this test");
+
+        auto processBlockOfConstant = [&] (float value)
+        {
+            auto processed = processMonoSignal (*processor, makeConstantSignal (kDefaultBlockSize, value));
+            ignoreUnused (processed);
+        };
+
+        {
+            // 1024 samples of DC: leaves a half-filled bridge slot and a non-empty analyzer delay line.
+            DisplayConsumerCount::Scoped editorOpen (processor->getDisplayConsumerCount());
+            processBlockOfConstant (0.5f);
+            processBlockOfConstant (0.5f);
+        }
+
+        // Editor closed while the host keeps running.
+        processBlockOfConstant (0.5f);
+
+        DisplayConsumerCount::Scoped editorReopened (processor->getDisplayConsumerCount());
+        for (int block = 0; block < SpectrumDataBridge::kSlotSize / kDefaultBlockSize; ++block)
+            processBlockOfConstant (0.0f);
+
+        std::array<float, SpectrumDataBridge::kSlotSize> input {}, output {};
+        expect (processor->getSpectrumBridge().tryConsume (input, output),
+                "A full slot of new samples should be available after reopening the editor");
+
+        int staleSamples = 0;
+        for (float sample : input)
+            if (sample != 0.0f)
+                ++staleSamples;
+
+        expectEquals (staleSamples, 0,
+                      "Samples from before the editor was closed must not reappear in the analyzer input");
     }
 };
 

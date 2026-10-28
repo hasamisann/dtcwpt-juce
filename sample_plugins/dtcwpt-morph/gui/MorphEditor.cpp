@@ -13,6 +13,7 @@
 
 MorphEditor::MorphEditor (MorphAudioProcessor& processor)
     : AudioProcessorEditor (processor)
+    , displayConsumer_ (processor.getDisplayConsumerCount())
     , mainView_     (processor)
     , topologyView_ (processor.getTopologyState(), 44100.0)
     , aboutView_    ([this] { showMain(); })

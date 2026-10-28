@@ -70,6 +70,7 @@ target_sources(dtcwpt_tests
         suites/GateGuiFrequencyMappingTests.cpp
         suites/SpectrumDataBridgeTests.cpp
         suites/BandLevelBridgeTests.cpp
+        suites/TripleBufferTests.cpp
         suites/GateBandProcessorTests.cpp
         suites/TopologyViewStateRestoreTests.cpp
         suites/InvalidTopologyDiagnosticsTests.cpp

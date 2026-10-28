@@ -52,6 +52,9 @@ public:
 
         beginTest ("Without an open editor processBlock does not feed the spectrum bridge");
         testNoSpectrumPushWithoutEditor();
+
+        beginTest ("Reopening the editor drops stale analyzer data");
+        testReopeningEditorDropsStaleAnalyzerData();
     }
 
 private:
@@ -253,6 +256,9 @@ private:
         constexpr int kBlocksPerSnapshot = SpectrumDataBridge::kSlotSize / kBlockSize;
         static_assert (SpectrumDataBridge::kSlotSize % kBlockSize == 0,
                        "Bridge snapshot helper expects the slot size to be divisible by the test block size");
+
+        // The processor only builds display data while an editor is open.
+        DisplayConsumerCount::Scoped editorOpen (processor.getDisplayConsumerCount());
 
         for (int block = 0; block < kBlocksPerSnapshot; ++block)
         {
@@ -615,6 +621,61 @@ private:
 
         expectEquals (static_cast<int> (processor->getSpectrumBridge().getPushCallCountForTest()), 0,
                       "processBlock must not mono-mix, align and push spectrum data while no editor is open");
+
+        // Opening an editor starts the display data; closing it stops it again.
+        {
+            DisplayConsumerCount::Scoped editorOpen (processor->getDisplayConsumerCount());
+            processBlockOfConstant (*processor, 0.25f);
+            expectEquals (static_cast<int> (processor->getSpectrumBridge().getPushCallCountForTest()), 1,
+                          "processBlock should push spectrum data while an editor is open");
+        }
+
+        processBlockOfConstant (*processor, 0.25f);
+        expectEquals (static_cast<int> (processor->getSpectrumBridge().getPushCallCountForTest()), 1,
+                      "processBlock should stop pushing once the editor is closed");
+    }
+
+    void testReopeningEditorDropsStaleAnalyzerData()
+    {
+        auto processor = createPreparedProcessor();
+        expect (processor->getLatencySamples() > 0, "The default topology must have non-zero latency for this test");
+
+        {
+            // 1024 samples of DC: leaves a half-filled bridge slot and a non-empty analyzer delay line.
+            DisplayConsumerCount::Scoped editorOpen (processor->getDisplayConsumerCount());
+            processBlockOfConstant (*processor, 0.5f);
+            processBlockOfConstant (*processor, 0.5f);
+        }
+
+        // Editor closed while the host keeps running.
+        processBlockOfConstant (*processor, 0.5f);
+
+        DisplayConsumerCount::Scoped editorReopened (processor->getDisplayConsumerCount());
+        for (int block = 0; block < SpectrumDataBridge::kSlotSize / kBlockSize; ++block)
+            processBlockOfConstant (*processor, 0.0f);
+
+        std::array<float, SpectrumDataBridge::kSlotSize> input {}, output {};
+        expect (processor->consumeSpectrumSnapshotForTest (input, output),
+                "A full slot of new samples should be available after reopening the editor");
+
+        int staleSamples = 0;
+        for (float sample : input)
+            if (sample != 0.0f)
+                ++staleSamples;
+
+        expectEquals (staleSamples, 0,
+                      "Samples from before the editor was closed must not reappear in the analyzer input");
+    }
+
+    static void processBlockOfConstant (MorphAudioProcessor& processor, float value)
+    {
+        juce::AudioBuffer<float> buffer (2, kBlockSize);
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < kBlockSize; ++i)
+                buffer.setSample (ch, i, value);
+
+        juce::MidiBuffer midi;
+        processor.processBlock (buffer, midi);
     }
 };
 

@@ -8,6 +8,7 @@ GateEditor::GateEditor (GateAudioProcessor& p)
     : AudioProcessorEditor (&p),
       processor_ (p),
       constructionSampleRate_ (resolveGateEditorConstructionSampleRate (p.getSampleRate())),
+      displayConsumer_ (p.getDisplayConsumerCount()),
       mainView_ (p, constructionSampleRate_),
       topoView_ (p.getTopologyState(), constructionSampleRate_),
       aboutView_ ([this] { showMain(); })

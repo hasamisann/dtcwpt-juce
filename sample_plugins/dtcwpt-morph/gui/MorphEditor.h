@@ -89,6 +89,12 @@ private:
     // Sub-views (owned by this editor)
     //==============================================================================
 
+    /**
+     * Tells the audio thread that display data is needed while this editor exists.
+     * Declared before the views so that it outlives them.
+     */
+    DisplayConsumerCount::Scoped displayConsumer_;
+
     /** Primary view with knobs, spectrum analyzer, and navigation buttons. */
     MainView mainView_;
 

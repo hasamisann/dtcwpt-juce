@@ -1,17 +1,21 @@
 #pragma once
 
+#include "../common/TripleBuffer.h"
+
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
-#include <mutex>
-#include <algorithm>
-#include <juce_core/juce_core.h>
 
 /**
  * @brief Lock-free audio->GUI transfer of per-band RMS levels.
  *
- * Audio thread writes via update() using try_lock (non-blocking).
- * GUI thread reads via read() (may block briefly).
+ * Built on `TripleBuffer`: the band count and the levels travel together in
+ * one snapshot, so the GUI never combines a band count with the levels of a
+ * different update. No mutex, no allocation, no data race; the GUI always sees
+ * the most recent update.
+ *
+ * Audio thread writes via update(); GUI thread reads via read().
  * Values are in dB, nominally clamped to [-80, 0] by the caller.
  */
 class BandLevelBridge
@@ -19,31 +23,34 @@ class BandLevelBridge
 public:
     static constexpr int kMaxBands = 256;
 
-    BandLevelBridge() noexcept { levelsDb_.fill(-80.0f); }
+    BandLevelBridge() = default;
 
-    /** Audio thread: update band levels. Non-blocking (try_lock). */
+    /** Audio thread: publish band levels. Wait-free. */
     void update(const float* levelsDb, int numBands) noexcept
     {
 #if DTCWPT_ENABLE_TEST_SEAMS
         updateCount_.fetch_add(1, std::memory_order_relaxed);
 #endif
-        const int n = std::min(numBands, kMaxBands);
-        if (mutex_.try_lock())
-        {
-            std::copy(levelsDb, levelsDb + n, levelsDb_.begin());
-            std::fill(levelsDb_.begin() + n, levelsDb_.end(), -80.0f);
-            mutex_.unlock();
-        }
-        numBands_.store(n, std::memory_order_relaxed);
+        const int n = std::clamp(numBands, 0, kMaxBands);
+
+        Snapshot& snapshot = snapshots_.getWriteBuffer();
+        std::copy(levelsDb, levelsDb + n, snapshot.levelsDb.begin());
+        snapshot.numBands = n;
+        snapshots_.publish();
     }
 
-    /** GUI thread: read current band levels. Returns number of active bands. */
-    int read(float* outLevelsDb) const
+    /**
+     * GUI thread: read the latest band levels into `outLevelsDb`
+     * (room for kMaxBands floats is required). Returns the number of active
+     * bands, or 0 before the first update().
+     */
+    int read(float* outLevelsDb) noexcept
     {
-        const int n = numBands_.load(std::memory_order_relaxed);
-        std::lock_guard<std::mutex> lock(mutex_);
-        std::copy(levelsDb_.begin(), levelsDb_.begin() + n, outLevelsDb);
-        return n;
+        snapshots_.acquire();
+
+        const Snapshot& snapshot = snapshots_.getReadBuffer();
+        std::copy(snapshot.levelsDb.begin(), snapshot.levelsDb.begin() + snapshot.numBands, outLevelsDb);
+        return snapshot.numBands;
     }
 
 #if DTCWPT_ENABLE_TEST_SEAMS
@@ -52,12 +59,14 @@ public:
 #endif
 
 private:
-    mutable std::mutex mutex_;
-    std::array<float, kMaxBands> levelsDb_;
-    std::atomic<int> numBands_ { 0 };
+    struct Snapshot
+    {
+        int numBands = 0;
+        std::array<float, kMaxBands> levelsDb {};
+    };
+
+    TripleBuffer<Snapshot> snapshots_;
 #if DTCWPT_ENABLE_TEST_SEAMS
     std::atomic<std::uint64_t> updateCount_ { 0 };
 #endif
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(BandLevelBridge)
 };

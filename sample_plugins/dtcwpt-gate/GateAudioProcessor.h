@@ -28,6 +28,7 @@
 #include "SpectrumDataBridge.h"
 #include "BandLevelBridge.h"
 #include "../common/AnalyzerLatencyAligner.h"
+#include "../common/DisplayConsumerCount.h"
 
 // Standard library
 #include <memory>
@@ -161,6 +162,15 @@ public:
     /** @brief Returns a reference to the lock-free audio→GUI spectrum bridge. */
     SpectrumDataBridge& getSpectrumBridge() noexcept { return spectrumBridge_; }
 
+    /**
+     * @brief Registry of the GUI components that display audio-thread data.
+     *
+     * The editor holds a `DisplayConsumerCount::Scoped` for its lifetime. While
+     * no consumer is registered, processBlock() skips building display-only data
+     * (mono mix-down, analyzer alignment, spectrum and band-level bridge writes).
+     */
+    DisplayConsumerCount& getDisplayConsumerCount() noexcept { return displayConsumers_; }
+
     /** @brief Returns a reference to the atomic topology change handoff state. */
     TopologyState& getTopologyState() noexcept { return topoState_; }
 
@@ -221,6 +231,12 @@ private:
     TopologyState topoState_;
     SpectrumDataBridge spectrumBridge_;
     BandLevelBridge bandLevelBridge_;
+
+    /** Number of open editors; read by the audio thread to decide whether to build display data. */
+    DisplayConsumerCount displayConsumers_;
+
+    /** Whether display data was generated in the previous processBlock (audio thread only). */
+    bool displayWasActive_ { false };
 
     //==============================================================================
     // Double-precision conversion buffers
