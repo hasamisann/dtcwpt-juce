@@ -74,6 +74,8 @@ target_sources(dtcwpt_tests
         suites/TopologyViewStateRestoreTests.cpp
         suites/InvalidTopologyDiagnosticsTests.cpp
         suites/AnalyzerLatencyAlignerTests.cpp
+        suites/MorphBypassTests.cpp
+        suites/GateBypassTests.cpp
         suites/RegressionFixturesTests.cpp
         util/AnalysisArrivalOracle.cpp
         util/RegressionFixtures.cpp
