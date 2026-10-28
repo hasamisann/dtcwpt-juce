@@ -27,7 +27,7 @@ GraphicEqWidget::GraphicEqWidget (GateAudioProcessor& processor, float sampleRat
     sampleRate_ = sanitized.sampleRate;
     nyquist_ = sanitized.nyquist;
 
-    activeBandGestures_.fill (false);
+    activePointGestures_.fill (false);
 
     // Fetch initial destinations from topology state
     // We get a fresh copy each timer tick so we don't query it per-paint
@@ -39,11 +39,11 @@ GraphicEqWidget::GraphicEqWidget (GateAudioProcessor& processor, float sampleRat
     }
 
     // Cache parameters
-    for (int i = 0; i < GateBandProcessor::kMaxBands; ++i)
+    for (int k = 0; k < gate_threshold::kNumPoints; ++k)
     {
-        juce::String paramID = juce::String::formatted("threshold_%02d", i);
-        thresholdRaw_[i]     = processor_.getAPVTS().getRawParameterValue (paramID);
-        thresholdParams_[i]  = processor_.getAPVTS().getParameter (paramID);
+        const auto paramID = GateAudioProcessor::getThresholdParameterId (k);
+        thresholdRaw_[static_cast<std::size_t> (k)]    = processor_.getAPVTS().getRawParameterValue (paramID);
+        thresholdParams_[static_cast<std::size_t> (k)] = processor_.getAPVTS().getParameter (paramID);
     }
 
     bypassLowestRaw_ = processor_.getAPVTS().getRawParameterValue("bypass_lowest_band");
@@ -112,69 +112,70 @@ float GraphicEqWidget::yToDb (float y) const
     return juce::jlimit (gate_gui::kDbMinDisplay, gate_gui::kDbMaxDisplay, db);
 }
 
-int GraphicEqWidget::findBandAtX (float x) const
+int GraphicEqWidget::getNumVisiblePoints() const
 {
-    for (size_t i = 0; i < currentDestinations_.size() && i < GateBandProcessor::kMaxBands; ++i)
-    {
-        auto [freqMin, freqMax] = getBandFreqRange (currentDestinations_[i]);
-        
-        float xLeft  = freqToX (std::max (gate_gui::kFreqMinDisplay, freqMin));
-        float xRight = freqToX (std::max (gate_gui::kFreqMinDisplay, freqMax));
-        
-        if (x >= xLeft && x <= xRight)
-            return static_cast<int>(i);
-    }
-    return -1;
+    return gate_gui::countThresholdPointsBelow (nyquist_);
 }
 
-float GraphicEqWidget::getBandCenterX (int bandIdx) const
+std::array<double, gate_threshold::kNumPoints> GraphicEqWidget::readPointsDb() const
 {
-    if (bandIdx < 0 || static_cast<std::size_t> (bandIdx) >= currentDestinations_.size())
+    std::array<double, gate_threshold::kNumPoints> pointsDb {};
+    for (std::size_t k = 0; k < pointsDb.size(); ++k)
+        pointsDb[k] = thresholdRaw_[k] != nullptr ? static_cast<double> (thresholdRaw_[k]->load())
+                                                  : static_cast<double> (gate_threshold::kDefaultDb);
+    return pointsDb;
+}
+
+float GraphicEqWidget::getPointX (int pointIdx) const
+{
+    if (pointIdx < 0 || pointIdx >= getNumVisiblePoints())
         return -1.0f;
 
-    auto [freqMin, freqMax] = getBandFreqRange (currentDestinations_[static_cast<std::size_t> (bandIdx)]);
-    const float xLeft  = freqToX (std::max (gate_gui::kFreqMinDisplay, freqMin));
-    const float xRight = freqToX (std::max (gate_gui::kFreqMinDisplay, freqMax));
-    return 0.5f * (xLeft + xRight);
+    return freqToX (static_cast<float> (gate_threshold::kPoints[static_cast<std::size_t> (pointIdx)].frequencyHz));
 }
 
-void GraphicEqWidget::beginGestureForBand (int bandIdx)
+int GraphicEqWidget::findPointAtX (float x) const
 {
-    if (bandIdx < 0 || bandIdx >= GateBandProcessor::kMaxBands)
+    return gate_gui::findNearestThresholdPoint (xToFreq (x), nyquist_);
+}
+
+void GraphicEqWidget::beginGestureForPoint (int pointIdx)
+{
+    if (pointIdx < 0 || pointIdx >= gate_threshold::kNumPoints)
         return;
 
-    if (activeBandGestures_[static_cast<std::size_t> (bandIdx)])
+    if (activePointGestures_[static_cast<std::size_t> (pointIdx)])
         return;
 
-    auto* param = thresholdParams_[static_cast<std::size_t> (bandIdx)];
+    auto* param = thresholdParams_[static_cast<std::size_t> (pointIdx)];
     if (param == nullptr)
         return;
 
     param->beginChangeGesture();
-    activeBandGestures_[static_cast<std::size_t> (bandIdx)] = true;
+    activePointGestures_[static_cast<std::size_t> (pointIdx)] = true;
 }
 
 void GraphicEqWidget::endAllActiveGestures()
 {
-    for (int bandIdx = 0; bandIdx < GateBandProcessor::kMaxBands; ++bandIdx)
+    for (int pointIdx = 0; pointIdx < gate_threshold::kNumPoints; ++pointIdx)
     {
-        if (!activeBandGestures_[static_cast<std::size_t> (bandIdx)])
+        if (!activePointGestures_[static_cast<std::size_t> (pointIdx)])
             continue;
 
-        if (auto* param = thresholdParams_[static_cast<std::size_t> (bandIdx)]; param != nullptr)
+        if (auto* param = thresholdParams_[static_cast<std::size_t> (pointIdx)]; param != nullptr)
             param->endChangeGesture();
 
-        activeBandGestures_[static_cast<std::size_t> (bandIdx)] = false;
+        activePointGestures_[static_cast<std::size_t> (pointIdx)] = false;
     }
 }
 
-void GraphicEqWidget::updateThresholdForBandFromY (int bandIdx, float y)
+void GraphicEqWidget::updateThresholdForPointFromY (int pointIdx, float y)
 {
-    if (bandIdx < 0 || bandIdx >= GateBandProcessor::kMaxBands)
+    if (pointIdx < 0 || pointIdx >= gate_threshold::kNumPoints)
         return;
 
-    auto* param = thresholdParams_[static_cast<std::size_t> (bandIdx)];
-    auto* raw = thresholdRaw_[static_cast<std::size_t> (bandIdx)];
+    auto* param = thresholdParams_[static_cast<std::size_t> (pointIdx)];
+    auto* raw = thresholdRaw_[static_cast<std::size_t> (pointIdx)];
     if (param == nullptr || raw == nullptr)
         return;
 
@@ -200,33 +201,16 @@ void GraphicEqWidget::applyDragSegment (juce::Point<float> from, juce::Point<flo
     from.x = clampX (from.x);
     to.x = clampX (to.x);
 
-    const int startBandIdx = findBandAtX (from.x);
-    const int endBandIdx = findBandAtX (to.x);
-    const int numBands = static_cast<int> (std::min (currentDestinations_.size(),
-                                                      static_cast<std::size_t> (GateBandProcessor::kMaxBands)));
+    const int startPointIdx = findPointAtX (from.x);
+    const int endPointIdx = findPointAtX (to.x);
 
-    const auto crossedBands = graphic_eq::enumerateCrossedBands (startBandIdx, endBandIdx, numBands);
-    if (!crossedBands.empty())
+    const auto crossedPoints = graphic_eq::enumerateCrossedBands (startPointIdx, endPointIdx, getNumVisiblePoints());
+    for (int pointIdx : crossedPoints)
     {
-        for (int bandIdx : crossedBands)
-        {
-            beginGestureForBand (bandIdx);
+        beginGestureForPoint (pointIdx);
 
-            const float xCenter = getBandCenterX (bandIdx);
-            if (xCenter < 0.0f)
-                continue;
-
-            const float y = graphic_eq::interpolateYForX (from.x, from.y, to.x, to.y, xCenter);
-            updateThresholdForBandFromY (bandIdx, y);
-        }
-        return;
-    }
-
-    const int fallbackBand = (endBandIdx >= 0) ? endBandIdx : startBandIdx;
-    if (fallbackBand >= 0)
-    {
-        beginGestureForBand (fallbackBand);
-        updateThresholdForBandFromY (fallbackBand, to.y);
+        const float y = graphic_eq::interpolateYForX (from.x, from.y, to.x, to.y, getPointX (pointIdx));
+        updateThresholdForPointFromY (pointIdx, y);
     }
 }
 
@@ -284,14 +268,17 @@ void GraphicEqWidget::paint (juce::Graphics& g)
     levelsDb.fill (gate_gui::kDbMinDisplay);
     processor_.getBandLevelBridge().read (levelsDb.data());
 
+    const auto pointsDb = readPointsDb();
+
     // Determine hover state
     auto mousePos = getMouseXYRelative().toFloat();
     bool isMouseOver = isMouseButtonDown() || isMouseOverOrDragging();
+    const int hoveredPoint = isMouseOver ? findPointAtX (mousePos.x) : -1;
 
     juce::String tooltipText;
     juce::Point<float> tooltipPos;
 
-    // 5. Draw Bands
+    // 5. Draw Bands: the threshold each band actually uses (curve averaged over the band) and its level
     for (size_t i = 0; i < currentDestinations_.size() && i < GateBandProcessor::kMaxBands; ++i)
     {
         auto [freqMin, freqMax] = getBandFreqRange (currentDestinations_[i]);
@@ -299,7 +286,7 @@ void GraphicEqWidget::paint (juce::Graphics& g)
         float xLeft  = freqToX (std::max (gate_gui::kFreqMinDisplay, freqMin));
         float xRight = freqToX (std::max (gate_gui::kFreqMinDisplay, freqMax));
         
-        float currentDb = thresholdRaw_[i] ? thresholdRaw_[i]->load() : -60.0f;
+        const float currentDb = static_cast<float> (gate_threshold::bandThresholdDb (pointsDb.data(), freqMin, freqMax));
         float yTop      = dbToY (currentDb);
         
         bool isHovered = isMouseOver && (mousePos.x >= xLeft && mousePos.x <= xRight);
@@ -321,16 +308,16 @@ void GraphicEqWidget::paint (juce::Graphics& g)
         juce::Colour fillColor = isHovered ? baseColor.withMultipliedAlpha (isBypassed ? 0.40f : 0.55f)
                                            : baseColor.withMultipliedAlpha (isBypassed ? 0.25f : 0.40f);
         
-        // Bar rectangle from threshold to bottom edge
+        // Bar rectangle from the band's threshold to bottom edge
         juce::Rectangle<float> barRect (xLeft + padding, yTop, barWidth, height - yTop);
         
         g.setColour (fillColor);
         g.fillRect (barRect);
         
-        // Threshold Line (accent color top line)
+        // Band threshold line
         float xEnd = std::max(xLeft + padding, xRight - padding);
-        g.setColour (baseColor);
-        g.drawLine (xLeft + padding, yTop, xEnd, yTop, 2.0f);
+        g.setColour (baseColor.withAlpha (0.7f));
+        g.drawLine (xLeft + padding, yTop, xEnd, yTop, 1.0f);
         
         // Level Meter (white overlay line)
         float dbLevel = levelsDb[i];
@@ -348,12 +335,43 @@ void GraphicEqWidget::paint (juce::Graphics& g)
         {
             tooltipText = "Band: " + juce::String (currentDestinations_[i]) + "\n"
                           + juce::String (freqMin, 0) + " Hz - " + juce::String (freqMax, 0) + " Hz\n"
-                          + "Threshold: " + juce::String (currentDb, 1) + " dB";
+                          + "Band threshold: " + juce::String (currentDb, 1) + " dB";
+            if (hoveredPoint >= 0)
+                tooltipText += "\nPoint " + juce::String (gate_threshold::kPoints[static_cast<std::size_t> (hoveredPoint)].label)
+                               + ": " + juce::String (pointsDb[static_cast<std::size_t> (hoveredPoint)], 1) + " dB";
             tooltipPos  = juce::Point<float> ((xLeft + xRight) * 0.5f, yTop - 4.0f);
         }
     }
+
+    // 6. Draw the threshold curve (the editable 31 points) over the bands
+    {
+        const int numVisible = getNumVisiblePoints();
+
+        juce::Path curve;
+        for (int k = 0; k < numVisible; ++k)
+        {
+            const float x = getPointX (k);
+            const float y = dbToY (static_cast<float> (pointsDb[static_cast<std::size_t> (k)]));
+            if (k == 0)
+                curve.startNewSubPath (x, y);
+            else
+                curve.lineTo (x, y);
+        }
+
+        g.setColour (kAccentColor);
+        g.strokePath (curve, juce::PathStrokeType (1.5f));
+
+        for (int k = 0; k < numVisible; ++k)
+        {
+            const float x = getPointX (k);
+            const float y = dbToY (static_cast<float> (pointsDb[static_cast<std::size_t> (k)]));
+            const float radius = (k == hoveredPoint) ? 5.0f : 3.0f;
+            g.setColour (k == hoveredPoint ? kTextColor : kAccentColor);
+            g.fillEllipse (x - radius, y - radius, radius * 2.0f, radius * 2.0f);
+        }
+    }
     
-    // 6. Draw Tooltip text on top
+    // 7. Draw Tooltip text on top
     if (tooltipText.isNotEmpty())
     {
         g.setFont (FontHelper::getFont (12.0f));
@@ -390,11 +408,11 @@ void GraphicEqWidget::mouseDown (const juce::MouseEvent& e)
     isDragging_ = true;
     lastMousePos_ = e.position;
 
-    const int bandIdx = findBandAtX (e.position.x);
-    if (bandIdx >= 0)
+    const int pointIdx = findPointAtX (e.position.x);
+    if (pointIdx >= 0)
     {
-        beginGestureForBand (bandIdx);
-        updateThresholdForBandFromY (bandIdx, e.position.y);
+        beginGestureForPoint (pointIdx);
+        updateThresholdForPointFromY (pointIdx, e.position.y);
     }
 }
 
@@ -418,32 +436,28 @@ void GraphicEqWidget::mouseUp (const juce::MouseEvent& e)
 
     if (e.mods.isPopupMenu())
     {
-        int bandIdx = findBandAtX (e.position.x);
-        if (bandIdx >= 0 && static_cast<size_t>(bandIdx) < currentDestinations_.size())
+        const int pointIdx = findPointAtX (e.position.x);
+        if (pointIdx >= 0 && thresholdParams_[static_cast<std::size_t> (pointIdx)] != nullptr)
         {
             juce::PopupMenu m;
-            
-            auto [freqMin, freqMax] = getBandFreqRange (currentDestinations_[bandIdx]);
-            
-            m.addSectionHeader (juce::String::formatted ("Band: %s (%.0f-%.0f Hz)", 
-                                                          currentDestinations_[bandIdx].c_str(), 
-                                                          freqMin, freqMax));
+
+            m.addSectionHeader ("Point: " + juce::String (gate_threshold::kPoints[static_cast<std::size_t> (pointIdx)].label));
             m.addSeparator();
             
             m.addItem (1, "Reset to -60 dB");
             m.addItem (2, "Open gate (-120 dB)");
             m.addItem (3, "Close gate (0 dB)");
 
-            m.showMenuAsync (juce::PopupMenu::Options(), [this, bandIdx](int result)
+            m.showMenuAsync (juce::PopupMenu::Options(), [this, pointIdx](int result)
             {
-                if (result > 0 && thresholdParams_[bandIdx] != nullptr)
+                auto* param = thresholdParams_[static_cast<std::size_t> (pointIdx)];
+                if (result > 0 && param != nullptr)
                 {
                     float targetDb = 0.0f;
                     if (result == 1) targetDb = -60.0f;
                     else if (result == 2) targetDb = -120.0f;
                     else if (result == 3) targetDb = 0.0f;
 
-                    auto* param = thresholdParams_[bandIdx];
                     param->beginChangeGesture();
                     param->setValueNotifyingHost (param->convertTo0to1 (targetDb));
                     param->endChangeGesture();

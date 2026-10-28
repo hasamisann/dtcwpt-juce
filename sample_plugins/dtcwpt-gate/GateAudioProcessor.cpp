@@ -1,4 +1,5 @@
 #include "GateAudioProcessor.h"
+#include "gui/GateGuiFrequencyMapping.h"
 #include "../common/InvalidTopologyDiagnostics.h"
 #include "../common/TopologyPersistence.h"
 
@@ -34,13 +35,10 @@ GateAudioProcessor::GateAudioProcessor()
                                topology::serializeTopologyDestinations (currentDestinations_),
                                nullptr);
 
-    // Cache the 256 parameter pointers
-    for (int i = 0; i < GateBandProcessor::kMaxBands; ++i)
-    {
-        juce::String paramID = juce::String::formatted("threshold_%02d", i);
-        thresholdRaw_[i] = apvts_.getRawParameterValue(paramID);
-    }
-    
+    // Cache the 31 threshold point parameter pointers
+    for (std::size_t k = 0; k < thresholdRaw_.size(); ++k)
+        thresholdRaw_[k] = apvts_.getRawParameterValue (getThresholdParameterId (static_cast<int> (k)));
+
     // Cache the bypass parameter
     bypassLowestRaw_ = apvts_.getRawParameterValue("bypass_lowest_band");
 }
@@ -171,16 +169,19 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             (void) tryApplyTopologyCandidate (newDestinations);
     }
 
-    // 2. Read 256 threshold params → linear → set thresholds
+    // 2. Read the 31 threshold points → per-band threshold (dB, mean over the band's frequency range) → linear
+    std::array<double, gate_threshold::kNumPoints> pointsDb {};
+    for (std::size_t k = 0; k < pointsDb.size(); ++k)
+        pointsDb[k] = thresholdRaw_[k] != nullptr ? static_cast<double> (thresholdRaw_[k]->load())
+                                                  : static_cast<double> (gate_threshold::kDefaultDb);
+
+    const float nyquist = static_cast<float> (currentSampleRate_ * 0.5);
     size_t numBands = std::min(currentDestinations_.size(), static_cast<size_t>(GateBandProcessor::kMaxBands));
     std::array<double, GateBandProcessor::kMaxBands> thresholds {};
     for (size_t i = 0; i < numBands; ++i)
     {
-        if (thresholdRaw_[i] != nullptr)
-        {
-            float db = thresholdRaw_[i]->load();
-            thresholds[i] = std::pow(10.0, db / 20.0);
-        }
+        const auto [lowHz, highHz] = gate_gui::getBandFrequencyRange (currentDestinations_[i], nyquist);
+        thresholds[i] = gate_threshold::dbToLinear (gate_threshold::bandThresholdDb (pointsDb.data(), lowHz, highHz));
     }
     lastThresholdsForTest_ = thresholds;
     gateProcessor_->setThresholds(thresholds.data(), static_cast<int>(numBands));
@@ -376,14 +377,17 @@ bool GateAudioProcessor::getLastBypassLowestForTest() const noexcept
 // Parameter layout factory
 //==============================================================================
 
+juce::String GateAudioProcessor::getThresholdParameterId (int pointIndex)
+{
+    return juce::String ("threshold_") + gate_threshold::kPoints[static_cast<std::size_t> (pointIndex)].idSuffix;
+}
+
 juce::AudioProcessorValueTreeState::ParameterLayout GateAudioProcessor::createParameterLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
-    for (int i = 0; i < GateBandProcessor::kMaxBands; ++i)
+    for (int k = 0; k < gate_threshold::kNumPoints; ++k)
     {
-        juce::String paramID = juce::String::formatted("threshold_%02d", i);
-
         auto attributes = juce::AudioParameterFloatAttributes()
                               .withStringFromValueFunction ([](float value, int)
                               {
@@ -391,14 +395,15 @@ juce::AudioProcessorValueTreeState::ParameterLayout GateAudioProcessor::createPa
                               })
                               .withValueFromStringFunction ([](const juce::String& text)
                               {
-                                  return text.dropLastCharacters (3).getFloatValue();
+                                  // Leading number only, so "-30", "-30dB" and "-30.0 dB" all parse.
+                                  return text.getFloatValue();
                               });
 
         layout.add(std::make_unique<juce::AudioParameterFloat>(
-            juce::ParameterID{paramID, 1},
-            "Threshold " + juce::String(i),
-            juce::NormalisableRange<float>(-120.0f, 10.0f, 0.1f),
-            -60.0f,
+            juce::ParameterID{getThresholdParameterId (k), 1},
+            juce::String ("Threshold ") + gate_threshold::kPoints[static_cast<std::size_t> (k)].label,
+            juce::NormalisableRange<float>(gate_threshold::kMinDb, gate_threshold::kMaxDb, 0.1f),
+            gate_threshold::kDefaultDb,
             attributes
         ));
     }

@@ -6,7 +6,7 @@
  *
  * GateAudioProcessor is the JUCE AudioProcessor for the DT-CWPT Gate plugin.
  * It manages:
- *  - 256 automatable threshold parameters via APVTS.
+ *  - 31 automatable threshold parameters (ISO 1/3-octave points) via APVTS; see GateThresholdCurve.h.
  *  - A DTCWPTProcessor for real-time wavelet analysis/synthesis.
  *  - A GateBandProcessor for subband hard gating.
  *  - Thread-safe topology change handoff via TopologyState.
@@ -24,6 +24,7 @@
 
 // Plugin classes
 #include "GateBandProcessor.h"
+#include "GateThresholdCurve.h"
 #include "TopologyState.h"
 #include "SpectrumDataBridge.h"
 #include "BandLevelBridge.h"
@@ -58,7 +59,7 @@ public:
     /**
      * @brief Constructs the processor.
      *
-     * Initialises the APVTS with 256 threshold parameters and sets the default topology
+     * Initialises the APVTS with the 31 threshold point parameters and sets the default topology
      * (6-level DWT: H, LH, LLH, LLLH, LLLLH, LLLLLH, LLLLLL) as a ValueTree property.
      */
     GateAudioProcessor();
@@ -150,9 +151,13 @@ public:
     //==============================================================================
 
     /**
-     * @brief Creates the APVTS parameter layout with 256 threshold parameters.
+     * @brief Creates the APVTS parameter layout: 31 threshold points (ISO 1/3 octave, 20 Hz–20 kHz)
+     *        and the lowest-band bypass.
      */
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+
+    /** @brief Parameter ID of threshold point @p pointIndex (0..30), e.g. "threshold_1khz". */
+    static juce::String getThresholdParameterId (int pointIndex);
 
     //==============================================================================
     // Data bridge accessors
@@ -199,8 +204,8 @@ private:
 
     juce::AudioProcessorValueTreeState apvts_;
     
-    /** Cached raw pointers to the 256 threshold parameters. */
-    std::array<std::atomic<float>*, 256> thresholdRaw_ {};
+    /** Cached raw pointers to the 31 threshold point parameters. */
+    std::array<std::atomic<float>*, gate_threshold::kNumPoints> thresholdRaw_ {};
     std::array<double, GateBandProcessor::kMaxBands> lastThresholdsForTest_ {};
 
     /** Cached raw pointer to the bypass lowest band parameter. */

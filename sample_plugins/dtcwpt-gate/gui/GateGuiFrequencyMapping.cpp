@@ -37,6 +37,35 @@ namespace gate_gui
         return std::pair<float, float> { lo, hi };
     }
 
+    int countThresholdPointsBelow (float nyquist) noexcept
+    {
+        const float displayNyquist = makeFrequencyMapping (nyquist).displayNyquist;
+
+        int count = 0;
+        for (const auto& point : gate_threshold::kPoints)
+            if (point.frequencyHz <= static_cast<double> (displayNyquist))
+                ++count;
+
+        return std::max (count, 1);
+    }
+
+    int findNearestThresholdPoint (float frequencyHz, float nyquist) noexcept
+    {
+        const int numPoints = countThresholdPointsBelow (nyquist);
+        const auto& logs = gate_threshold::getLogFrequencies();
+        const double logFrequency = std::log10 (std::max (static_cast<double> (frequencyHz), gate_threshold::kMinFrequencyHz));
+
+        int nearest = 0;
+        for (int k = 1; k < numPoints; ++k)
+        {
+            if (std::abs (logs[static_cast<std::size_t> (k)] - logFrequency)
+                < std::abs (logs[static_cast<std::size_t> (nearest)] - logFrequency))
+                nearest = k;
+        }
+
+        return nearest;
+    }
+
     std::vector<FrequencyRange> buildFrequencyRangesForTopology (const std::vector<std::string>& destinations,
                                                                  float sampleRate)
     {
