@@ -49,6 +49,12 @@ public:
 
         beginTest ("Mixed-depth committed Morph topology remains deterministic under the worklist scheduler");
         testMixedDepthCommittedMorphTopologyRemainsDeterministicUnderTheWorklistScheduler();
+
+        beginTest ("Parameter change at a stream position gives the same output for any host block size");
+        testParameterChangeTimingIsIndependentOfHostBlockSize();
+
+        beginTest ("Parameter changes between two engine callbacks are not lost");
+        testIntermediateParameterChangeIsNotLost();
     }
 
 private:
@@ -552,6 +558,108 @@ private:
                 "Allocation-free no-sidechain coverage should preserve the committed topology");
         expect (duplicatedSidechainProcessor->getCommittedDestinationsForTest() == topologyCandidate,
                 "Allocation-free explicit-sidechain coverage should preserve the committed topology");
+    }
+
+    struct MagnitudeChange
+    {
+        int position;   ///< Stream position of the host block that sees the new value
+        float value;
+    };
+
+    // Streams `totalSamples` through a fresh processor (engine block size kBlockSize) in
+    // host blocks of `hostBlockSize`. The magnitude parameter (initially 0) takes the
+    // given values before the host blocks that start at the given positions.
+    // Returns the left output channel.
+    static std::vector<float> runMagnitudeChanges (int hostBlockSize, int totalSamples,
+                                                   const std::vector<MagnitudeChange>& changes)
+    {
+        auto processor = createPreparedProcessor();
+
+        MorphParameterState state;
+        state.magnitude = 0.0f;
+        state.phase = 0.0f;
+        state.bypassLow = false;
+        state.bypassHigh = false;
+        applyParameterState (*processor, state);
+
+        const auto mainSignal = makeSignal (totalSamples, 220.0, 3100.0, 330.0, 5200.0);
+        const auto scSignal = makeSignal (totalSamples, 1700.0, 440.0, 2300.0, 660.0);
+
+        std::vector<float> output;
+        output.reserve (static_cast<std::size_t> (totalSamples));
+
+        for (int position = 0; position < totalSamples; position += hostBlockSize)
+        {
+            for (const auto& change : changes)
+                if (position == change.position)
+                    setFloatParameter (*processor, ParamID::Magnitude, change.value);
+
+            StereoSignal main, sc;
+            const auto first = static_cast<std::ptrdiff_t> (position);
+            const auto last = first + hostBlockSize;
+            main.left.assign (mainSignal.left.begin() + first, mainSignal.left.begin() + last);
+            main.right.assign (mainSignal.right.begin() + first, mainSignal.right.begin() + last);
+            sc.left.assign (scSignal.left.begin() + first, scSignal.left.begin() + last);
+            sc.right.assign (scSignal.right.begin() + first, scSignal.right.begin() + last);
+
+            auto buffer = makeProcessBuffer (main, sc);
+            juce::MidiBuffer midi;
+            processor->processBlock (buffer, midi);
+
+            for (int i = 0; i < hostBlockSize; ++i)
+                output.push_back (buffer.getSample (0, i));
+        }
+
+        return output;
+    }
+
+    void expectSameOutputForHostBlockSizes (int changePosition, int referenceBlockSize,
+                                            const std::vector<int>& hostBlockSizes)
+    {
+        constexpr int total = 8192;
+        const auto reference = runMagnitudeChanges (referenceBlockSize, total, { { changePosition, 1.0f } });
+
+        for (const int hostBlockSize : hostBlockSizes)
+        {
+            const auto output = runMagnitudeChanges (hostBlockSize, total, { { changePosition, 1.0f } });
+            double maxDiff = 0.0;
+            for (std::size_t i = 0; i < output.size(); ++i)
+                maxDiff = std::max (maxDiff, std::abs (static_cast<double> (output[i])
+                                                       - static_cast<double> (reference[i])));
+
+            expectLessThan (maxDiff, 1e-4,
+                            "Change at " + juce::String (changePosition) + ": host block size "
+                            + juce::String (hostBlockSize) + " must match host block size "
+                            + juce::String (referenceBlockSize));
+        }
+    }
+
+    void testParameterChangeTimingIsIndependentOfHostBlockSize()
+    {
+        // On an engine block boundary (2560 = 5 * 512): host blocks of 512 and below.
+        expectSameOutputForHostBlockSizes (2560, kBlockSize, { 256, 128, 64, 32 });
+
+        // In the middle of an engine block (2752 = 5 * 512 + 192): only block sizes
+        // that start a host block exactly there can be compared.
+        expectSameOutputForHostBlockSizes (2752, 32, { 64 });
+    }
+
+    void testIntermediateParameterChangeIsNotLost()
+    {
+        // Two changes (up at 2624, back down at 2752) fall into one engine block
+        // [2560, 3072). With 64-sample host blocks the engine calls the band
+        // processor once for that span, but both requests must shape the output.
+        constexpr int total = 8192;
+        const auto untouched = runMagnitudeChanges (64, total, {});
+        const auto withPulse = runMagnitudeChanges (64, total, { { 2624, 1.0f }, { 2752, 0.0f } });
+
+        double maxDiff = 0.0;
+        for (std::size_t i = 0; i < withPulse.size(); ++i)
+            maxDiff = std::max (maxDiff, std::abs (static_cast<double> (withPulse[i])
+                                                   - static_cast<double> (untouched[i])));
+
+        expectGreaterThan (maxDiff, 1e-3,
+                           "A parameter pulse inside one engine block must not be lost");
     }
 
     void testMixedDepthCommittedMorphTopologyRemainsDeterministicUnderTheWorklistScheduler()
