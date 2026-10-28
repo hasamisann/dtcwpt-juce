@@ -13,6 +13,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -102,6 +103,18 @@ public:
 
     void setPrepareCandidateFailpointForTesting(PrepareCandidateFailpoint failpoint) noexcept;
     void setAnalysisTraceSinkForTesting(AnalysisTraceSink* sink) noexcept;
+
+    /**
+     * @brief Cumulative amount of filter-bank work done since prepareToPlay().
+     *
+     * Used by tests to measure how evenly the work is spread over host callbacks.
+     */
+    struct WorkCounters {
+        std::uint64_t analysisArrivals = 0;       ///< AnalysisNode::processArrival() calls (all paths)
+        std::uint64_t synthesisOutputSamples = 0; ///< Samples produced by synthesis nodes (Re and Im)
+    };
+
+    WorkCounters getWorkCountersForTesting() const noexcept;
 #endif
 
 private:
@@ -224,6 +237,7 @@ private:
 #if DTCWPT_ENABLE_TEST_SEAMS
     PrepareCandidateFailpoint prepareCandidateFailpoint_ = PrepareCandidateFailpoint::none;
     AnalysisTraceSink* analysisTraceSink_ = nullptr;
+    WorkCounters workCounters_;
 #endif
 
     // Helper methods

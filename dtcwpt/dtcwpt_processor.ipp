@@ -317,6 +317,11 @@ void DTCWPTProcessor::setAnalysisTraceSinkForTesting(AnalysisTraceSink* sink) no
 {
     analysisTraceSink_ = sink;
 }
+
+DTCWPTProcessor::WorkCounters DTCWPTProcessor::getWorkCountersForTesting() const noexcept
+{
+    return workCounters_;
+}
 #endif
 
 void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
@@ -686,6 +691,10 @@ void DTCWPTProcessor::prepareToPlay(double sampleRate, int maxBlockSize,
     if (bandProcessor_) {
         bandProcessor_->reset();
     }
+
+#if DTCWPT_ENABLE_TEST_SEAMS
+    workCounters_ = WorkCounters{};
+#endif
 
     // Mark as prepared
     prepared_ = true;
@@ -1138,6 +1147,10 @@ void DTCWPTProcessor::analysisProcess(const std::vector<double>& inputBlock,
             int leftIdx = nodeId << 1;
             int rightIdx = (nodeId << 1) | 1;
 
+#if DTCWPT_ENABLE_TEST_SEAMS
+            ++workCounters_.analysisArrivals;
+#endif
+
             AnalysisChildOutputs outputs{};
             const bool emitted = nodeGroup.nodes[static_cast<size_t>(internalIndex)].processArrival(
                 workItem.sampleValue,
@@ -1251,6 +1264,10 @@ void DTCWPTProcessor::synthesisProcess(std::vector<std::vector<double>>& analyse
         size_t writeCursor = cursors[static_cast<size_t>(nodeId)];
 
         nodeGroup.nodes[i].synthesizeBlock(lowBuf, highBuf, outBuf, writeCursor, numSamples);
+
+#if DTCWPT_ENABLE_TEST_SEAMS
+        workCounters_.synthesisOutputSamples += 2 * numSamples;
+#endif
 
         cursors[static_cast<size_t>(nodeId)] = writeCursor + 2 * numSamples;
     }
