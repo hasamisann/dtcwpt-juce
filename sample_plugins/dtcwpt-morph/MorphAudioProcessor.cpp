@@ -8,6 +8,7 @@
 
 #include "MorphAudioProcessor.h"
 #include "../common/InvalidTopologyDiagnostics.h"
+#include "../common/StateVersioning.h"
 #include "../common/TopologyPersistence.h"
 
 #include <juce_core/juce_core.h>
@@ -354,16 +355,14 @@ void MorphAudioProcessor::changeProgramName (int /*index*/, const juce::String& 
 
 void MorphAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    // APVTS copyState serialises all parameters AND any ValueTree properties,
-    // including the "topology" string property we set on apvts_.state.
-    juce::MemoryOutputStream stream (destData, true);
-    apvts_.state.writeToStream (stream);
+    // copyState() flushes pending parameter values and keeps ValueTree
+    // properties, including the "topology" string property on apvts_.state.
+    statever::writeVersionedState (apvts_, destData);
 }
 
 void MorphAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    juce::ValueTree state = juce::ValueTree::readFromData (data,
-                                                            static_cast<std::size_t> (sizeInBytes));
+    juce::ValueTree state = statever::readVersionedState (data, sizeInBytes, apvts_.state.getType());
     if (state.isValid())
     {
         apvts_.replaceState (state);

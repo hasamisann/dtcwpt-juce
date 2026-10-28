@@ -1,5 +1,6 @@
 #include "GateAudioProcessor.h"
 #include "../common/InvalidTopologyDiagnostics.h"
+#include "../common/StateVersioning.h"
 #include "../common/TopologyPersistence.h"
 
 #include <juce_core/juce_core.h>
@@ -296,14 +297,12 @@ void GateAudioProcessor::changeProgramName (int /*index*/, const juce::String& /
 
 void GateAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    juce::MemoryOutputStream stream (destData, true);
-    apvts_.state.writeToStream (stream);
+    statever::writeVersionedState (apvts_, destData);
 }
 
 void GateAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    juce::ValueTree state = juce::ValueTree::readFromData (data,
-                                                             static_cast<std::size_t> (sizeInBytes));
+    juce::ValueTree state = statever::readVersionedState (data, sizeInBytes, apvts_.state.getType());
     if (state.isValid())
     {
         apvts_.replaceState (state);
