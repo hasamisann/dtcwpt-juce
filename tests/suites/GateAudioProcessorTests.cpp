@@ -432,7 +432,7 @@ private:
         const int numSamples = kDefaultBlockSize * numBlocks;
         const double duration = static_cast<double> (numSamples) / TestUtils::TestConfig::SAMPLE_RATE;
         const auto loud = toFloatSignal (TestUtils::generateSine (110.0, duration, TestUtils::TestConfig::SAMPLE_RATE), 0.5f);
-        const auto quiet = toFloatSignal (TestUtils::generateSine (110.0, duration, TestUtils::TestConfig::SAMPLE_RATE), 0.0002f);
+        const auto quiet = toFloatSignal (TestUtils::generateSine (110.0, duration, TestUtils::TestConfig::SAMPLE_RATE), 0.00002f);
 
         auto rightChannelRms = [&] (bool linked)
         {
@@ -466,10 +466,12 @@ private:
         const double linkedRms = rightChannelRms (true);
         const double unlinkedRms = rightChannelRms (false);
 
-        expect (linkedRms > 1.0e-4, "linked: the quiet channel passes while the loud channel keeps the gate open");
-        expect (linkedRms > 10.0 * unlinkedRms,
-                "unlinked: the quiet channel (below threshold on its own) is attenuated much more than when linked ("
-                    + juce::String (linkedRms) + " vs " + juce::String (unlinkedRms) + ")");
+        // The quiet channel's input is 0.5 * 2e-5 = 1e-5 peak (-100 dBFS), far below the -60 dB default threshold.
+        const double quietInputRms = 0.5 * 2.0e-5 / std::sqrt (2.0);
+        expect (linkedRms > 0.5 * quietInputRms,
+                "linked: the quiet channel passes while the loud channel keeps the gate open (" + juce::String (linkedRms) + ")");
+        expect (unlinkedRms < 0.05 * quietInputRms,
+                "unlinked: the quiet channel (below threshold on its own) is gated (" + juce::String (unlinkedRms) + ")");
     }
 
     void testThresholdFanoutAndLowestBandBypass()

@@ -4,6 +4,8 @@
 
 #include <juce_core/juce_core.h>
 
+#include <limits>
+
 //==============================================================================
 // Default topology (6-level DWT)
 //==============================================================================
@@ -15,6 +17,22 @@ namespace
         { "H", "LH", "LLH", "LLLH", "LLLLH", "LLLLLH", "LLLLLL" };
 
     constexpr int kGateTopologyMaxDepth = 8;
+
+    // Gate dynamics parameters (shared by all bands)
+    const char* const kAttackId     = "attack";
+    const char* const kHoldId       = "hold";
+    const char* const kReleaseId    = "release";
+    const char* const kHysteresisId = "hysteresis";
+    const char* const kRangeId      = "range";
+    const char* const kStereoLinkId = "stereo_link";
+
+    /** At or below this range the closed gate is fully muted (-inf dB). */
+    constexpr float kRangeMinusInfinityDb = -100.0f;
+
+    float loadOr (const std::atomic<float>* raw, float fallback) noexcept
+    {
+        return raw != nullptr ? raw->load() : fallback;
+    }
 
 } // namespace
 
@@ -43,6 +61,14 @@ GateAudioProcessor::GateAudioProcessor()
     
     // Cache the bypass parameter
     bypassLowestRaw_ = apvts_.getRawParameterValue("bypass_lowest_band");
+
+    // Cache the dynamics parameters
+    attackRaw_     = apvts_.getRawParameterValue(kAttackId);
+    holdRaw_       = apvts_.getRawParameterValue(kHoldId);
+    releaseRaw_    = apvts_.getRawParameterValue(kReleaseId);
+    hysteresisRaw_ = apvts_.getRawParameterValue(kHysteresisId);
+    rangeRaw_      = apvts_.getRawParameterValue(kRangeId);
+    stereoLinkRaw_ = apvts_.getRawParameterValue(kStereoLinkId);
 }
 
 //==============================================================================
@@ -187,6 +213,22 @@ void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     lastBypassLowestForTest_ = bypassLowestRaw_ != nullptr && bypassLowestRaw_->load() >= 0.5f;
     gateProcessor_->setBypassLowest(lastBypassLowestForTest_);
+
+    {
+        GateBandProcessor::DynamicsParams dynamics;
+        dynamics.attackMs     = static_cast<double> (loadOr (attackRaw_, 1.0f));
+        dynamics.holdMs       = static_cast<double> (loadOr (holdRaw_, 50.0f));
+        dynamics.releaseMs    = static_cast<double> (loadOr (releaseRaw_, 100.0f));
+        dynamics.hysteresisDb = static_cast<double> (loadOr (hysteresisRaw_, 3.0f));
+
+        const float rangeDb = loadOr (rangeRaw_, kRangeMinusInfinityDb);
+        dynamics.rangeDb = rangeDb <= kRangeMinusInfinityDb ? -std::numeric_limits<double>::infinity()
+                                                            : static_cast<double> (rangeDb);
+        dynamics.stereoLink = loadOr (stereoLinkRaw_, 1.0f) >= 0.5f;
+
+        lastDynamicsForTest_ = dynamics;
+        gateProcessor_->setDynamics (dynamics);
+    }
 
     // 3. Snapshot input (mono-averaged) for spectrum
     inputMonoScratch_.clear();
@@ -376,6 +418,59 @@ bool GateAudioProcessor::getLastBypassLowestForTest() const noexcept
 // Parameter layout factory
 //==============================================================================
 
+namespace
+{
+    /** Adds a millisecond / dB style float parameter whose text is parsed by its numeric part only. */
+    void addUnitParameter (juce::AudioProcessorValueTreeState::ParameterLayout& layout,
+                           const char* id, const juce::String& name,
+                           juce::NormalisableRange<float> range, float defaultValue,
+                           const juce::String& unit, int decimals)
+    {
+        auto attributes = juce::AudioParameterFloatAttributes()
+                              .withStringFromValueFunction ([unit, decimals] (float value, int)
+                              {
+                                  return juce::String (value, decimals) + " " + unit;
+                              })
+                              .withValueFromStringFunction ([] (const juce::String& text)
+                              {
+                                  return text.getFloatValue();
+                              });
+
+        layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id, 1 }, name, range, defaultValue, attributes));
+    }
+
+    void addDynamicsParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout)
+    {
+        // Typical noise-gate values: fast attack, short hold, release of a few 100 ms, a few dB of hysteresis.
+        addUnitParameter (layout, kAttackId, "Attack",
+                          juce::NormalisableRange<float> (0.1f, 100.0f, 0.01f, 0.4f), 1.0f, "ms", 2);
+        addUnitParameter (layout, kHoldId, "Hold",
+                          juce::NormalisableRange<float> (0.0f, 1000.0f, 0.1f, 0.4f), 50.0f, "ms", 1);
+        addUnitParameter (layout, kReleaseId, "Release",
+                          juce::NormalisableRange<float> (1.0f, 2000.0f, 0.1f, 0.4f), 100.0f, "ms", 1);
+        addUnitParameter (layout, kHysteresisId, "Hysteresis",
+                          juce::NormalisableRange<float> (0.0f, 24.0f, 0.1f), 3.0f, "dB", 1);
+
+        // Range: closed-state attenuation. The minimum means -inf (full mute).
+        auto rangeAttributes = juce::AudioParameterFloatAttributes()
+                                   .withStringFromValueFunction ([] (float value, int)
+                                   {
+                                       return value <= kRangeMinusInfinityDb ? juce::String ("-inf dB")
+                                                                             : juce::String (value, 1) + " dB";
+                                   })
+                                   .withValueFromStringFunction ([] (const juce::String& text)
+                                   {
+                                       return text.containsIgnoreCase ("inf") ? kRangeMinusInfinityDb
+                                                                              : text.getFloatValue();
+                                   });
+        layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { kRangeId, 1 }, "Range",
+                                                                 juce::NormalisableRange<float> (kRangeMinusInfinityDb, 0.0f, 0.1f),
+                                                                 kRangeMinusInfinityDb, rangeAttributes));
+
+        layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { kStereoLinkId, 1 }, "Stereo Link", true));
+    }
+} // namespace
+
 juce::AudioProcessorValueTreeState::ParameterLayout GateAudioProcessor::createParameterLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
@@ -409,6 +504,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout GateAudioProcessor::createPa
         "Bypass Lowest",
         false
     ));
+
+    addDynamicsParameters (layout);
 
     return layout;
 }

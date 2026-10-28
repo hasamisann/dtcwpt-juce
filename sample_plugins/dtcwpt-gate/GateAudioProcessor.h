@@ -6,9 +6,10 @@
  *
  * GateAudioProcessor is the JUCE AudioProcessor for the DT-CWPT Gate plugin.
  * It manages:
- *  - 256 automatable threshold parameters via APVTS.
+ *  - 256 automatable threshold parameters and the gate dynamics parameters
+ *    (attack, hold, release, hysteresis, range, stereo link) via APVTS.
  *  - A DTCWPTProcessor for real-time wavelet analysis/synthesis.
- *  - A GateBandProcessor for subband hard gating.
+ *  - A GateBandProcessor for subband gating (envelope, hysteresis, hold, smoothed gain).
  *  - Thread-safe topology change handoff via TopologyState.
  *  - Audio → GUI spectrum data via SpectrumDataBridge.
  *  - Audio → GUI band RMS levels via BandLevelBridge.
@@ -179,7 +180,7 @@ public:
     int getAnalyzerInputDelaySamplesForTest() const noexcept;
     double getLastThresholdLinearForTest (int bandIndex) const noexcept;
     bool getLastBypassLowestForTest() const noexcept;
-    GateBandProcessor::DynamicsParams getLastDynamicsForTest() const noexcept { return {}; }
+    GateBandProcessor::DynamicsParams getLastDynamicsForTest() const noexcept { return lastDynamicsForTest_; }
     const GateBandProcessor* getObservedGateProcessorForTest() const noexcept { return gateProcessor_; }
     const dtcwpt::DTCWPTProcessor* getEngineIdentityForTest() const noexcept { return dtcwptMain_.get(); }
 
@@ -207,6 +208,15 @@ private:
     /** Cached raw pointer to the bypass lowest band parameter. */
     std::atomic<float>* bypassLowestRaw_ { nullptr };
     bool lastBypassLowestForTest_ { false };
+
+    /** Cached raw pointers to the gate dynamics parameters. */
+    std::atomic<float>* attackRaw_ { nullptr };
+    std::atomic<float>* holdRaw_ { nullptr };
+    std::atomic<float>* releaseRaw_ { nullptr };
+    std::atomic<float>* hysteresisRaw_ { nullptr };
+    std::atomic<float>* rangeRaw_ { nullptr };
+    std::atomic<float>* stereoLinkRaw_ { nullptr };
+    GateBandProcessor::DynamicsParams lastDynamicsForTest_ {};
 
     //==============================================================================
     // DSP objects

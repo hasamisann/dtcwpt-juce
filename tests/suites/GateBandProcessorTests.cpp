@@ -13,10 +13,11 @@ public:
 
     void runTest() override
     {
-        beginTest("Gate below threshold");
+        beginTest("Gate below threshold (zero time constants: instantaneous gate)");
         {
             GateBandProcessor gate;
             gate.prepare(44100.0, 8, 1, 1);
+            gate.setDynamics(instantDynamics());
             double thresholds[1] = { 0.01 };
             gate.setThresholds(thresholds, 1);
 
@@ -37,10 +38,11 @@ public:
             }
         }
 
-        beginTest("Gate above threshold");
+        beginTest("Gate above threshold (zero time constants: instantaneous gate)");
         {
             GateBandProcessor gate;
             gate.prepare(44100.0, 8, 1, 1);
+            gate.setDynamics(instantDynamics());
             double thresholds[1] = { 0.01 };
             gate.setThresholds(thresholds, 1);
 
@@ -65,6 +67,7 @@ public:
         {
             GateBandProcessor gate;
             gate.prepare(44100.0, 2, 1, 1);
+            gate.setDynamics(instantDynamics());
             double thresholds[1] = { 0.01 };
             gate.setThresholds(thresholds, 1);
 
@@ -109,6 +112,7 @@ public:
         {
             GateBandProcessor gate;
             gate.prepare(44100.0, 8, 2, 1);
+            gate.setDynamics(instantDynamics());
             double thresholds[2] = { 0.01, 0.9 };
             gate.setThresholds(thresholds, 2);
 
@@ -170,10 +174,11 @@ public:
             expectEquals(highRe[1], 0.0);
         }
 
-        beginTest("Threshold equality leaves a band open deterministically");
+        beginTest("Threshold equality leaves a band open deterministically (zero time constants)");
         {
             GateBandProcessor gate;
             gate.prepare(44100.0, 2, 1, 1);
+            gate.setDynamics(instantDynamics());
             const double threshold[1] = { 0.25 };
             gate.setThresholds(threshold, 1);
 
@@ -189,6 +194,53 @@ public:
 
             expectEquals(re[0], 0.25);
             expectEquals(re[1], -0.25);
+        }
+
+        beginTest("Default dynamics: signals below the threshold are attenuated, above it pass");
+        {
+            const GateBandProcessor::DynamicsParams defaults;
+            const std::vector<double> quiet(20000, 0.005);
+            const std::vector<double> loud(20000, 0.5);
+
+            const auto below = runGate(defaults, { 0.01 }, { quiet }, 512);
+            const auto above = runGate(defaults, { 0.01 }, { loud }, 512);
+            expectWithinAbsoluteError(gainOf(below, 0, { quiet }).back(), 0.0, 1.0e-9, "below threshold: attenuated to the range gain");
+            expectWithinAbsoluteError(gainOf(above, 0, { loud }).back(), 1.0, 1.0e-6, "above threshold: passes after the attack");
+        }
+
+        beginTest("Lowest band bypass is untouched by the dynamics while other bands gate");
+        {
+            GateBandProcessor gate;
+            gate.prepare(44100.0, 512, 2, 2);
+            gate.setBypassLowest(true);
+            const double thresholds[2] = { 0.9, 0.9 };
+            gate.setThresholds(thresholds, 2);
+
+            const std::vector<int> ids { 4, 5 };
+            std::vector<std::vector<double>> lowRe(2, std::vector<double>(512, 0.25));
+            std::vector<std::vector<double>> highRe(2, std::vector<double>(512, 0.25));
+            std::vector<std::vector<double>> im(2, std::vector<double>(512, 0.0));
+            dtcwpt::BandData data;
+            data.numChannels = 2;
+            data.numBands = 2;
+            data.hasSidechain = false;
+            data.destinationIds = &ids;
+            data.bands.resize(2);
+            for (size_t ch = 0; ch < 2; ++ch)
+            {
+                data.bands[ch].push_back({ lowRe[ch].data(), im[ch].data(), 512 });
+                data.bands[ch].push_back({ highRe[ch].data(), im[ch].data(), 512 });
+            }
+
+            gate.processAllBands(data);
+
+            for (size_t n = 0; n < 512; ++n)
+            {
+                expectEquals(lowRe[0][n], 0.25);
+                expectEquals(lowRe[1][n], 0.25);
+                expectEquals(highRe[0][n], 0.0);
+                expectEquals(highRe[1][n], 0.0);
+            }
         }
 
         beginTest("Gain changes between adjacent samples are bounded by the attack/release coefficients");
@@ -436,6 +488,18 @@ private:
     {
         std::vector<std::vector<double>> re, im;
     };
+
+    /** Zero time constants, no hold/hysteresis, -inf range, unlinked: degenerates to the former hard gate. */
+    static GateBandProcessor::DynamicsParams instantDynamics()
+    {
+        GateBandProcessor::DynamicsParams params;
+        params.attackMs = 0.0;
+        params.holdMs = 0.0;
+        params.releaseMs = 0.0;
+        params.hysteresisDb = 0.0;
+        params.stereoLink = false;
+        return params;
+    }
 
     static double coefficient(double timeMs, double fs)
     {
