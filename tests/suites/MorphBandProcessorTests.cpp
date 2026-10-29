@@ -161,6 +161,9 @@ public:
 
     void runTest() override
     {
+        beginTest("Deep DWT retains more than 64 pending parameter events");
+        testDeepDwtEventHistory();
+
         beginTest ("1. Passthrough: magnitude=0, phase=0 preserves main signal");
         testPassthrough();
 
@@ -229,6 +232,31 @@ public:
     }
 
 private:
+    void testDeepDwtEventHistory()
+    {
+        std::vector<int> ids, counts;
+        for (int depth = 1; depth <= 12; ++depth)
+        {
+            ids.push_back((1 << depth) + 1);
+            counts.push_back(4096 >> depth);
+        }
+        ids.push_back(1 << 12);
+        counts.push_back(1);
+        SynthBandData data;
+        data.init(1, counts, ids);
+        data.fillConstant(1.0, 2.0);
+        MorphBandProcessor processor;
+        processor.prepare(48000.0, 2048, 13, 1);
+        processor.setTargets(1.0, 0.0, 0.0, false, false, 0);
+        processor.setTargets(0.0, 0.0, 0.0, false, false, 32);
+        for (int event = 2; event <= 64; ++event)
+            processor.setTargets(0.0, event % 2 == 0 ? 0.1 : 0.0, 0.0, false, false, event * 32);
+        processor.processAllBands(data.data);
+        // H's first coefficient is at host time 1; the initial 0 -> 1 ramp
+        // must still exist even though later events arrived before analysis.
+        expectWithinAbsoluteError(data.mainRe[0][0][0], 1.0 + 1.0 / 960.0, 1.0e-12);
+    }
+
     // -----------------------------------------------------------------------
     // Test 1: Passthrough
     // -----------------------------------------------------------------------
