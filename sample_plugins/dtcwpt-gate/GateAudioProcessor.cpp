@@ -63,7 +63,7 @@ GateAudioProcessor::~GateAudioProcessor()
 
 void GateAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
-    std::lock_guard<std::mutex> lock (controlMutex_);
+    std::unique_lock<std::mutex> lock (controlMutex_);
 
     currentSampleRate_ = sampleRate;
     currentBlockSize_  = samplesPerBlock;
@@ -81,6 +81,9 @@ void GateAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     // The audio thread is not running here, so the new engine is installed directly.
     releaseEnginesLocked();
     installEngineForPrepareLocked();
+    const int latency = committedLatency_;
+    lock.unlock();
+    setLatencySamples (latency);
 }
 
 void GateAudioProcessor::releaseResources()
@@ -126,8 +129,18 @@ GateAudioProcessor::buildEngineBundle (const std::vector<std::string>& destinati
 
 bool GateAudioProcessor::requestTopologyChange (const std::vector<std::string>& destinations)
 {
-    std::lock_guard<std::mutex> lock (controlMutex_);
-    return commitTopologyLocked (destinations);
+    bool accepted;
+    int latency = -1;
+    {
+        std::lock_guard<std::mutex> lock (controlMutex_);
+        accepted = commitTopologyLocked (destinations);
+        if (accepted && prepared_)
+            latency = committedLatency_;
+    }
+    // JUCE synchronously invokes host listeners; they may read our state.
+    if (latency >= 0)
+        setLatencySamples (latency);
+    return accepted;
 }
 
 std::vector<std::string> GateAudioProcessor::getCommittedTopology() const
@@ -166,7 +179,7 @@ bool GateAudioProcessor::commitTopologyLocked (const std::vector<std::string>& c
     {
         lastBuiltDestinations_ = candidate;
         hasCommittedValidTopology_ = true;
-        setLatencySamples (bundle->latency);
+        committedLatency_ = bundle->latency;
         publishBundleLocked (std::move (bundle));
     }
 
@@ -207,7 +220,7 @@ void GateAudioProcessor::installEngineForPrepareLocked()
 
     lastBuiltDestinations_ = committedDestinations_;
     hasCommittedValidTopology_ = true;
-    setLatencySamples (bundle->latency);
+    committedLatency_ = bundle->latency;
     publishBundleLocked (std::move (bundle));
     (void) acquirePendingEngine (true);
 }
@@ -526,7 +539,7 @@ void GateAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
     if (! state.isValid())
         return;
 
-    std::lock_guard<std::mutex> lock (controlMutex_);
+    std::unique_lock<std::mutex> lock (controlMutex_);
 
     const auto restoredTopology = topology::resolvePersistedTopology (state, committedDestinations_);
     apvts_.replaceState (state);
@@ -543,6 +556,11 @@ void GateAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 
     if (restoredTopology.persistedState == topology::PersistedTopologyState::valid)
         (void) commitTopologyLocked (restoredTopology.destinations);
+
+    const int latency = prepared_ ? committedLatency_ : -1;
+    lock.unlock();
+    if (latency >= 0)
+        setLatencySamples (latency);
 }
 
 bool GateAudioProcessor::applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations)

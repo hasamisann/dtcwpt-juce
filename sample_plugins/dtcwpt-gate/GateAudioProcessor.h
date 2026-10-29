@@ -340,6 +340,7 @@ private:
 
     /** Serialises every non-audio entry point (requests, prepare/release, state save/restore, reclaim). Never taken on the audio thread. */
     mutable std::mutex controlMutex_;
+    int committedLatency_ { 0 }; // guarded by controlMutex_; notify the host after unlocking
 
     /** Committed topology: what is saved in the state and what the engine runs (authoritative copy). */
     std::vector<std::string> committedDestinations_;
