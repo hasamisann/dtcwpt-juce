@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include <array>
+#include <new>
 
 class IntegratedRegressionTests : public juce::UnitTest
 {
@@ -12,6 +14,13 @@ public:
     IntegratedRegressionTests() : UnitTest("IntegratedRegressionTests") {}
     void runTest() override
     {
+        beginTest("Default BandData has no optional destination metadata");
+        alignas(dtcwpt::BandData) std::array<unsigned char, sizeof(dtcwpt::BandData)> storage;
+        storage.fill(0xa5);
+        auto* view = new (storage.data()) dtcwpt::BandData;
+        expect(view->destinationIds == nullptr);
+        view->~BandData();
+
         beginTest("Streaming Morph ramp is invariant to 1 vs 64 sample callbacks");
         const auto one = morphRamp(1);
         const auto sixtyFour = morphRamp(64);
