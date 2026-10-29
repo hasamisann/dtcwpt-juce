@@ -7,6 +7,7 @@
 #include <vector>
 #include <array>
 #include <new>
+#include "../util/TestUtils.h"
 
 class IntegratedRegressionTests : public juce::UnitTest
 {
@@ -14,6 +15,16 @@ public:
     IntegratedRegressionTests() : UnitTest("IntegratedRegressionTests") {}
     void runTest() override
     {
+        beginTest("Allocation tracking pairs nothrow allocations with ordinary delete");
+        TestUtils::AllocationCounter allocations;
+        allocations.begin();
+        void* scalar = ::operator new(16, std::nothrow);
+        void* array = ::operator new[](16, std::nothrow);
+        allocations.end();
+        expectEquals(static_cast<int>(allocations.getCount()), 2);
+        ::operator delete(scalar);
+        ::operator delete[](array);
+
         beginTest("Default BandData has no optional destination metadata");
         alignas(dtcwpt::BandData) std::array<unsigned char, sizeof(dtcwpt::BandData)> storage;
         storage.fill(0xa5);
