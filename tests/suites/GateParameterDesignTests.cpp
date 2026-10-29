@@ -23,6 +23,13 @@ public:
 
     void runTest() override
     {
+        beginTest("Highest packet band uses its physical frequency range");
+        {
+            const auto range = gate_gui::getBandFrequencyRange("HLL", 24000.0f);
+            expectEquals(range.first, 21000.0f);
+            expectEquals(range.second, 24000.0f);
+        }
+
         beginTest ("Threshold text input parses with or without a unit");
         testTextInputParsing();
 
