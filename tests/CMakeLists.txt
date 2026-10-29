@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(dtcwpt_tests VERSION 0.2.0 LANGUAGES CXX)
+project(dtcwpt_tests VERSION 0.2.0 LANGUAGES C CXX)
 
 # C++20 required
 set(CMAKE_CXX_STANDARD 20)
@@ -24,7 +24,7 @@ if(NOT TARGET juce::juce_core AND NOT JUCE_FOUND)
         FetchContent_Declare(
             JUCE
             GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-            GIT_TAG 8.0.0
+            GIT_TAG 8.0.12
             GIT_SHALLOW TRUE
         )
         FetchContent_MakeAvailable(JUCE)
@@ -53,6 +53,7 @@ set_target_properties(dtcwpt_tests PROPERTIES
 target_sources(dtcwpt_tests
     PRIVATE
         main.cpp
+        suites/IntegratedRegressionTests.cpp
         suites/AnalysisNodeTests.cpp
         suites/AnalysisSynthesisTests.cpp
         suites/ComplexUtilsTests.cpp
@@ -63,7 +64,6 @@ target_sources(dtcwpt_tests
         suites/MorphBandProcessorTests.cpp
         suites/StatefulFilterTests.cpp
         suites/TopologyPlannerTests.cpp
-        suites/TopologyStateTests.cpp
         suites/TopologySplitOrderTests.cpp
         suites/GraphicEqDragPaintTests.cpp
         suites/GateEditorSampleRateTests.cpp
@@ -86,6 +86,33 @@ target_sources(dtcwpt_tests
         ../sample_plugins/dtcwpt-gate/GateAudioProcessor.cpp
         ../sample_plugins/dtcwpt-gate/GateBandProcessor.cpp
         ../sample_plugins/dtcwpt-gate/gui/GateGuiFrequencyMapping.cpp
+        suites/StateVersioningTests.cpp
+        suites/TailPublicationTests.cpp
+        suites/TailLengthTests.cpp
+        suites/MorphBypassTests.cpp
+        suites/GateBypassTests.cpp
+        suites/LatencyBypassTests.cpp
+        suites/ExceptionSafetyEngineTests.cpp
+        suites/ExceptionSafetyMorphTests.cpp
+        suites/ExceptionSafetyGateTests.cpp
+        suites/OversizedBlockEngineTests.cpp
+        suites/OversizedBlockMorphTests.cpp
+        suites/OversizedBlockGateTests.cpp
+        suites/DTCWPTProcessorResetTests.cpp
+        suites/MorphAudioProcessorResetTests.cpp
+        suites/GateAudioProcessorResetTests.cpp
+        suites/EngineHandoffTests.cpp
+        suites/MorphTopologyHandoffTests.cpp
+        suites/GateTopologyHandoffTests.cpp
+        suites/FrequencyMappingTests.cpp
+        suites/FrequencyOrderTests.cpp
+        suites/GateParameterDesignTests.cpp
+        suites/GateThresholdCurveTests.cpp
+        suites/TripleBufferTests.cpp
+        suites/StreamingEngineTests.cpp
+        suites/StreamingBenchmark.cpp
+        suites/DspBenchmarks.cpp
+        suites/SynthesisPolyphaseTests.cpp
 )
 
 target_include_directories(dtcwpt_tests

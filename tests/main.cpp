@@ -43,7 +43,15 @@ int main(int argc, char* argv[])
 
     // Run tests
     if (testName == "*") {
-        runner.runAllTests(42);  // Run all tests with fixed seed
+        // Run all tests with fixed seed, except the long-running "Benchmark"
+        // category (see DspBenchmarks), which is run only by name.
+        juce::Array<juce::UnitTest*> selected;
+        for (auto* test : juce::UnitTest::getAllTests()) {
+            if (test->getCategory() != "Benchmark") {
+                selected.add(test);
+            }
+        }
+        runner.runTests(selected, 42);
     } else {
         runner.runTestsWithName(testName, 42);  // Run tests matching name
     }

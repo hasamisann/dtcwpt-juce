@@ -69,6 +69,11 @@ void DelayBuffer::process(const std::vector<double>& input, std::vector<double>&
     writeCursor_ = currentHead;
 }
 
+void DelayBuffer::reset() {
+    std::fill(buffer_.begin(), buffer_.end(), 0.0);
+    writeCursor_ = 0;
+}
+
 size_t DelayBuffer::nextPowerOf2(size_t n) {
     if (n == 0) {
         return 1;

@@ -5,16 +5,21 @@
 
 #include "MorphEditor.h"
 
-#include "../../common/TopologyPersistence.h"
-
 //==============================================================================
 // Constructor
 //==============================================================================
 
 MorphEditor::MorphEditor (MorphAudioProcessor& processor)
     : AudioProcessorEditor (processor)
+    , displayConsumer_ (processor.getDisplayConsumerCount())
     , mainView_     (processor)
-    , topologyView_ (processor.getTopologyState(), 44100.0)
+    , topologyView_ ([this, &processor] (const std::vector<std::string>& dests)
+                     {
+                         // Builds the engine here (message thread) and hands it to the audio thread.
+                         if (! processor.requestTopologyChange (dests))
+                             topologyView_.setTopology (processor.getCommittedTopology());
+                     },
+                     44100.0)
     , aboutView_    ([this] { showMain(); })
 {
     // -----------------------------------------------------------------------
@@ -22,7 +27,7 @@ MorphEditor::MorphEditor (MorphAudioProcessor& processor)
     // -----------------------------------------------------------------------
     mainView_.setSettingsCallback ([this, &processor]
     {
-        topologyView_.setTopology (processor.getStoredTopologyDestinations());
+        topologyView_.setTopology (processor.getCommittedTopology());
         showTopology();
     });
     mainView_.setAboutCallback    ([this] { showAbout(); });
@@ -32,18 +37,7 @@ MorphEditor::MorphEditor (MorphAudioProcessor& processor)
     // -----------------------------------------------------------------------
     topologyView_.setBackButtonCallback ([this] { showMain(); });
 
-    // -----------------------------------------------------------------------
-    // Wire topology-changed callback: update APVTS property on Message Thread.
-    // This is the safe replacement for the removed audio-thread ValueTree write.
-    // -----------------------------------------------------------------------
-    topologyView_.setTopologyChangedCallback ([&processor] (const std::vector<std::string>& dests)
-    {
-        processor.getAPVTS().state.setProperty (topology::kTopologyPropertyKey,
-                                                topology::serializeTopologyDestinations (dests),
-                                                nullptr);
-    });
-
-    topologyView_.setTopology (processor.getStoredTopologyDestinations());
+    topologyView_.setTopology (processor.getCommittedTopology());
 
     // -----------------------------------------------------------------------
     // Add sub-views as children

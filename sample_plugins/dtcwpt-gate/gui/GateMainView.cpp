@@ -6,13 +6,21 @@ namespace
     const juce::Colour kBgColor     = juce::Colour (0xFF202026);
     const int kHeaderHeight = 60;
     const int kSpectrumHeight = 100;
+    const int kDynamicsRowHeight = 72;
+
+    struct DynamicsKnobSpec { const char* parameterId; const char* caption; };
+    const DynamicsKnobSpec kDynamicsKnobs[] = {
+        { "attack", "Attack" }, { "hold", "Hold" }, { "release", "Release" },
+        { "hysteresis", "Hysteresis" }, { "range", "Range" }
+    };
 }
 
 //==============================================================================
 GateMainView::GateMainView (GateAudioProcessor& processor, double sampleRate)
     : processor_ (processor),
       spectrumWidget_ (processor.getSpectrumBridge()),
-      graphicEqWidget_ (processor, static_cast<float>(sampleRate))
+      graphicEqWidget_ (processor, static_cast<float>(sampleRate)),
+      engineStatusBanner_ ([&processor] { return processor.isEngineAvailable(); })
 {
     spectrumWidget_.setSampleRate (sampleRate);
     // Setup title
@@ -100,8 +108,43 @@ GateMainView::GateMainView (GateAudioProcessor& processor, double sampleRate)
     static GateToggleButtonLookAndFeel toggleLnf;
     bypassLowestButton_.setLookAndFeel (&toggleLnf);
 
+    // Gate dynamics controls
+    stereoLinkButton_.setButtonText ("Stereo Link");
+    stereoLinkButton_.setLookAndFeel (&toggleLnf);
+    addAndMakeVisible (stereoLinkButton_);
+    stereoLinkAttachment_ = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+        processor_.getAPVTS(), "stereo_link", stereoLinkButton_
+    );
+
+    for (int i = 0; i < kNumDynamicsKnobs; ++i)
+    {
+        auto& knob = dynamicsKnobs_[static_cast<size_t> (i)];
+
+        knob.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        knob.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 64, 14);
+        knob.slider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFFB7BCC1));
+        knob.slider.setColour (juce::Slider::rotarySliderOutlineColourId, juce::Colour (0xFF2E2E2F));
+        knob.slider.setColour (juce::Slider::thumbColourId, juce::Colour (0xFFF0F0F0));
+        knob.slider.setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xFFF0F0F0));
+        knob.slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+        addAndMakeVisible (knob.slider);
+
+        knob.caption.setText (kDynamicsKnobs[i].caption, juce::dontSendNotification);
+        knob.caption.setFont (FontHelper::getFont (12.0f));
+        knob.caption.setColour (juce::Label::textColourId, juce::Colour (0xFFB7BCC1));
+        knob.caption.setJustificationType (juce::Justification::centred);
+        addAndMakeVisible (knob.caption);
+
+        knob.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+            processor_.getAPVTS(), kDynamicsKnobs[i].parameterId, knob.slider
+        );
+    }
+
     addAndMakeVisible (spectrumWidget_);
     addAndMakeVisible (graphicEqWidget_);
+
+    // Shown only while the DSP engine could not be created; stays on top of the other children.
+    addChildComponent (engineStatusBanner_);
 }
 
 GateMainView::~GateMainView()
@@ -109,6 +152,7 @@ GateMainView::~GateMainView()
     settingsButton_.setLookAndFeel (nullptr);
     aboutButton_.setLookAndFeel (nullptr);
     bypassLowestButton_.setLookAndFeel (nullptr);
+    stereoLinkButton_.setLookAndFeel (nullptr);
 }
 
 void GateMainView::paint (juce::Graphics& g)
@@ -139,7 +183,21 @@ void GateMainView::resized()
     bounds.removeFromTop (10); // add_space(10.0)
     spectrumWidget_.setBounds (bounds.removeFromTop (kSpectrumHeight));
     
+    // Gate dynamics row: five knobs and the stereo link toggle
+    bounds.removeFromTop (6);
+    auto dynamicsBounds = bounds.removeFromTop (kDynamicsRowHeight).reduced (12, 0);
+    stereoLinkButton_.setBounds (dynamicsBounds.removeFromRight (110).withSizeKeepingCentre (110, 24));
+    const int knobWidth = dynamicsBounds.getWidth() / kNumDynamicsKnobs;
+    for (auto& knob : dynamicsKnobs_)
+    {
+        auto cell = dynamicsBounds.removeFromLeft (knobWidth);
+        knob.caption.setBounds (cell.removeFromTop (14));
+        knob.slider.setBounds (cell);
+    }
+
     // Graphic EQ
     bounds.removeFromTop (10); // add_space(10.0)
     graphicEqWidget_.setBounds (bounds);
+
+    engineStatusBanner_.setBounds (spectrumWidget_.getBounds().withSizeKeepingCentre (juce::jmin (getWidth() - 32, 320), 80));
 }

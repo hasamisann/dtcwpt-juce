@@ -292,8 +292,10 @@ private:
     {
         const auto result = runScenario({"segmented", {5, 3, 8}});
 
-        expectEquals(result.bandProcessCalls, 1,
-                     "Shared snapshot scenarios should capture one aggregated analysis arrival for the full reference window");
+        // The streaming engine invokes the BandProcessor once per host block that produced subband samples;
+        // each of the three blocks (5, 3 and 8 samples) completes at least one sample of the level-1 band.
+        expectEquals(result.bandProcessCalls, 3,
+                     "Shared snapshot scenarios should capture one analysis arrival per host block");
         expect(result.mainSnapshots.destinationsInOrder == std::vector<std::string>({"H", "LL", "LH"}),
                "Captured destinations should preserve the caller-provided input order");
         expectEquals(static_cast<int>(result.mainSnapshots.samplesPerBandInOrder.size()),

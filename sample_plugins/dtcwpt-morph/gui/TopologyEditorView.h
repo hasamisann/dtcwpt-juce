@@ -15,10 +15,10 @@
  *  - Pan (drag) and zoom (scroll wheel/pinch).
  *
  * The view maintains its own internal tree model (std::vector<TreeNode>).
- * On edit, it rebuilds the destination list and calls TopologyState::requestChange().
+ * On edit, it rebuilds the destination list and passes it to the topology request handler
+ * (the processor's requestTopologyChange()).
  */
 
-#include "TopologyState.h"
 #include "FontHelper.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -99,9 +99,9 @@ public:
 /**
  * @brief Interactive wavelet tree canvas component.
  *
- * Constructor args: TopologyState reference + sample rate.
- * The view owns the GUI-side tree model. Topology changes are signalled to the
- * audio thread via TopologyState::requestChange().
+ * Constructor args: topology request handler + sample rate.
+ * The view owns the GUI-side tree model. Topology changes are passed to the handler,
+ * which builds the new engine and hands it to the audio thread (message thread only).
  */
 class TopologyEditorView : public juce::Component
 {
@@ -110,14 +110,17 @@ public:
     // Constructor / Destructor
     //==============================================================================
 
+    /** Called with the new destination list after the user edited the tree. Runs on the message thread. */
+    using TopologyRequestHandler = std::function<void (const std::vector<std::string>&)>;
+
     /**
-     * @brief Constructs the view with a topology state reference and sample rate.
+     * @brief Constructs the view with a topology request handler and sample rate.
      *
-     * @param topoState   Reference to the shared topology state (audio ↔ GUI handoff).
-     *                    Must outlive this view.
+     * @param requestTopology  Handler that applies a topology edit (e.g. forwards to
+     *                         the processor's requestTopologyChange()).
      * @param sampleRate  Current sample rate used to compute frequency ranges per node.
      */
-    TopologyEditorView (TopologyState& topoState, double sampleRate);
+    TopologyEditorView (TopologyRequestHandler requestTopology, double sampleRate);
 
     /** Destructor. Removes child components before member sub-components are destroyed. */
     ~TopologyEditorView() override;
@@ -132,16 +135,6 @@ public:
      * @param destinations  Vector of destination path strings (e.g., {"H","LH","LL"}).
      */
     void setTopology (const std::vector<std::string>& destinations);
-
-    /**
-     * @brief Sets the callback invoked when the topology changes (split or merge).
-     *
-     * Called on the Message Thread immediately after TopologyState::requestChange().
-     * Use this to update the APVTS topology property safely on the GUI thread.
-     *
-     * @param cb  Callback with signature void(const std::vector<std::string>&).
-     */
-    void setTopologyChangedCallback (std::function<void(const std::vector<std::string>&)> cb);
 
     /**
      * @brief Sets the callback invoked when the "Back" button is clicked.
@@ -245,12 +238,14 @@ private:
     /**
      * @brief Collects the leaf destination path strings from the current tree.
      *
-     * @return Vector of destination path strings in frequency order.
+     * @return Vector of destination path strings in frequency order, highest
+     *         frequency first (path strings are in Gray-code frequency order).
      */
     std::vector<std::string> collectDestinations() const;
 
     /**
-     * @brief Recursive helper to collect leaves in DFS order.
+     * @brief Recursive helper to collect leaves in DFS order (children are kept
+     *        highest-frequency first, so this is descending frequency order).
      *
      * @param nodeId      Starting node ID.
      * @param destinations  Output vector.
@@ -292,12 +287,12 @@ private:
      * @brief Generates a Full Tree topology of the given depth.
      *
      * A Full Tree of depth N produces 2^N leaves by recursively splitting
-     * every node at each level. Leaves are enumerated in DFS order (H before L),
-     * so the highest-frequency leaf receives slot 0 (top of canvas), matching
-     * DWT display convention.
+     * every node at each level. Leaves are returned in descending frequency
+     * order, so the highest-frequency leaf receives slot 0 (top of canvas),
+     * matching DWT display convention.
      *
      * @param depth  Number of decomposition levels up to the supported maximum depth.
-     * @return       Vector of destination path strings in DFS order.
+     * @return       Vector of destination path strings, highest frequency first.
      */
     static std::vector<std::string> generateFullTree (int depth);
 
@@ -322,7 +317,7 @@ private:
     // Members
     //==============================================================================
 
-    TopologyState& topoState_;
+    TopologyRequestHandler requestTopology_;
     double         sampleRate_   { 44100.0 };
 
     std::vector<TreeNode> nodes_;    ///< All tree nodes (valid state after buildTree())
@@ -353,12 +348,6 @@ private:
 
     /** Callback for back-button click. */
     std::function<void()> onBack_;
-
-    /**
-     * Callback fired on the Message Thread after every topology change.
-     * Receives the new destination list so the caller can persist it to APVTS.
-     */
-    std::function<void(const std::vector<std::string>&)> onTopologyChanged_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TopologyEditorView)
 };

@@ -10,7 +10,8 @@
  *    bypassLow, bypassHigh).
  *  - A DTCWPTProcessor for real-time wavelet analysis/synthesis.
  *  - A MorphBandProcessor for spectral morphing in the subband domain.
- *  - Thread-safe topology change handoff via TopologyState.
+ *  - Topology changes: the engine for a new topology is built on a non-audio thread
+ *    and handed to the audio thread through EngineHandoff (see below).
  *  - Audio → GUI spectrum data via SpectrumDataBridge.
  *  - Float ↔ Double conversion at the plugin I/O boundary.
  *  - State serialisation via APVTS (parameters + topology string property).
@@ -24,13 +25,19 @@
 
 // Plugin classes
 #include "MorphBandProcessor.h"
-#include "TopologyState.h"
 #include "SpectrumDataBridge.h"
 #include "../common/AnalyzerLatencyAligner.h"
+#include "../common/CommittedTailLength.h"
+#include "../common/LatencyBypass.h"
+#include "../common/DisplayConsumerCount.h"
+#include "../common/EngineHandoff.h"
 
 // Standard library
-#include <memory>
 #include <array>
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -52,6 +59,7 @@ namespace ParamID
     inline constexpr const char* Threshold  = "threshold";
     inline constexpr const char* BypassLow  = "bypassLow";
     inline constexpr const char* BypassHigh = "bypassHigh";
+    inline constexpr const char* Bypass = "bypass";
 } // namespace ParamID
 
 //==============================================================================
@@ -66,7 +74,8 @@ namespace ParamID
  * Formats: VST3 and Standalone.
  * Plugin ID: "DtcwptMorph", company: "hasamisann".
  */
-class MorphAudioProcessor : public juce::AudioProcessor
+class MorphAudioProcessor : public juce::AudioProcessor,
+                            private juce::Timer
 {
 public:
     //==============================================================================
@@ -81,8 +90,8 @@ public:
      */
     MorphAudioProcessor();
 
-    /** Destructor. */
-    ~MorphAudioProcessor() override = default;
+    /** Destructor. Destroys every engine, including the ones retired by the audio thread. */
+    ~MorphAudioProcessor() override;
 
     //==============================================================================
     // AudioProcessor interface — lifecycle
@@ -91,10 +100,9 @@ public:
     /**
      * @brief Allocates DSP resources and prepares the DTCWPTProcessor.
      *
-     * Creates a DTCWPTProcessor with the current topology, creates a
-     * MorphBandProcessor and transfers ownership to the engine (retaining a raw
-     * observer pointer), allocates double-precision conversion buffers, and reports
-     * the initial latency to the host.
+     * Builds the engine for the committed topology (DTCWPTProcessor + MorphBandProcessor +
+     * analyzer aligner), installs it directly (the audio thread is not running), allocates
+     * double-precision conversion buffers, and reports the latency to the host.
      *
      * @param sampleRate     Host sample rate in Hz.
      * @param samplesPerBlock Maximum block size in samples.
@@ -104,7 +112,7 @@ public:
     /**
      * @brief Releases all DSP resources.
      *
-     * Destroys the DTCWPTProcessor and clears the raw MorphBandProcessor observer
+     * Destroys the engines and clears the raw MorphBandProcessor observer
      * pointer. Double-precision conversion buffers are also cleared.
      */
     void releaseResources() override;
@@ -113,8 +121,11 @@ public:
      * @brief Processes one block of audio.
      *
      * Per-block operations (in order):
-     *  1. Topology dirty check — if set, rebuild DTCWPTProcessor and update latency.
-     *  2. Read APVTS atomic floats; call morphProcessor_->setTargets().
+     *  1. Take a pending engine from EngineHandoff, if any. A new engine is cross-faded in
+     *     over ~10 ms (old engine output fades out, new engine input fades in; both run
+     *     during the fade) and the old engine is handed back for destruction off the
+     *     audio thread.
+     *  2. Read APVTS atomic floats; call setTargets() on the running engine(s).
      *  3. Convert float main buffer → double mainDoubleBuffer_.
      *  4. Build sidechain double buffer (bus 1 if enabled, else copy of main).
      *  5. dtcwptMain_->processSidechain(scDoubleBuffer_).
@@ -122,8 +133,8 @@ public:
      *  7. Convert double output → float main buffer.
      *  8. Push mono-averaged input + output to spectrumBridge_.
      *
-     * All code is real-time safe (noexcept, no allocations, no locks except
-     * the brief topology-rebuild mutex hold).
+     * Real-time safe: no allocations, no locks, no ValueTree / std::string access, no host
+     * notifications. Engine construction and destruction happen on other threads.
      *
      * @param buffer        Audio I/O buffer (in: main + optional sidechain channels).
      * @param midiMessages  Unused.
@@ -189,8 +200,8 @@ public:
     /**
      * @brief Serialises parameters + topology to a binary block.
      *
-     * Uses APVTS::copyState() which includes all parameters and any ValueTree
-     * properties (including the "topology" string property).
+     * Writes a copy of the APVTS state with the committed topology attached as the
+     * "topology" property. The live ValueTree is never written to by the audio thread.
      *
      * @param destData  Output memory block.
      */
@@ -199,9 +210,10 @@ public:
     /**
      * @brief Restores parameters + topology from a binary block.
      *
-     * Uses APVTS::replaceState(). After restoring, reads the "topology" property
-     * and signals topoState_ so the audio thread rebuilds the DTCWPTProcessor on
-     * the next processBlock call.
+     * Uses APVTS::replaceState(). The "topology" property is then validated; a valid one
+     * is committed (the engine is built here and handed to the audio thread), an invalid
+     * one is reported and the committed topology is kept (or the default is used if no
+     * topology was ever committed).
      *
      * @param data        Pointer to serialised data.
      * @param sizeInBytes Size of serialised data in bytes.
@@ -240,13 +252,28 @@ public:
     SpectrumDataBridge& getSpectrumBridge() noexcept { return spectrumBridge_; }
 
     /**
-     * @brief Returns a reference to the atomic topology change handoff state.
+     * @brief Requests a topology change. Safe to call from any non-audio thread.
      *
-     * The GUI's TopologyEditorView writes to this; the audio thread reads it.
+     * Validates the topology by building the engine on the calling thread, updates the
+     * latency reported to the host, makes the topology the committed (saved) one and
+     * hands the engine to the audio thread. Later requests supersede earlier ones that
+     * the audio thread has not picked up yet.
      *
-     * @return Reference to TopologyState.
+     * @return true if the topology was accepted. A rejected topology (invalid, or deeper
+     *         than the plugin supports) emits the shared invalid-topology diagnostic and
+     *         leaves the committed topology, engine and latency unchanged.
      */
-    TopologyState& getTopologyState() noexcept { return topoState_; }
+    bool requestTopologyChange (const std::vector<std::string>& destinations);
+
+    /** Returns the committed topology (the one that is saved and that the engine runs). Non-audio threads only. */
+    std::vector<std::string> getCommittedTopology() const;
+
+    /**
+     * @brief Counter that advances every time the committed topology changes.
+     *
+     * Lock-free; the GUI polls it and calls getCommittedTopology() when it changed.
+     */
+    std::uint64_t getTopologyGeneration() const noexcept { return topologyGeneration_.load (std::memory_order_acquire); }
 
     /**
      * @brief Returns a reference to the APVTS for parameter access.
@@ -258,40 +285,108 @@ public:
      */
     juce::AudioProcessorValueTreeState& getAPVTS() noexcept { return apvts_; }
 
-    /**
-     * @brief Resolves topology destinations persisted in APVTS state.
-     *
-     * Prefers a valid persisted topology property and falls back to the
-     * processor's in-memory destination list when the property is missing or invalid.
-     */
-    std::vector<std::string> getStoredTopologyDestinations() const;
+    // Test seams. The *ForTest accessors that read audio-thread state must be called from the
+    // thread that calls processBlock (or while no audio is running).
 
-    bool applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations) noexcept;
-    bool rebuildPendingTopologyForTest() noexcept;
-    const std::vector<std::string>& getCommittedDestinationsForTest() const noexcept { return currentDestinations_; }
-    juce::String getPersistedTopologyStringForTest() const;
-    int getCommittedTopologyDepthForTest() const noexcept;
-    const MorphBandProcessor* getObservedMorphProcessorForTest() const noexcept { return morphProcessor_; }
-    const dtcwpt::DTCWPTProcessor* getEngineIdentityForTest() const noexcept { return dtcwptMain_.get(); }
+    /** requestTopologyChange() followed by taking the new engine as the audio thread would, without a fade. */
+    bool applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations);
+    /** Takes a pending engine the way processBlock does, without a fade. Returns true if one was taken. */
+    bool adoptPendingEngineForTest() noexcept;
+    int getCommittedTopologyDepthForTest() const;
+    const MorphBandProcessor* getObservedMorphProcessorForTest() const noexcept { return active_ != nullptr ? active_->morph : nullptr; }
+    const dtcwpt::DTCWPTProcessor* getEngineIdentityForTest() const noexcept { return active_ != nullptr ? active_->engine.get() : nullptr; }
     int getAnalyzerInputDelaySamplesForTest() const noexcept;
     bool consumeSpectrumSnapshotForTest (std::array<float, SpectrumDataBridge::kSlotSize>& inputOut,
                                          std::array<float, SpectrumDataBridge::kSlotSize>& outputOut);
 
+    void reset() override;
+    void processBlockBypassed(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    juce::AudioProcessorParameter* getBypassParameter() const override;
+    DisplayConsumerCount& getDisplayConsumerCount() noexcept { return displayConsumers_; }
+    bool isEngineAvailable() const noexcept { return engineAvailable_.load(std::memory_order_acquire); }
+#if DTCWPT_ENABLE_TEST_SEAMS
+    void failNextEngineBuildsForTest(dtcwpt::DTCWPTProcessor::PrepareCandidateFailpoint failpoint, int count) noexcept
+    {
+        engineBuildFailpointForTest_ = failpoint;
+        engineBuildFailuresRemainingForTest_ = count;
+    }
+    std::vector<std::string> getCommittedDestinationsForTest() const { return getCommittedTopology(); }
+    juce::String getPersistedTopologyStringForTest()
+    {
+        juce::MemoryBlock saved;
+        getStateInformation(saved);
+        return juce::ValueTree::readFromData(saved.getData(), saved.getSize()).getProperty("topology").toString();
+    }
+#endif
+
 private:
     //==============================================================================
-    // Private helpers
+    // Engine bundle (built off the audio thread, owned by the audio thread while in use)
+    //==============================================================================
+
+    /** Everything needed to run one topology. Built by buildEngineBundle(), destroyed off the audio thread. */
+    struct EngineBundle
+    {
+        /** Main DT-CWPT analysis/synthesis engine. Owns the MorphBandProcessor. */
+        std::unique_ptr<dtcwpt::DTCWPTProcessor> engine;
+
+        /** Raw observer of the MorphBandProcessor owned by `engine` (used for setTargets() each block). */
+        MorphBandProcessor* morph { nullptr };
+
+        /** Delays the analyzer input by the engine latency. */
+        AnalyzerLatencyAligner aligner;
+
+        /** Engine latency in samples. */
+        int latency { 0 };
+        int tailSamples { 0 };
+        std::int64_t inputPosition { 0 };
+        bool fadeInOnStart { false };
+    };
+
+    //==============================================================================
+    // Control side (message / host threads) — everything below is guarded by controlMutex_
+    //==============================================================================
+
+    /** Builds the engine for `destinations` with the cached sample rate and block size. Throws std::invalid_argument. */
+    std::unique_ptr<EngineBundle> buildEngineBundle (const std::vector<std::string>& destinations) const;
+
+    /** Validates, builds and publishes `candidate`; see requestTopologyChange(). */
+    bool commitTopologyLocked (const std::vector<std::string>& candidate);
+
+    /** Updates the committed topology and advances the generation counter. */
+    void setCommittedTopologyLocked (const std::vector<std::string>& destinations);
+
+    /** Reports the new latency and hands the bundle to the audio thread (deferring it if the retire ring is full). */
+    void publishBundleLocked (std::unique_ptr<EngineBundle> bundle);
+
+    /** prepareToPlay(): builds the committed topology and installs it directly. */
+    void installEngineForPrepareLocked();
+
+    /** Retires the engines the audio thread holds. Only valid while the audio thread is not running. */
+    void releaseEnginesLocked();
+
+    /** Destroys engines retired by the audio thread and retries a deferred publish. */
+    void reclaimLocked();
+
+    /** juce::Timer: periodic reclaim on the message thread. */
+    void timerCallback() override;
+
+    //==============================================================================
+    // Audio side
     //==============================================================================
 
     /**
-     * @brief (Re)creates the DTCWPTProcessor using currentDestinations_.
+     * @brief Takes the pending engine, if any, and starts switching to it.
      *
-     * Called from prepareToPlay() and from processBlock() on topology change.
-     * Not real-time safe (allocates) — must only be called when the topology dirty
-     * flag is set and the mutex can be briefly held.
+     * Does nothing while a previous switch is still fading. With `immediate`, or when the running
+     * engine has not processed any audio yet, the switch is instant instead of a cross-fade.
+     *
+     * @return true if a new engine was taken.
      */
-    void rebuildDTCWPT();
-    bool tryApplyTopologyCandidate (const std::vector<std::string>& candidateDestinations) noexcept;
-    bool tryApplyPendingTopologyCandidate() noexcept;
+    bool acquirePendingEngine (bool immediate) noexcept;
+
+    /** Gain of the incoming engine's input at fade position `position` (the outgoing output uses 1 - gain). */
+    double fadeInGain (int position) const noexcept;
 
     //==============================================================================
     // APVTS — owns all automatable parameters
@@ -301,39 +396,33 @@ private:
     juce::AudioProcessorValueTreeState apvts_;
 
     //==============================================================================
-    // DSP objects
-    //==============================================================================
-
-    /**
-     * @brief Main DT-CWPT analysis/synthesis engine.
-     *
-     * Created/recreated in prepareToPlay() and on topology rebuild.
-     * Owns the MorphBandProcessor via setBandProcessor(unique_ptr).
-     */
-    std::unique_ptr<dtcwpt::DTCWPTProcessor> dtcwptMain_;
-
-    /**
-     * @brief Raw observer pointer to the MorphBandProcessor.
-     *
-     * Ownership is transferred to dtcwptMain_ via setBandProcessor().
-     * This raw pointer is retained for setTargets() calls each block.
-     * Lifetime is tied to dtcwptMain_: reset to nullptr when dtcwptMain_ is destroyed.
-     */
-    MorphBandProcessor* morphProcessor_ { nullptr };
-
-    //==============================================================================
     // Thread-bridge objects (owned here, shared by reference with GUI)
     //==============================================================================
 
-    /** Atomic topology change handoff between GUI and audio threads. */
-    TopologyState topoState_;
+    /** Hand-off of built engines to the audio thread and of retired engines back. */
+    EngineHandoff<EngineBundle> handoff_;
 
     /** Lock-free ring buffer passing spectrum samples to the GUI thread. */
     SpectrumDataBridge spectrumBridge_;
 
     //==============================================================================
-    // Double-precision conversion buffers (pre-allocated in prepareToPlay)
+    // Audio-thread state (written by the audio thread; by other threads only while audio is stopped)
     //==============================================================================
+
+    /** Engine that produces the output (the incoming engine while a switch is fading). */
+    EngineBundle* active_ { nullptr };
+
+    /** Outgoing engine while a switch is fading, otherwise nullptr. */
+    EngineBundle* fadingOut_ { nullptr };
+
+    /** Samples of the current fade already rendered. */
+    int fadePosition_ { 0 };
+
+    /** Length of the switch cross-fade (~10 ms), set in prepareToPlay(). */
+    int fadeLength_ { 1 };
+
+    /** False until `active_` has processed a block; an engine with no history is replaced without a fade. */
+    bool activeHasProcessed_ { false };
 
     /** Main input/output buffer at double precision (for DTCWPTProcessor). */
     juce::AudioBuffer<double> mainDoubleBuffer_;
@@ -341,9 +430,8 @@ private:
     /** Sidechain input buffer at double precision. */
     juce::AudioBuffer<double> scDoubleBuffer_;
 
-    //==============================================================================
-    // Mono scratch buffers for spectrum bridge (pre-allocated in prepareToPlay)
-    //==============================================================================
+    /** Output of the outgoing engine during a switch. */
+    juce::AudioBuffer<double> fadeOutBuffer_;
 
     /** Pre-allocated mono scratch buffer for input spectrum snapshot (single channel). */
     juce::AudioBuffer<float> inputMonoScratch_;
@@ -354,27 +442,50 @@ private:
     /** Pre-allocated mono scratch buffer for latency-aligned analyzer input. */
     juce::AudioBuffer<float> alignedInputMonoScratch_;
 
-    /** Real-time-safe delay aligner for analyzer input snapshots. */
-    AnalyzerLatencyAligner analyzerInputAligner_;
-
-    /** Current delay capacity configured for analyzerInputAligner_. */
-    int analyzerInputAlignerMaxDelay_ { 0 };
-
     //==============================================================================
-    // Cached prepare() state
+    // Control-side state
     //==============================================================================
 
-    /** Current destination list (authoritative copy; also mirrored to apvts_.state). */
-    std::vector<std::string> currentDestinations_;
+    /** Serialises every non-audio entry point (requests, prepare/release, state save/restore, reclaim). Never taken on the audio thread. */
+    void processBlockInternal(juce::AudioBuffer<float>&, bool forceBypass);
+    void processChunk(juce::AudioBuffer<float>&, int start, int count);
+    LatencyBypass latencyBypass_;
+    std::atomic<float>* bypassRaw_ = nullptr;
+    DisplayConsumerCount displayConsumers_;
+    bool displayWasActive_ = false;
+    CommittedTailLength committedTailLength_;
+    std::atomic<bool> engineAvailable_ { false };
+#if DTCWPT_ENABLE_TEST_SEAMS
+    mutable dtcwpt::DTCWPTProcessor::PrepareCandidateFailpoint engineBuildFailpointForTest_
+        = dtcwpt::DTCWPTProcessor::PrepareCandidateFailpoint::none;
+    mutable int engineBuildFailuresRemainingForTest_ = 0;
+#endif
+    mutable std::mutex controlMutex_;
+    int committedLatency_ { 0 }; // guarded by controlMutex_; notify the host after unlocking
 
-    /** Current sample rate (cached from prepareToPlay). */
+    /** Committed topology: what is saved in the state and what the engine runs (authoritative copy). */
+    std::vector<std::string> committedDestinations_;
+
+    /** Last topology that was built successfully; fallback if a not-yet-validated topology is rejected at prepare. */
+    std::vector<std::string> lastBuiltDestinations_;
+
+    /** Tracks whether a valid topology has already been built. */
+    bool hasCommittedValidTopology_ { false };
+
+    /** True between prepareToPlay() and releaseResources(); engines can only be built while prepared. */
+    bool prepared_ { false };
+
+    /** Cached sample rate (from prepareToPlay). */
     double currentSampleRate_ { 44100.0 };
 
-    /** Current maximum block size (cached from prepareToPlay). */
+    /** Cached maximum block size (from prepareToPlay). */
     int currentBlockSize_ { 512 };
 
-    /** Tracks whether a valid topology has already been committed into the engine. */
-    bool hasCommittedValidTopology_ { false };
+    /** Bundle that could not be published because too many engines were still alive; retried by reclaimLocked(). */
+    std::unique_ptr<EngineBundle> deferredBundle_;
+
+    /** Advances whenever committedDestinations_ changes. */
+    std::atomic<std::uint64_t> topologyGeneration_ { 0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MorphAudioProcessor)
 };

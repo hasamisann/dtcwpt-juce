@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../GateThresholdCurve.h"
+
 #include <cmath>
 #include <string>
 #include <utility>
@@ -38,7 +40,18 @@ namespace gate_gui
 
     FrequencyMapping makeFrequencyMapping (float nyquist) noexcept;
 
+    /**
+     * Frequency range [low, high] in Hz of the band at @p path.
+     * Path strings are in Gray-code frequency order (see dtcwpt_frequency_mapping.h),
+     * e.g. at 48 kHz depth 3 the highest band is "HLL", not "HHH".
+     */
     std::pair<float, float> getBandFrequencyRange (const std::string& path, float nyquist) noexcept;
+
+    /** Number of threshold points (ISO 1/3 octave) at or below the display Nyquist; these are the ones the graph shows. */
+    int countThresholdPointsBelow (float nyquist) noexcept;
+
+    /** Threshold point nearest to @p frequencyHz on the log frequency axis, among the points shown for @p nyquist. */
+    int findNearestThresholdPoint (float frequencyHz, float nyquist) noexcept;
 
     std::vector<FrequencyRange> buildFrequencyRangesForTopology (const std::vector<std::string>& destinations,
                                                                  float sampleRate);

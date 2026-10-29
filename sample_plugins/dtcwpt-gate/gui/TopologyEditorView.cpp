@@ -8,8 +8,11 @@
 #include "GateGuiFrequencyMapping.h"
 #include "../../common/TopologySplitOrder.h"
 
+#include <dtcwpt/dtcwpt_frequency_mapping.h>
+
 #include <algorithm>
 #include <cmath>
+#include <tuple>
 
 //==============================================================================
 // Colours (anonymous namespace)
@@ -17,6 +20,25 @@
 
 namespace
 {
+    /**
+     * Frequency band (Hz) of a tree node. Path strings are in Gray-code
+     * frequency order, so the engine owns the mapping.
+     */
+    std::pair<float, float> nodeFrequencyRange (int nodeId, float nyquist) noexcept
+    {
+        const auto range = dtcwpt::getNormalizedFrequencyRange (nodeId);
+        return { static_cast<float> (range.lo) * nyquist, static_cast<float> (range.hi) * nyquist };
+    }
+
+    /** Orders sibling node IDs so the higher-frequency band comes first (top of canvas). */
+    void sortHighestFrequencyFirst (std::vector<int>& nodeIds)
+    {
+        std::stable_sort (nodeIds.begin(), nodeIds.end(), [] (int a, int b)
+        {
+            return dtcwpt::getNormalizedFrequencyRange (a).lo > dtcwpt::getNormalizedFrequencyRange (b).lo;
+        });
+    }
+
     /** Background colour for the canvas. */
     constexpr juce::uint32 kBgColour       = 0xFF202026;
 
@@ -51,8 +73,8 @@ namespace
 // Constructor
 //==============================================================================
 
-TopologyEditorView::TopologyEditorView (TopologyState& topoState, double sampleRate)
-    : topoState_   (topoState)
+TopologyEditorView::TopologyEditorView (TopologyRequestHandler requestTopology, double sampleRate)
+    : requestTopology_ (std::move (requestTopology))
     , sampleRate_  (gate_gui::sanitizeSampleRateAndNyquist (static_cast<float> (sampleRate)).sampleRate)
 {
     buildTree (kDefaultTopology);
@@ -94,8 +116,7 @@ TopologyEditorView::TopologyEditorView (TopologyState& topoState, double sampleR
         layoutTree();
         repaint();
 
-        topoState_.requestChange (dests);
-        if (onTopologyChanged_) onTopologyChanged_ (dests);
+        if (requestTopology_) requestTopology_ (dests);
     };
 
     typeCombo_.onChange  = applyPreset;
@@ -136,12 +157,6 @@ void TopologyEditorView::setTopology (const std::vector<std::string>& destinatio
 void TopologyEditorView::setBackButtonCallback (std::function<void()> cb)
 {
     onBack_ = std::move (cb);
-}
-
-void TopologyEditorView::setTopologyChangedCallback (
-    std::function<void(const std::vector<std::string>&)> cb)
-{
-    onTopologyChanged_ = std::move (cb);
 }
 
 //==============================================================================
@@ -208,8 +223,7 @@ void TopologyEditorView::mouseDown (const juce::MouseEvent& e)
         {
             splitNode (hitId);
             const auto dests = collectDestinations();
-            topoState_.requestChange (dests);
-            if (onTopologyChanged_) onTopologyChanged_ (dests);
+            if (requestTopology_) requestTopology_ (dests);
             layoutTree();
             repaint();
         }
@@ -219,8 +233,7 @@ void TopologyEditorView::mouseDown (const juce::MouseEvent& e)
         // Merge all descendants back to a leaf
         mergeNode (hitId);
         const auto dests = collectDestinations();
-        topoState_.requestChange (dests);
-        if (onTopologyChanged_) onTopologyChanged_ (dests);
+        if (requestTopology_) requestTopology_ (dests);
         layoutTree();
         repaint();
     }
@@ -306,20 +319,14 @@ void TopologyEditorView::buildTree (const std::vector<std::string>& destinations
             auto* childNode = findNode (childId);
             if (childNode == nullptr)
             {
-                // Get parent's freq range
                 auto* parentNode = findNode (currentId);
-                const float parentLow  = parentNode ? parentNode->freqLow  : 0.0f;
-                const float parentHigh = parentNode ? parentNode->freqHigh
-                                                    : sanitized.nyquist;
-                const float midFreq = (parentLow + parentHigh) * 0.5f;
 
                 TreeNode newNode;
                 newNode.nodeId  = childId;
                 // Build path string (FIXED: use i+1 instead of pointer arithmetic)
                 newNode.path    = dest.substr (0, i + 1);
                 newNode.isLeaf  = isLastChar;
-                newNode.freqLow  = (c == 'L') ? parentLow  : midFreq;
-                newNode.freqHigh = (c == 'L') ? midFreq     : parentHigh;
+                std::tie (newNode.freqLow, newNode.freqHigh) = nodeFrequencyRange (childId, sanitized.nyquist);
                 nodes_.push_back (newNode);
 
                 // Re-find parent after push_back: the push_back may have reallocated
@@ -347,9 +354,13 @@ void TopologyEditorView::buildTree (const std::vector<std::string>& destinations
         }
     }
 
-    // Re-validate leaf flags: a node is a leaf iff it has no children
+    // Re-validate leaf flags (a node is a leaf iff it has no children) and put each
+    // node's children in descending frequency order so DFS/canvas order is frequency order.
     for (auto& n : nodes_)
+    {
         n.isLeaf = n.children.empty();
+        sortHighestFrequencyFirst (n.children);
+    }
 }
 
 void TopologyEditorView::layoutTree()
@@ -387,7 +398,7 @@ int TopologyEditorView::assignSlots (int nodeId, int nextSlot)
         return nextSlot + 1;
     }
 
-    // Internal node: recurse on children (L child first = low-freq at bottom)
+    // Internal node: recurse on children (highest-frequency child first = top of canvas)
     float slotSum = 0.0f;
     for (int childId : node->children)
     {
@@ -413,12 +424,10 @@ void TopologyEditorView::splitNode (int nodeId)
 
     // Cache parent properties before any push_back, which may reallocate
     // nodes_ and invalidate the `node` pointer (use-after-free fix).
-    const float parentFreqLow  = node->freqLow;
-    const float parentFreqHigh = node->freqHigh;
+    const auto* rootNode = findNode (1);
+    const float nyquistHz = rootNode != nullptr ? rootNode->freqHigh : 0.0f;
     const std::string parentPath = node->path;
     node = nullptr; // Discard to prevent accidental use after reallocation.
-
-    const float midFreq = (parentFreqLow + parentFreqHigh) * 0.5f;
 
     const auto splitChildren = topology::makeHighFirstSplitChildren (nodeId, parentPath);
 
@@ -426,16 +435,14 @@ void TopologyEditorView::splitNode (int nodeId)
     highChild.nodeId   = splitChildren.highChild.nodeId;
     highChild.path     = splitChildren.highChild.path;
     highChild.isLeaf   = true;
-    highChild.freqLow  = midFreq;
-    highChild.freqHigh = parentFreqHigh;
+    std::tie (highChild.freqLow, highChild.freqHigh) = nodeFrequencyRange (highChild.nodeId, nyquistHz);
     nodes_.push_back (highChild); // May reallocate nodes_.
 
     TreeNode lowChild;
     lowChild.nodeId   = splitChildren.lowChild.nodeId;
     lowChild.path     = splitChildren.lowChild.path;
     lowChild.isLeaf   = true;
-    lowChild.freqLow  = parentFreqLow;
-    lowChild.freqHigh = midFreq;
+    std::tie (lowChild.freqLow, lowChild.freqHigh) = nodeFrequencyRange (lowChild.nodeId, nyquistHz);
     nodes_.push_back (lowChild); // May reallocate nodes_.
 
     // Re-acquire parent pointer after all push_backs are complete.
@@ -443,6 +450,7 @@ void TopologyEditorView::splitNode (int nodeId)
     {
         n->children.push_back (highChild.nodeId);
         n->children.push_back (lowChild.nodeId);
+        sortHighestFrequencyFirst (n->children);
         n->isLeaf = false;
     }
 }
@@ -568,14 +576,13 @@ std::vector<std::string> TopologyEditorView::generateDWT (int depth)
 std::vector<std::string> TopologyEditorView::generateFullTree (int depth)
 {
     // A Full Tree of depth N produces 2^N leaves by recursively splitting
-    // every node at each level. Enumerate in DFS order (H before L) so the
-    // highest-frequency leaf receives slot 0 (top of canvas), matching DWT
-    // display convention.
+    // every node at each level. The leaves are returned in descending
+    // frequency order so the highest-frequency leaf receives slot 0 (top of
+    // canvas), matching DWT display convention. Path strings are in Gray-code
+    // frequency order, so this is not the H-before-L enumeration order.
     std::vector<std::string> dests;
     dests.reserve (static_cast<std::size_t> (1) << static_cast<std::size_t> (depth));
 
-    // Enumerate in DFS order (H before L) so high-frequency leaves get the
-    // lowest slot index (top of canvas), matching DWT display convention.
     std::function<void(std::string, int)> enumerate = [&] (std::string path, int remaining)
     {
         if (remaining == 0)
@@ -588,6 +595,7 @@ std::vector<std::string> TopologyEditorView::generateFullTree (int depth)
     };
 
     enumerate ("", depth);
+    dtcwpt::sortPathsByFrequency (dests, /*descending=*/true);
     return dests;
 }
 

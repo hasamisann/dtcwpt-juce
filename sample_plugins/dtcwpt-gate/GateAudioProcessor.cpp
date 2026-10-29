@@ -1,8 +1,10 @@
 #include "GateAudioProcessor.h"
 #include "../common/InvalidTopologyDiagnostics.h"
 #include "../common/TopologyPersistence.h"
+#include "../common/StateVersioning.h"
 
 #include <juce_core/juce_core.h>
+#include <limits>
 
 //==============================================================================
 // Default topology (6-level DWT)
@@ -16,10 +18,16 @@ namespace
 
     constexpr int kGateTopologyMaxDepth = 8;
 
+    /** Length of the cross-fade when the audio thread switches to a new engine. */
+    constexpr double kSwitchFadeSeconds = 0.010;
+
+    /** How often the message thread destroys engines retired by the audio thread. */
+    constexpr int kReclaimIntervalMs = 250;
+
 } // namespace
 
 //==============================================================================
-// Constructor
+// Constructor / Destructor
 //==============================================================================
 
 GateAudioProcessor::GateAudioProcessor()
@@ -27,22 +35,25 @@ GateAudioProcessor::GateAudioProcessor()
                           .withInput  ("Input",     juce::AudioChannelSet::stereo(), true)
                           .withOutput ("Output",    juce::AudioChannelSet::stereo(), true)),
       apvts_ (*this, nullptr, "GateParams", createParameterLayout()),
-      currentDestinations_ (kDefaultTopology)
+      committedDestinations_ (kDefaultTopology)
 {
-    // Store the default topology as a ValueTree property
-    apvts_.state.setProperty (topology::kTopologyPropertyKey,
-                               topology::serializeTopologyDestinations (currentDestinations_),
-                               nullptr);
+    for (std::size_t i = 0; i < thresholdRaw_.size(); ++i)
+        thresholdRaw_[i] = apvts_.getRawParameterValue(getThresholdParameterId(static_cast<int>(i)));
+    bypassRaw_ = apvts_.getRawParameterValue("bypass");
 
-    // Cache the 256 parameter pointers
-    for (int i = 0; i < GateBandProcessor::kMaxBands; ++i)
-    {
-        juce::String paramID = juce::String::formatted("threshold_%02d", i);
-        thresholdRaw_[i] = apvts_.getRawParameterValue(paramID);
-    }
-    
     // Cache the bypass parameter
     bypassLowestRaw_ = apvts_.getRawParameterValue("bypass_lowest_band");
+
+    // Engines retired by the audio thread are destroyed on the message thread.
+    startTimer (kReclaimIntervalMs);
+}
+
+GateAudioProcessor::~GateAudioProcessor()
+{
+    stopTimer();
+
+    std::lock_guard<std::mutex> lock (controlMutex_);
+    releaseEnginesLocked();
 }
 
 //==============================================================================
@@ -51,200 +62,403 @@ GateAudioProcessor::GateAudioProcessor()
 
 void GateAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
+    std::unique_lock<std::mutex> lock (controlMutex_);
+
     currentSampleRate_ = sampleRate;
-    currentBlockSize_  = samplesPerBlock;
+    currentBlockSize_  = std::max(1, samplesPerBlock);
+    samplesPerBlock = currentBlockSize_;
 
     mainDoubleBuffer_.setSize (2, samplesPerBlock);
+    fadeOutBuffer_.setSize    (2, samplesPerBlock);
 
     inputMonoScratch_.setSize  (1, samplesPerBlock);
     outputMonoScratch_.setSize (1, samplesPerBlock);
     alignedInputMonoScratch_.setSize (1, samplesPerBlock);
 
-    analyzerInputAlignerMaxDelay_ = std::max (samplesPerBlock * 8, 0);
-    analyzerInputAligner_.prepare (samplesPerBlock, analyzerInputAlignerMaxDelay_);
-    analyzerInputAligner_.setDelaySamples (0);
+    fadeLength_ = std::max (1, juce::roundToInt (sampleRate * kSwitchFadeSeconds));
+    latencyBypass_.prepare(sampleRate, samplesPerBlock, 2,
+        latency_bypass::maxEngineLatencySamples(kGateTopologyMaxDepth, samplesPerBlock));
+    displayWasActive_ = false;
+    prepared_ = true;
 
-    rebuildDTCWPT();
+    // The audio thread is not running here, so the new engine is installed directly.
+    releaseEnginesLocked();
+    installEngineForPrepareLocked();
+    const int latency = committedLatency_;
+    lock.unlock();
+    setLatencySamples (latency);
 }
 
 void GateAudioProcessor::releaseResources()
 {
-    dtcwptMain_.reset();
-    gateProcessor_ = nullptr;
+    std::lock_guard<std::mutex> lock (controlMutex_);
+
+    prepared_ = false;
+    releaseEnginesLocked();
     mainDoubleBuffer_.setSize (0, 0);
+    fadeOutBuffer_.setSize    (0, 0);
     inputMonoScratch_.setSize  (0, 0);
     outputMonoScratch_.setSize (0, 0);
-    alignedInputMonoScratch_.setSize (0, 0);
-    analyzerInputAligner_.reset();
+    alignedInputMonoScratch_.setSize (0, 0);    latencyBypass_.release();
+    committedTailLength_.store(0, 0.0);
+    engineAvailable_.store(false, std::memory_order_release);
 }
 
+
 //==============================================================================
-// Private helper: rebuild DTCWPTProcessor
+// Topology (control side: message / host threads)
 //==============================================================================
 
-void GateAudioProcessor::rebuildDTCWPT()
+std::unique_ptr<GateAudioProcessor::EngineBundle>
+GateAudioProcessor::buildEngineBundle (const std::vector<std::string>& destinations) const
 {
-    (void) tryApplyTopologyCandidate (currentDestinations_);
-}
+    dtcwpt::TopologyConfig config;
+    config.destinations = destinations;
+    config.maxDepth = kGateTopologyMaxDepth;
 
-bool GateAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::string>& candidateDestinations) noexcept
-{
-    auto buildAndCommitTopology = [this] (const std::vector<std::string>& destinations)
+    auto bundle = std::make_unique<EngineBundle>();
+    bundle->engine = std::make_unique<dtcwpt::DTCWPTProcessor>();
+#if DTCWPT_ENABLE_TEST_SEAMS
+    if (engineBuildFailuresRemainingForTest_ > 0)
     {
-        dtcwpt::TopologyConfig config;
-        config.destinations = destinations;
-        config.maxDepth = kGateTopologyMaxDepth;
+        --engineBuildFailuresRemainingForTest_;
+        bundle->engine->setPrepareCandidateFailpointForTesting(engineBuildFailpointForTest_);
+    }
+#endif
 
-        auto newEngine = std::make_unique<dtcwpt::DTCWPTProcessor>();
-        auto newGateProcessor = std::make_unique<GateBandProcessor>();
-        auto* const observedGateProcessor = newGateProcessor.get();
-        newEngine->setBandProcessor (std::move (newGateProcessor));
-        newEngine->prepareToPlay (currentSampleRate_, currentBlockSize_, config, 2);
+    auto gateProcessor = std::make_unique<GateBandProcessor>();
+    bundle->gate = gateProcessor.get();
+    bundle->engine->setBandProcessor (std::move (gateProcessor));
+    bundle->engine->prepareToPlay (currentSampleRate_, currentBlockSize_, config, 2);
 
-        const int newLatency = newEngine->getLatency();
-        const int newAnalyzerMaxDelay = std::max (currentBlockSize_ * 8, newLatency);
+    bundle->frequencyRanges = bundle->engine->getDestinationFrequencyRanges();
+    bundle->latency = bundle->engine->getLatency();
+    bundle->tailSamples = bundle->engine->getTailLengthSamples();
+    bundle->numBands = static_cast<int> (std::min (destinations.size(),
+                                                   static_cast<std::size_t> (GateBandProcessor::kMaxBands)));
+    bundle->aligner.prepare (currentBlockSize_, std::max (currentBlockSize_ * 8, bundle->latency));
+    bundle->aligner.setDelaySamples (bundle->latency);
 
-        AnalyzerLatencyAligner newAnalyzerAligner;
-        newAnalyzerAligner.prepare (currentBlockSize_, newAnalyzerMaxDelay);
-        newAnalyzerAligner.setDelaySamples (newLatency);
+    return bundle;
+}
 
-        dtcwptMain_ = std::move (newEngine);
-        gateProcessor_ = observedGateProcessor;
-        currentDestinations_ = destinations;
-        analyzerInputAligner_ = std::move (newAnalyzerAligner);
-        analyzerInputAlignerMaxDelay_ = newAnalyzerMaxDelay;
-        apvts_.state.setProperty (topology::kTopologyPropertyKey,
-                                  topology::serializeTopologyDestinations (destinations),
-                                  nullptr);
-        setLatencySamples (newLatency);
-        hasCommittedValidTopology_ = true;
-    };
+bool GateAudioProcessor::requestTopologyChange (const std::vector<std::string>& destinations)
+{
+    bool accepted;
+    int latency = -1;
+    {
+        std::lock_guard<std::mutex> lock (controlMutex_);
+        accepted = commitTopologyLocked (destinations);
+        if (accepted && prepared_)
+            latency = committedLatency_;
+    }
+    // JUCE synchronously invokes host listeners; they may read our state.
+    if (latency >= 0)
+        setLatencySamples (latency);
+    return accepted;
+}
 
+std::vector<std::string> GateAudioProcessor::getCommittedTopology() const
+{
+    std::lock_guard<std::mutex> lock (controlMutex_);
+    return committedDestinations_;
+}
+
+bool GateAudioProcessor::commitTopologyLocked(const std::vector<std::string>& candidate)
+{
     try
     {
-        buildAndCommitTopology (candidateDestinations);
+        std::unique_ptr<EngineBundle> bundle;
+        if (prepared_)
+            bundle = buildEngineBundle(candidate);
+        else if (!topology::detail::validatePersistedTopologyDestinations(candidate))
+            throw std::invalid_argument("Invalid topology");
+        auto committed = candidate;
+        auto lastBuilt = candidate;
+        // All potentially allocating work is complete before changing the public state.
+        committedDestinations_ = std::move(committed);
+        topologyGeneration_.fetch_add(1, std::memory_order_acq_rel);
+        if (bundle != nullptr)
+        {
+            lastBuiltDestinations_ = std::move(lastBuilt);
+            hasCommittedValidTopology_ = true;
+            committedLatency_ = bundle->latency;
+            committedTailLength_.store(bundle->tailSamples, currentSampleRate_);
+            publishBundleLocked(std::move(bundle));
+            engineAvailable_.store(true, std::memory_order_release);
+        }
         return true;
     }
     catch (const std::invalid_argument&)
     {
-        topology::emitInvalidTopologyDiagnostic ("Gate");
-
-        if (! hasCommittedValidTopology_)
-        {
-            try
-            {
-                buildAndCommitTopology (kDefaultTopology);
-                return true;
-            }
-            catch (const std::invalid_argument&)
-            {
-                return false;
-            }
-        }
-
-        return false;
+        topology::emitInvalidTopologyDiagnostic("Gate");
     }
+    catch (...) {}
+    return false;
+}
+
+void GateAudioProcessor::setCommittedTopologyLocked (const std::vector<std::string>& destinations)
+{
+    committedDestinations_ = destinations;
+    topologyGeneration_.fetch_add (1, std::memory_order_acq_rel);
+}
+
+void GateAudioProcessor::publishBundleLocked (std::unique_ptr<EngineBundle> bundle)
+{
+    handoff_.reclaim();
+
+    // A bundle that is still deferred belongs to an older request and is superseded.
+    deferredBundle_.reset();
+
+    if (! handoff_.publish (bundle))
+        deferredBundle_ = std::move (bundle);   // too many engines alive; reclaimLocked() retries
+}
+
+void GateAudioProcessor::installEngineForPrepareLocked()
+{
+    if (!commitTopologyLocked(committedDestinations_))
+    {
+        const auto& fallback = hasCommittedValidTopology_ ? lastBuiltDestinations_ : kDefaultTopology;
+        if (committedDestinations_ == fallback || !commitTopologyLocked(fallback))
+        {
+            committedLatency_ = 0;
+            committedTailLength_.store(0, 0.0);
+            engineAvailable_.store(false, std::memory_order_release);
+            return;
+        }
+    }
+    (void) acquirePendingEngine(true);
+}
+
+void GateAudioProcessor::releaseEnginesLocked()
+{
+    // Only called while the audio thread is not running, so this thread may act as its consumer.
+    if (fadingOut_ != nullptr)
+    {
+        (void) handoff_.retire (fadingOut_);
+        fadingOut_ = nullptr;
+    }
+
+    if (active_ != nullptr)
+    {
+        (void) handoff_.retire (active_);
+        active_ = nullptr;
+    }
+
+    fadePosition_ = 0;
+    activeHasProcessed_ = false;
+
+    handoff_.discardPending();
+    deferredBundle_.reset();
+    handoff_.reclaim();
+}
+
+void GateAudioProcessor::reclaimLocked()
+{
+    handoff_.reclaim();
+
+    if (deferredBundle_ != nullptr)
+        (void) handoff_.publish (deferredBundle_);
+}
+
+void GateAudioProcessor::timerCallback()
+{
+    std::unique_lock<std::mutex> lock (controlMutex_, std::try_to_lock);
+
+    if (lock.owns_lock())
+        reclaimLocked();
+}
+
+//==============================================================================
+// Topology (audio side)
+//==============================================================================
+
+bool GateAudioProcessor::acquirePendingEngine (bool immediate) noexcept
+{
+    if (fadingOut_ != nullptr)
+    {
+        // Finish the running switch first; the latest pending engine waits in the hand-off.
+        if (! immediate)
+            return false;
+
+        (void) handoff_.retire (fadingOut_);
+        fadingOut_ = nullptr;
+        fadePosition_ = 0;
+    }
+
+    EngineBundle* const incoming = handoff_.acquire();
+    if (incoming == nullptr)
+        return false;
+
+    if (active_ == nullptr || immediate || ! activeHasProcessed_)
+    {
+        // Nothing audible to fade from.
+        if (active_ != nullptr)
+            (void) handoff_.retire (active_);
+
+        active_ = incoming;
+    }
+    else
+    {
+        fadingOut_ = active_;
+        active_ = incoming;
+        active_->fadeInOnStart = true;
+        fadePosition_ = 0;
+    }
+
+    latencyBypass_.setDelaySamples(active_->latency);
+    activeHasProcessed_ = false;
+    return true;
+}
+
+double GateAudioProcessor::fadeInGain (int position) const noexcept
+{
+    if (position + 1 >= fadeLength_)
+        return 1.0;
+
+    return static_cast<double> (position + 1) / static_cast<double> (fadeLength_);
 }
 
 //==============================================================================
 // Processing
 //==============================================================================
 
-void GateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
-                                         juce::MidiBuffer& /*midiMessages*/)
+void GateAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) { processBlockInternal(buffer, false); }
+void GateAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) { processBlockInternal(buffer, true); }
+juce::AudioProcessorParameter* GateAudioProcessor::getBypassParameter() const { return apvts_.getParameter("bypass"); }
+
+void GateAudioProcessor::processBlockInternal(juce::AudioBuffer<float>& buffer, bool forceBypass)
 {
     juce::ScopedNoDenormals noDenormals;
-
-    if (dtcwptMain_ == nullptr || gateProcessor_ == nullptr)
-        return;
-
-    const int numSamples  = buffer.getNumSamples();
-    const int numChannels = buffer.getNumChannels();
-
-    if (numSamples == 0 || numChannels == 0)
-        return;
-
-    // 1. Topology dirty check
+    if (buffer.getNumSamples() <= 0) return;
+    (void) acquirePendingEngine(false);
+    if (active_ == nullptr || buffer.getNumChannels() < 1)
     {
-        std::vector<std::string> newDestinations;
-        if (topoState_.tryConsume (newDestinations))
-            (void) tryApplyTopologyCandidate (newDestinations);
+        buffer.clear();
+        return;
     }
-
-    // 2. Read 256 threshold params → linear → set thresholds
-    size_t numBands = std::min(currentDestinations_.size(), static_cast<size_t>(GateBandProcessor::kMaxBands));
-    std::array<double, GateBandProcessor::kMaxBands> thresholds {};
-    for (size_t i = 0; i < numBands; ++i)
-    {
-        if (thresholdRaw_[i] != nullptr)
+    std::array<double, gate_threshold::kNumPoints> points {};
+    for (std::size_t i = 0; i < points.size(); ++i)
+        points[i] = thresholdRaw_[i]->load();
+    auto value = [this](const char* id) { return static_cast<double>(apvts_.getRawParameterValue(id)->load()); };
+    GateBandProcessor::DynamicsParams dynamics;
+    dynamics.attackMs = value("attack"); dynamics.holdMs = value("hold"); dynamics.releaseMs = value("release");
+    dynamics.hysteresisDb = value("hysteresis");
+    dynamics.rangeDb = value("range") <= -100.0 ? -std::numeric_limits<double>::infinity() : value("range");
+    dynamics.stereoLink = value("stereo_link") >= 0.5;
+    lastDynamicsForTest_ = dynamics;
+    lastBypassLowestForTest_ = bypassLowestRaw_->load() >= 0.5f;
+    for (auto* bundle : { active_, fadingOut_ })
+        if (bundle != nullptr)
         {
-            float db = thresholdRaw_[i]->load();
-            thresholds[i] = std::pow(10.0, db / 20.0);
+            std::array<double, GateBandProcessor::kMaxBands> thresholds {};
+            for (int band = 0; band < bundle->numBands; ++band)
+            {
+                const auto range = bundle->frequencyRanges[static_cast<std::size_t>(band)];
+                thresholds[static_cast<std::size_t>(band)] = gate_threshold::dbToLinear(gate_threshold::bandThresholdDb(
+                    points.data(), range.lo * currentSampleRate_ * 0.5, range.hi * currentSampleRate_ * 0.5));
+            }
+            bundle->gate->setThresholds(thresholds.data(), bundle->numBands);
+            bundle->gate->setDynamics(dynamics);
+            bundle->gate->setBypassLowest(lastBypassLowestForTest_);
+            if (bundle == active_) lastThresholdsForTest_ = thresholds;
+        }
+
+    latencyBypass_.setBypassed(forceBypass || bypassRaw_->load() >= 0.5f);
+    const bool display = displayConsumers_.isActive();
+    if (display && !displayWasActive_)
+    {
+        active_->aligner.reset();
+        spectrumBridge_.discardPartialSlot();
+    }
+    displayWasActive_ = display;
+    const int chunkSize = mainDoubleBuffer_.getNumSamples();
+    for (int start = 0; start < buffer.getNumSamples(); start += chunkSize)
+        processChunk(buffer, start, std::min(chunkSize, buffer.getNumSamples() - start));
+    if (display)
+    {
+        float levels[GateBandProcessor::kMaxBands];
+        const int count = active_->gate->getBandLevelsDb(levels);
+        bandLevelBridge_.update(levels, count);
+    }
+}
+
+void GateAudioProcessor::processChunk(juce::AudioBuffer<float>& buffer, int start, int count)
+{
+    juce::AudioBuffer<double> main(mainDoubleBuffer_.getArrayOfWritePointers(), 2, count);
+    juce::AudioBuffer<double> old(fadeOutBuffer_.getArrayOfWritePointers(), 2, count);
+
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        const float* input = buffer.getReadPointer(std::min(ch, buffer.getNumChannels() - 1)) + start;
+        for (int i = 0; i < count; ++i)
+        {
+            main.getWritePointer(ch)[i] = input[i];
+            if (fadingOut_ != nullptr) old.getWritePointer(ch)[i] = input[i];
+        }
+
+    }
+    if (displayWasActive_)
+        for (int i = 0; i < count; ++i)
+            inputMonoScratch_.getWritePointer(0)[i] = static_cast<float>((main.getReadPointer(0)[i] + main.getReadPointer(1)[i]) * 0.5);
+    latencyBypass_.captureDry(main);
+    if (fadingOut_ != nullptr) fadingOut_->engine->processBlock(old);
+    active_->engine->processBlock(main);
+
+    if (active_->fadeInOnStart)
+    {
+        for (int i = 0; i < count; ++i)
+        {
+            const double gain = std::clamp(static_cast<double>(active_->inputPosition + i - active_->latency + 1)
+                                           / fadeLength_, 0.0, 1.0);
+            for (int ch = 0; ch < 2; ++ch) main.getWritePointer(ch)[i] *= gain;
+        }
+        if (active_->inputPosition + count >= active_->latency + fadeLength_) active_->fadeInOnStart = false;
+    }
+    if (fadingOut_ != nullptr)
+    {
+        for (int i = 0; i < count; ++i)
+            for (int ch = 0; ch < 2; ++ch)
+                main.getWritePointer(ch)[i] += old.getReadPointer(ch)[i] * (1.0 - fadeInGain(fadePosition_ + i));
+        fadingOut_->inputPosition += count;
+        fadePosition_ += count;
+        if (fadePosition_ >= fadeLength_)
+        {
+            (void) handoff_.retire(fadingOut_);
+            fadingOut_ = nullptr;
+            fadePosition_ = 0;
         }
     }
-    lastThresholdsForTest_ = thresholds;
-    gateProcessor_->setThresholds(thresholds.data(), static_cast<int>(numBands));
-
-    lastBypassLowestForTest_ = bypassLowestRaw_ != nullptr && bypassLowestRaw_->load() >= 0.5f;
-    gateProcessor_->setBypassLowest(lastBypassLowestForTest_);
-
-    // 3. Snapshot input (mono-averaged) for spectrum
-    inputMonoScratch_.clear();
-    for (int ch = 0; ch < std::min (numChannels, 2); ++ch)
+    active_->inputPosition += count;
+    activeHasProcessed_ = true;
+    latencyBypass_.mixInto(main);
+    for (int ch = 0; ch < std::min(2, buffer.getNumChannels()); ++ch)
+        for (int i = 0; i < count; ++i)
+            buffer.getWritePointer(ch)[start + i] = static_cast<float>(main.getReadPointer(ch)[i]);
+    if (displayWasActive_)
     {
-        inputMonoScratch_.addFrom (0, 0,
-                                    buffer,
-                                    ch, 0,
-                                    numSamples,
-                                    1.0f / static_cast<float> (std::min (numChannels, 2)));
+        for (int i = 0; i < count; ++i)
+            outputMonoScratch_.getWritePointer(0)[i] = static_cast<float>((main.getReadPointer(0)[i] + main.getReadPointer(1)[i]) * 0.5);
+        active_->aligner.processBlock(inputMonoScratch_.getReadPointer(0), alignedInputMonoScratch_.getWritePointer(0), count);
+        spectrumBridge_.push(alignedInputMonoScratch_.getReadPointer(0), outputMonoScratch_.getReadPointer(0), count);
     }
+}
 
-    // 4. Float → Double conversion for main input
-    mainDoubleBuffer_.setSize (2, numSamples, false, false, true);
-    mainDoubleBuffer_.clear();
-    for (int ch = 0; ch < std::min(numChannels, 2); ++ch)
-    {
-        const float* src = buffer.getReadPointer (ch);
-        double*       dst = mainDoubleBuffer_.getWritePointer (ch);
-        for (int i = 0; i < numSamples; ++i)
-            dst[i] = static_cast<double> (src[i]);
-    }
-
-    // 5. Process audio
-    dtcwptMain_->processBlock (mainDoubleBuffer_);
-
-    // 6. Push levels to bandLevelBridge_
+void GateAudioProcessor::reset()
+{
+    for (auto* bundle : { active_, fadingOut_ })
+        if (bundle != nullptr)
+        {
+            bundle->engine->reset();
+            bundle->aligner.reset();
+            bundle->inputPosition = 0;
+            bundle->fadeInOnStart = false;
+        }
+    spectrumBridge_.reset();
+    fadePosition_ = 0;
     float levels[GateBandProcessor::kMaxBands];
-    int nBands = gateProcessor_->getBandLevelsDb(levels);
-    bandLevelBridge_.update(levels, std::min(nBands, GateBandProcessor::kMaxBands));
-
-    // 7. Double → Float conversion
-    for (int ch = 0; ch < std::min(numChannels, 2); ++ch)
-    {
-        const double* src = mainDoubleBuffer_.getReadPointer (ch);
-        float*         dst = buffer.getWritePointer (ch);
-        for (int i = 0; i < numSamples; ++i)
-            dst[i] = static_cast<float> (src[i]);
-    }
-
-    // 8. Snapshot output and push spectrum to bridge
-    outputMonoScratch_.clear();
-    for (int ch = 0; ch < std::min(numChannels, 2); ++ch)
-    {
-        outputMonoScratch_.addFrom (0, 0,
-                                     buffer,
-                                     ch, 0,
-                                     numSamples,
-                                     1.0f / static_cast<float>(std::min(numChannels, 2)));
-    }
-
-    analyzerInputAligner_.processBlock (inputMonoScratch_.getReadPointer (0),
-                                        alignedInputMonoScratch_.getWritePointer (0),
-                                        numSamples);
-
-    spectrumBridge_.push (alignedInputMonoScratch_.getReadPointer (0),
-                           outputMonoScratch_.getReadPointer (0),
-                           numSamples);
+    std::fill(std::begin(levels), std::end(levels), -80.0f);
+    bandLevelBridge_.update(levels, active_ != nullptr ? active_->numBands : 0);
 }
 
 //==============================================================================
@@ -277,7 +491,7 @@ bool GateAudioProcessor::isMidiEffect() const { return false; }
 
 double GateAudioProcessor::getTailLengthSeconds() const
 {
-    return 0.0;
+    return committedTailLength_.getSeconds();
 }
 
 //==============================================================================
@@ -296,67 +510,64 @@ void GateAudioProcessor::changeProgramName (int /*index*/, const juce::String& /
 
 void GateAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    juce::MemoryOutputStream stream (destData, true);
-    apvts_.state.writeToStream (stream);
+    std::lock_guard<std::mutex> lock (controlMutex_);
+
+    // Save a copy: the committed topology is attached to the copy, the live ValueTree is not written to.
+    juce::ValueTree state = apvts_.copyState();
+    state.setProperty (topology::kTopologyPropertyKey,
+                       topology::serializeTopologyDestinations (committedDestinations_),
+                       nullptr);
+
+    state.setProperty(statever::kStateVersionPropertyKey, statever::kCurrentStateVersion, nullptr);
+    juce::MemoryOutputStream stream (destData, false);
+    state.writeToStream (stream);
 }
 
 void GateAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    juce::ValueTree state = juce::ValueTree::readFromData (data,
-                                                             static_cast<std::size_t> (sizeInBytes));
-    if (state.isValid())
+    juce::ValueTree state = statever::readVersionedState(data, sizeInBytes, "GateParams");
+    if (! state.isValid())
+        return;
+
+    std::unique_lock<std::mutex> lock (controlMutex_);
+
+    const auto restoredTopology = topology::resolvePersistedTopology (state, committedDestinations_);
+    apvts_.replaceState (state);
+
+    if (restoredTopology.persistedState == topology::PersistedTopologyState::invalid)
     {
-        apvts_.replaceState (state);
-
-        const auto restoredTopology = topology::resolvePersistedTopology (apvts_.state, currentDestinations_);
-
-        if (restoredTopology.persistedState == topology::PersistedTopologyState::invalid)
-        {
-            topology::emitInvalidTopologyDiagnostic ("Gate");
-
-            if (hasCommittedValidTopology_)
-            {
-                apvts_.state.setProperty (topology::kTopologyPropertyKey,
-                                          topology::serializeTopologyDestinations (currentDestinations_),
-                                          nullptr);
-                return;
-            }
-
-            currentDestinations_ = kDefaultTopology;
-            apvts_.state.setProperty (topology::kTopologyPropertyKey,
-                                      topology::serializeTopologyDestinations (kDefaultTopology),
-                                      nullptr);
-            return;
-        }
+        topology::emitInvalidTopologyDiagnostic ("Gate");
 
         if (! hasCommittedValidTopology_)
-        {
-            currentDestinations_ = restoredTopology.destinations;
-            return;
-        }
+            setCommittedTopologyLocked (kDefaultTopology);
 
-        topoState_.requestChange (restoredTopology.destinations);
+        return;
     }
+
+    if (restoredTopology.persistedState == topology::PersistedTopologyState::valid)
+        (void) commitTopologyLocked (restoredTopology.destinations);
+
+    const int latency = prepared_ ? committedLatency_ : -1;
+    lock.unlock();
+    if (latency >= 0)
+        setLatencySamples (latency);
 }
 
-std::vector<std::string> GateAudioProcessor::getStoredTopologyDestinations() const
+bool GateAudioProcessor::applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations)
 {
-    return topology::resolvePersistedTopology (apvts_.state, currentDestinations_).destinations;
+    const bool accepted = requestTopologyChange (candidateDestinations);
+    (void) adoptPendingEngineForTest();
+    return accepted;
 }
 
-bool GateAudioProcessor::applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations) noexcept
+bool GateAudioProcessor::adoptPendingEngineForTest() noexcept
 {
-    return tryApplyTopologyCandidate (candidateDestinations);
-}
-
-juce::String GateAudioProcessor::getPersistedTopologyStringForTest() const
-{
-    return apvts_.state.getProperty (topology::kTopologyPropertyKey).toString();
+    return acquirePendingEngine (true);
 }
 
 int GateAudioProcessor::getAnalyzerInputDelaySamplesForTest() const noexcept
 {
-    return analyzerInputAligner_.getDelaySamples();
+    return active_ != nullptr ? active_->aligner.getDelaySamples() : 0;
 }
 
 double GateAudioProcessor::getLastThresholdLinearForTest (int bandIndex) const noexcept
@@ -372,18 +583,83 @@ bool GateAudioProcessor::getLastBypassLowestForTest() const noexcept
     return lastBypassLowestForTest_;
 }
 
+juce::String GateAudioProcessor::getThresholdParameterId (int pointIndex)
+{
+    return juce::String ("threshold_") + gate_threshold::kPoints[static_cast<std::size_t> (pointIndex)].idSuffix;
+}
+
 //==============================================================================
 // Parameter layout factory
 //==============================================================================
+
+namespace {
+const char* const kAttackId = "attack";
+const char* const kHoldId = "hold";
+const char* const kReleaseId = "release";
+const char* const kHysteresisId = "hysteresis";
+const char* const kRangeId = "range";
+const char* const kStereoLinkId = "stereo_link";
+constexpr float kRangeMinusInfinityDb = -100.0f;
+}
+namespace
+{
+    /** Adds a millisecond / dB style float parameter whose text is parsed by its numeric part only. */
+    void addUnitParameter (juce::AudioProcessorValueTreeState::ParameterLayout& layout,
+                           const char* id, const juce::String& name,
+                           juce::NormalisableRange<float> range, float defaultValue,
+                           const juce::String& unit, int decimals)
+    {
+        auto attributes = juce::AudioParameterFloatAttributes()
+                              .withStringFromValueFunction ([unit, decimals] (float value, int)
+                              {
+                                  return juce::String (value, decimals) + " " + unit;
+                              })
+                              .withValueFromStringFunction ([] (const juce::String& text)
+                              {
+                                  return text.getFloatValue();
+                              });
+
+        layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id, 1 }, name, range, defaultValue, attributes));
+    }
+
+    void addDynamicsParameters (juce::AudioProcessorValueTreeState::ParameterLayout& layout)
+    {
+        // Typical noise-gate values: fast attack, short hold, release of a few 100 ms, a few dB of hysteresis.
+        addUnitParameter (layout, kAttackId, "Attack",
+                          juce::NormalisableRange<float> (0.1f, 100.0f, 0.01f, 0.4f), 1.0f, "ms", 2);
+        addUnitParameter (layout, kHoldId, "Hold",
+                          juce::NormalisableRange<float> (0.0f, 1000.0f, 0.1f, 0.4f), 50.0f, "ms", 1);
+        addUnitParameter (layout, kReleaseId, "Release",
+                          juce::NormalisableRange<float> (1.0f, 2000.0f, 0.1f, 0.4f), 100.0f, "ms", 1);
+        addUnitParameter (layout, kHysteresisId, "Hysteresis",
+                          juce::NormalisableRange<float> (0.0f, 24.0f, 0.1f), 3.0f, "dB", 1);
+
+        // Range: closed-state attenuation. The minimum means -inf (full mute).
+        auto rangeAttributes = juce::AudioParameterFloatAttributes()
+                                   .withStringFromValueFunction ([] (float value, int)
+                                   {
+                                       return value <= kRangeMinusInfinityDb ? juce::String ("-inf dB")
+                                                                             : juce::String (value, 1) + " dB";
+                                   })
+                                   .withValueFromStringFunction ([] (const juce::String& text)
+                                   {
+                                       return text.containsIgnoreCase ("inf") ? kRangeMinusInfinityDb
+                                                                              : text.getFloatValue();
+                                   });
+        layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { kRangeId, 1 }, "Range",
+                                                                 juce::NormalisableRange<float> (kRangeMinusInfinityDb, 0.0f, 0.1f),
+                                                                 kRangeMinusInfinityDb, rangeAttributes));
+
+        layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { kStereoLinkId, 1 }, "Stereo Link", true));
+    }
+} // namespace
 
 juce::AudioProcessorValueTreeState::ParameterLayout GateAudioProcessor::createParameterLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
-    for (int i = 0; i < GateBandProcessor::kMaxBands; ++i)
+    for (int k = 0; k < gate_threshold::kNumPoints; ++k)
     {
-        juce::String paramID = juce::String::formatted("threshold_%02d", i);
-
         auto attributes = juce::AudioParameterFloatAttributes()
                               .withStringFromValueFunction ([](float value, int)
                               {
@@ -391,14 +667,15 @@ juce::AudioProcessorValueTreeState::ParameterLayout GateAudioProcessor::createPa
                               })
                               .withValueFromStringFunction ([](const juce::String& text)
                               {
-                                  return text.dropLastCharacters (3).getFloatValue();
+                                  // Leading number only, so "-30", "-30dB" and "-30.0 dB" all parse.
+                                  return text.getFloatValue();
                               });
 
         layout.add(std::make_unique<juce::AudioParameterFloat>(
-            juce::ParameterID{paramID, 1},
-            "Threshold " + juce::String(i),
-            juce::NormalisableRange<float>(-120.0f, 10.0f, 0.1f),
-            -60.0f,
+            juce::ParameterID{getThresholdParameterId (k), 1},
+            juce::String ("Threshold ") + gate_threshold::kPoints[static_cast<std::size_t> (k)].label,
+            juce::NormalisableRange<float>(gate_threshold::kMinDb, gate_threshold::kMaxDb, 0.1f),
+            gate_threshold::kDefaultDb,
             attributes
         ));
     }
@@ -410,5 +687,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout GateAudioProcessor::createPa
         false
     ));
 
+    layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"bypass", 1}, "Bypass", false));
+    addDynamicsParameters(layout);
     return layout;
 }

@@ -37,6 +37,10 @@ private:
 
     const double constructionSampleRate_;
 
+    // Tells the audio thread that display data is needed while this editor exists.
+    // Declared before the views so that it outlives them.
+    DisplayConsumerCount::Scoped displayConsumer_;
+
     // Views
     GateMainView mainView_;
     TopologyEditorView topoView_;

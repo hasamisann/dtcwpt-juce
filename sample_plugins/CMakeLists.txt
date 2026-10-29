@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
-project(dtcwpt_sample_plugins VERSION 0.1.1 LANGUAGES CXX)
+project(dtcwpt_sample_plugins VERSION 0.1.1 LANGUAGES C CXX)
 
-enable_testing()
+include(CTest)
 
 # C++20 required
 set(CMAKE_CXX_STANDARD 20)
@@ -30,6 +30,8 @@ endif()
 juce_add_module(../dtcwpt)
 
 # Add plugin subdirectories
-add_subdirectory(../tests tests)
+if(BUILD_TESTING)
+    add_subdirectory(../tests tests)
+endif()
 add_subdirectory(dtcwpt-morph)
 add_subdirectory(dtcwpt-gate)

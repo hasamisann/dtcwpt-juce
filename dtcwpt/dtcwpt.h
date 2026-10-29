@@ -19,6 +19,7 @@
 #include "dtcwpt_synthesis_node.h"
 #include "dtcwpt_delay_buffer.h"
 #include "dtcwpt_topology_planner.h"
+#include "dtcwpt_frequency_mapping.h"
 #include "dtcwpt_band_processor.h"
 #include "dtcwpt_complex_utils.h"
 #include "dtcwpt_processor.h"

@@ -69,6 +69,12 @@ AnalysisSchedulerMetadata buildAnalysisSchedulerMetadata(
 AnalysisRuntimeState buildAnalysisRuntimeState(
     const AnalysisSchedulerMetadata& metadata);
 
+/**
+ * @brief Returns a runtime state to the one buildAnalysisRuntimeState() produces,
+ *        without reallocating.
+ */
+void resetAnalysisRuntimeState(AnalysisRuntimeState& state) noexcept;
+
 void beginAnalysisSample(AnalysisRuntimeState& state) noexcept;
 
 void recordArrival(AnalysisRuntimeState& state, int nodeId, double sampleValue) noexcept;

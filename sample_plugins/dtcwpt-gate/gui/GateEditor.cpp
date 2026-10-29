@@ -1,22 +1,27 @@
 #include "GateEditor.h"
 #include "GateEditorSampleRate.h"
 
-#include "../../common/TopologyPersistence.h"
-
 //==============================================================================
 GateEditor::GateEditor (GateAudioProcessor& p)
     : AudioProcessorEditor (&p),
       processor_ (p),
       constructionSampleRate_ (resolveGateEditorConstructionSampleRate (p.getSampleRate())),
+      displayConsumer_ (p.getDisplayConsumerCount()),
       mainView_ (p, constructionSampleRate_),
-      topoView_ (p.getTopologyState(), constructionSampleRate_),
+      topoView_ ([this] (const std::vector<std::string>& dests)
+                 {
+                     // Builds the engine here (message thread) and hands it to the audio thread.
+                     if (! processor_.requestTopologyChange (dests))
+                         topoView_.setTopology (processor_.getCommittedTopology());
+                 },
+                 constructionSampleRate_),
       aboutView_ ([this] { showMain(); })
 {
     // Hosts may create the editor before prepareToPlay(), so getSampleRate()
     // is not guaranteed to be initialised here.
     // Make sure that before the constructor has finished, you've set the
     // editor's size to whatever you need it to be.
-    setSize (500, 420);
+    setSize (500, 498);
 
     // Add views
     addAndMakeVisible (mainView_);
@@ -28,14 +33,7 @@ GateEditor::GateEditor (GateAudioProcessor& p)
     mainView_.onAboutClicked = [this] { showAbout(); };
 
     topoView_.setBackButtonCallback ([this] { showMain(); });
-    topoView_.setTopologyChangedCallback ([this](const std::vector<std::string>& dests)
-    {
-        processor_.getAPVTS().state.setProperty (topology::kTopologyPropertyKey,
-                                                 topology::serializeTopologyDestinations (dests),
-                                                 nullptr);
-    });
-
-    topoView_.setTopology (processor_.getStoredTopologyDestinations());
+    topoView_.setTopology (processor_.getCommittedTopology());
     // aboutView takes the back callback directly in the constructor
 
     // Set initial view
@@ -73,7 +71,7 @@ void GateEditor::showMain()
 
 void GateEditor::showSettings()
 {
-    topoView_.setTopology (processor_.getStoredTopologyDestinations());
+    topoView_.setTopology (processor_.getCommittedTopology());
     mainView_.setVisible (false);
     topoView_.setVisible (true);
     aboutView_.setVisible (false);
