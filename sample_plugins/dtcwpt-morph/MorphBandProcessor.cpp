@@ -77,12 +77,26 @@ void MorphBandProcessor::processAllBands (dtcwpt::BandData& data)
 
     // Internal block length T in host samples: numSamples * 2^level per band
     // (equal for all bands of a complete leaf set).
-    std::int64_t blockLength = 0;
+    std::int64_t blockLength = static_cast<std::int64_t>(data.numInputSamples);
+    if (data.numInputSamples > 0)
+    {
+        const auto start = static_cast<std::int64_t>(data.inputStartSample);
+        if (start > blockStart_)
+        {
+            const auto gap = start - blockStart_;
+            beginBlock(gap);
+            endBlock(gap);
+        }
+    }
+    else
+    {
     for (int b = 0; b < numBands; ++b)
     {
         const int nodeId = (*data.destinationIds)[static_cast<std::size_t> (b)];
         const auto n     = static_cast<std::int64_t> (data.bands[0][static_cast<std::size_t> (b)].numSamples);
         blockLength = std::max (blockLength, n << nodeLevel (nodeId));
+    }
+
     }
 
     if (blockLength == 0)
@@ -107,7 +121,13 @@ void MorphBandProcessor::processAllBands (dtcwpt::BandData& data)
             int  seg = 0;
             for (std::size_t s = 0; s < bandSamples; ++s)
             {
-                const double tau = (static_cast<double> (s) + 0.5) * bandScale;
+                // Streamed coefficients are timestamped at their causal arrival tick.
+                // A depth-L band emits at absolute input multiples of 2^L.
+                const auto stride = std::int64_t { 1 } << nodeLevel(nodeId);
+                const auto first = ((blockStart_ + stride - 1) / stride) * stride;
+                const double tau = data.numInputSamples > 0
+                    ? static_cast<double>(first - blockStart_) + static_cast<double>(s) * bandScale
+                    : (static_cast<double>(s) + 0.5) * bandScale;
                 while (seg + 1 < numSegments_ && tau >= segments_[static_cast<std::size_t> (seg + 1)].tau)
                     ++seg;
 

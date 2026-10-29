@@ -86,7 +86,7 @@ void GateAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     installEngineForPrepareLocked();
     const int latency = committedLatency_;
     lock.unlock();
-    setLatencySamples (latency);
+    notifyCommittedState(latency);
 }
 
 void GateAudioProcessor::releaseResources()
@@ -154,7 +154,7 @@ bool GateAudioProcessor::requestTopologyChange (const std::vector<std::string>& 
     }
     // JUCE synchronously invokes host listeners; they may read our state.
     if (latency >= 0)
-        setLatencySamples (latency);
+        notifyCommittedState(latency);
     return accepted;
 }
 
@@ -323,6 +323,14 @@ double GateAudioProcessor::fadeInGain (int position) const noexcept
 // Processing
 //==============================================================================
 
+void GateAudioProcessor::notifyCommittedState(int latency)
+{
+    if (getLatencySamples() != latency)
+        setLatencySamples(latency);
+    else
+        updateHostDisplay(juce::AudioProcessorListener::ChangeDetails().withNonParameterStateChanged(true));
+}
+
 void GateAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) { processBlockInternal(buffer, false); }
 void GateAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) { processBlockInternal(buffer, true); }
 juce::AudioProcessorParameter* GateAudioProcessor::getBypassParameter() const { return apvts_.getParameter("bypass"); }
@@ -459,6 +467,7 @@ void GateAudioProcessor::reset()
     float levels[GateBandProcessor::kMaxBands];
     std::fill(std::begin(levels), std::end(levels), -80.0f);
     bandLevelBridge_.update(levels, active_ != nullptr ? active_->numBands : 0);
+    latencyBypass_.reset();
 }
 
 //==============================================================================
@@ -550,7 +559,7 @@ void GateAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
     const int latency = prepared_ ? committedLatency_ : -1;
     lock.unlock();
     if (latency >= 0)
-        setLatencySamples (latency);
+        notifyCommittedState(latency);
 }
 
 bool GateAudioProcessor::applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations)

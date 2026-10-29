@@ -18,7 +18,7 @@ private:
         void audioProcessorParameterChanged(juce::AudioProcessor*, int, float) override {}
         void audioProcessorChanged(juce::AudioProcessor* processor, const ChangeDetails& details) override
         {
-            if (details.latencyChanged)
+            if (details.latencyChanged || details.nonParameterStateChanged)
                 notifiedTail = processor->getTailLengthSeconds();
         }
     };

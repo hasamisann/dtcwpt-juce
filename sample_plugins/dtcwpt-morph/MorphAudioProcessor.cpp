@@ -99,7 +99,7 @@ void MorphAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     installEngineForPrepareLocked();
     const int latency = committedLatency_;
     lock.unlock();
-    setLatencySamples (latency);
+    notifyCommittedState(latency);
 }
 
 void MorphAudioProcessor::releaseResources()
@@ -166,7 +166,7 @@ bool MorphAudioProcessor::requestTopologyChange (const std::vector<std::string>&
     }
     // JUCE synchronously invokes host listeners; they may read our state.
     if (latency >= 0)
-        setLatencySamples (latency);
+        notifyCommittedState(latency);
     return accepted;
 }
 
@@ -335,6 +335,14 @@ double MorphAudioProcessor::fadeInGain (int position) const noexcept
 // Processing
 //==============================================================================
 
+void MorphAudioProcessor::notifyCommittedState(int latency)
+{
+    if (getLatencySamples() != latency)
+        setLatencySamples(latency);
+    else
+        updateHostDisplay(juce::AudioProcessorListener::ChangeDetails().withNonParameterStateChanged(true));
+}
+
 void MorphAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) { processBlockInternal(buffer, false); }
 void MorphAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) { processBlockInternal(buffer, true); }
 juce::AudioProcessorParameter* MorphAudioProcessor::getBypassParameter() const { return apvts_.getParameter("bypass"); }
@@ -447,6 +455,7 @@ void MorphAudioProcessor::reset()
         }
     spectrumBridge_.reset();
     fadePosition_ = 0;
+    latencyBypass_.reset();
 }
 
 //==============================================================================
@@ -551,7 +560,7 @@ void MorphAudioProcessor::setStateInformation (const void* data, int sizeInBytes
     const int latency = prepared_ ? committedLatency_ : -1;
     lock.unlock();
     if (latency >= 0)
-        setLatencySamples (latency);
+        notifyCommittedState(latency);
 }
 
 bool MorphAudioProcessor::applyTopologyCandidateForTest (const std::vector<std::string>& candidateDestinations)

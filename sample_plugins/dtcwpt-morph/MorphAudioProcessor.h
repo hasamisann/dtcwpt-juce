@@ -447,6 +447,7 @@ private:
     //==============================================================================
 
     /** Serialises every non-audio entry point (requests, prepare/release, state save/restore, reclaim). Never taken on the audio thread. */
+    void notifyCommittedState(int latency);
     void processBlockInternal(juce::AudioBuffer<float>&, bool forceBypass);
     void processChunk(juce::AudioBuffer<float>&, int start, int count);
     LatencyBypass latencyBypass_;

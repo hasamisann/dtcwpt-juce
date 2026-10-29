@@ -1087,6 +1087,8 @@ void DTCWPTProcessor::processBlockInternal(juce::AudioBuffer<double>& buffer,
         }
 
         // Step 2: invoke the BandProcessor once with the subband samples that became available
+        cachedBandData_.inputStartSample = streamPos_;
+        cachedBandData_.numInputSamples = chunk;
         const bool anyBandSamples = prepareBandData(hasSidechain);
         if (bandProcessor_ && anyBandSamples) {
             try {
