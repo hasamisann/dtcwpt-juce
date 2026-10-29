@@ -40,6 +40,9 @@ public:
 
     void runTest() override
     {
+        beginTest ("Latency listeners can read committed state during notification");
+        testLatencyListenerCanReadState();
+
         beginTest ("#3: processBlock after a topology request does not allocate");
         testProcessBlockAfterRequestDoesNotAllocate();
 
@@ -81,6 +84,47 @@ public:
     }
 
 private:
+    void testLatencyListenerCanReadState()
+    {
+        struct Listener : juce::AudioProcessorListener
+        {
+            juce::WaitableEvent readFinished;
+            std::thread reader;
+            bool completedInsideCallback = false;
+            void audioProcessorParameterChanged(juce::AudioProcessor*, int, float) override {}
+            void audioProcessorChanged(juce::AudioProcessor* processor, const ChangeDetails& details) override
+            {
+                if (!details.latencyChanged) return;
+                readFinished.reset();
+                reader = std::thread([this, processor] {
+                    juce::MemoryBlock state;
+                    processor->getStateInformation(state);
+                    readFinished.signal();
+                });
+                // Bound the old implementation's deadlock: return from the listener so
+                // its control lock is released, then join outside the public operation.
+                completedInsideCallback = readFinished.wait(2000);
+            }
+            void join() { if (reader.joinable()) reader.join(); }
+        } listener;
+        Processor processor;
+        processor.addListener(&listener);
+        processor.prepareToPlay(48000.0, 64);
+        listener.join();
+        expect(listener.completedInsideCallback, "prepare notification must permit state reads");
+        juce::MemoryBlock saved;
+        processor.getStateInformation(saved);
+        listener.completedInsideCallback = false;
+        processor.requestTopologyChange({"H", "LH", "LL"});
+        listener.join();
+        expect(listener.completedInsideCallback, "request notification must permit state reads");
+        listener.completedInsideCallback = false;
+        processor.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
+        listener.join();
+        expect(listener.completedInsideCallback, "restore notification must permit state reads");
+        processor.removeListener(&listener);
+    }
+
     static constexpr int kDefaultBlockSize = 512;
 
     static const std::vector<std::string>& defaultTopology()
