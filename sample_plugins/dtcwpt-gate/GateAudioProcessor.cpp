@@ -117,8 +117,8 @@ bool GateAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::strin
         apvts_.state.setProperty (topology::kTopologyPropertyKey,
                                   topology::serializeTopologyDestinations (destinations),
                                   nullptr);
-        setLatencySamples (newLatency);
         committedTailLength_.store (newTail, currentSampleRate_);
+        setLatencySamples (newLatency);
         hasCommittedValidTopology_ = true;
     };
 

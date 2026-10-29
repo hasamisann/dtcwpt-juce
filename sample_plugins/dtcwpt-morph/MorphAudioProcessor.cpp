@@ -131,8 +131,8 @@ bool MorphAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::stri
         analyzerInputAligner_ = std::move (newAnalyzerAligner);
         analyzerInputAlignerMaxDelay_ = newAnalyzerMaxDelay;
         apvts_.state.setProperty (topology::kTopologyPropertyKey, serializedTopology, nullptr);
-        setLatencySamples (newLatency);
         committedTailLength_.store (newTail, currentSampleRate_);
+        setLatencySamples (newLatency);
         hasCommittedValidTopology_ = true;
         return true;
     }
