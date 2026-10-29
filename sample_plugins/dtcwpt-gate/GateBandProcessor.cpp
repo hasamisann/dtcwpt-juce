@@ -149,23 +149,37 @@ void GateBandProcessor::processAllBands(dtcwpt::BandData& data) noexcept
                     s.envelope = envCoef >= 1.0 ? mag : s.envelope + envCoef * (mag - s.envelope);
                 }
 
-                if (linked)
+                double linkedEnvelope = 0.0;
+                for (int ch = 0; ch < numActive; ++ch)
+                    if (views[ch] != nullptr && i < views[ch]->numSamples)
+                    {
+                        ChannelState& state = band.channels[static_cast<size_t>(ch)];
+                        decide(state, state.envelope, openThr, closeThr);
+                        linkedEnvelope = std::max(linkedEnvelope, state.envelope);
+                    }
+
+                if (!band.linked.primed)
                 {
-                    ChannelState& s0 = band.channels[0];
-                    ChannelState& s1 = band.channels[1];
-                    decide(s0, std::max(s0.envelope, s1.envelope), openThr, closeThr);
-                    s1.open = s0.open;
-                    s1.holdRemaining = s0.holdRemaining;
+                    band.linked.primed = true;
+                    band.linked.gain = closedGain;
                 }
-                else
+                decide(band.linked, linkedEnvelope, openThr, closeThr);
+                const double linkedTarget = band.linked.open ? 1.0 : closedGain;
+                const double linkedCoef = linkedTarget > band.linked.gain ? attackCoef : releaseCoef;
+                band.linked.gain += linkedCoef * (linkedTarget - band.linked.gain);
+                if (linkedCoef >= 1.0 || std::abs(linkedTarget - band.linked.gain) < 1.0e-12)
+                    band.linked.gain = linkedTarget;
+
+                const double linkTarget = linked ? 1.0 : 0.0;
+                if (!band.linkMixInitialised)
                 {
-                    for (int ch = 0; ch < numActive; ++ch)
-                        if (views[ch] != nullptr && i < views[ch]->numSamples)
-                        {
-                            ChannelState& s = band.channels[static_cast<size_t>(ch)];
-                            decide(s, s.envelope, openThr, closeThr);
-                        }
+                    band.linkMix = linkTarget;
+                    band.linkMixInitialised = true;
                 }
+                const double linkStep = 1.0 / std::max(1.0, rate * 0.020);
+                band.linkMix += std::clamp(linkTarget - band.linkMix, -linkStep, linkStep);
+                if (std::abs(linkTarget - band.linkMix) < 1.0e-12)
+                    band.linkMix = linkTarget;
 
                 // Gain smoothing towards 1 (open) or the range gain (closed), then apply
                 for (int ch = 0; ch < numActive; ++ch)
@@ -178,8 +192,9 @@ void GateBandProcessor::processAllBands(dtcwpt::BandData& data) noexcept
                     if (gainCoef >= 1.0 || std::abs(target - s.gain) < 1.0e-12)
                         s.gain = target;
 
-                    views[ch]->re[i] *= s.gain;
-                    views[ch]->im[i] *= s.gain;
+                    const double gain = s.gain + band.linkMix * (band.linked.gain - s.gain);
+                    views[ch]->re[i] *= gain;
+                    views[ch]->im[i] *= gain;
                 }
             }
         }

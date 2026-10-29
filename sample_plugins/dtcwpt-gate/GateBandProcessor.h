@@ -65,7 +65,8 @@ public:
         bool stereoLink = true;      ///< Decide on max(L, R) envelope and apply the same gain to both channels
     };
 
-    /** Sets the dynamics parameters. Called per-block from AudioProcessor (audio thread). */
+    /** Link mode changes crossfade for 20 ms between independent and shared gain.
+     * Sets the dynamics parameters. Called per-block from AudioProcessor (audio thread). */
     void setDynamics(const DynamicsParams& params) noexcept;
 
     /** Enable or disable processing on the lowest-frequency band. */
@@ -87,6 +88,9 @@ private:
     struct BandState
     {
         std::array<ChannelState, kMaxChannels> channels;
+        ChannelState linked;
+        double linkMix = 0.0;
+        bool linkMixInitialised = false;
         double thresholdCurrent = 0.0;  ///< Threshold actually used (linear amplitude), ramps to thresholds_[b]
         double thresholdGoal = 0.0;     ///< Target of the ramp in progress
         double thresholdStep = 0.0;     ///< Per-sample increment of the ramp
