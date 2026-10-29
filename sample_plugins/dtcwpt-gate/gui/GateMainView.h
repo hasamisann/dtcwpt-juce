@@ -2,6 +2,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "../GateAudioProcessor.h"
+#include "../../common/EngineStatusBanner.h"
 #include "SpectrumAnalyzerWidget.h"
 #include "GraphicEqWidget.h"
 #include <array>

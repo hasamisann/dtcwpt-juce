@@ -35,17 +35,20 @@ public:
         ++calls;
         hasSidechainPerCall.push_back(data.hasSidechain ? 1 : 0);
 
-        for (const auto& channelBands : data.bands) {
-            for (const auto& band : channelBands) {
-                mainTrace.insert(mainTrace.end(), band.re, band.re + band.numSamples);
-            }
-        }
-
-        if (data.hasSidechain) {
-            for (const auto& channelBands : data.sidechainBands) {
-                for (const auto& band : channelBands) {
-                    sidechainTrace.insert(sidechainTrace.end(), band.re, band.re + band.numSamples);
-                    sidechainTrace.insert(sidechainTrace.end(), band.im, band.im + band.numSamples);
+        const auto count = static_cast<size_t>(data.numChannels * data.numBands);
+        mainTrace.resize(count);
+        sidechainTrace.resize(count);
+        for (int ch = 0; ch < data.numChannels; ++ch) {
+            for (int b = 0; b < data.numBands; ++b) {
+                const auto index = static_cast<size_t>(ch * data.numBands + b);
+                const auto& band = data.bands[static_cast<size_t>(ch)][static_cast<size_t>(b)];
+                mainTrace[index].insert(mainTrace[index].end(), band.re, band.re + band.numSamples);
+                if (data.hasSidechain) {
+                    const auto& sc = data.sidechainBands[static_cast<size_t>(ch)][static_cast<size_t>(b)];
+                    for (size_t i = 0; i < sc.numSamples; ++i) {
+                        sidechainTrace[index].push_back(sc.re[i]);
+                        sidechainTrace[index].push_back(sc.im[i]);
+                    }
                 }
             }
         }
@@ -53,8 +56,8 @@ public:
 
     int calls = 0;
     std::vector<int> hasSidechainPerCall;
-    std::vector<double> mainTrace;
-    std::vector<double> sidechainTrace;
+    std::vector<std::vector<double>> mainTrace;
+    std::vector<std::vector<double>> sidechainTrace;
 };
 
 /** Leaves every band untouched (the capture processor above allocates when recording). */
@@ -266,8 +269,10 @@ private:
             const auto candidate = runWithSidechain(pattern);
             const juce::String label = "pattern starting with " + juce::String(pattern.front());
 
-            expect(candidate->hasSidechainPerCall == reference->hasSidechainPerCall,
-                   "Sidechain availability per internal block should match the reference for " + label);
+            expect(!candidate->hasSidechainPerCall.empty()
+                       && std::all_of(candidate->hasSidechainPerCall.begin(), candidate->hasSidechainPerCall.end(),
+                                      [](int flag) { return flag == 1; }),
+                   "Every streaming callback must have aligned sidechain data for " + label);
             expect(candidate->mainTrace == reference->mainTrace,
                    "Main subbands should match the reference for " + label);
             expect(candidate->sidechainTrace == reference->sidechainTrace,

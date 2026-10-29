@@ -32,11 +32,9 @@ namespace latency_bypass
     /**
      * @brief Upper bound of DTCWPTProcessor::getLatency() for any topology up to maxDepth.
      *
-     * The engine latency is (largest synthesis path delay) + (internal block size).
-     * A path through the tree costs the root filter delay once and one packet-filter
-     * delay per further level, each weighted by 2^level, which for a path of depth D
-     * is at most rootDelay + nodeDelay * (2^D - 2). The internal block size is the host
-     * block size rounded up to a multiple of 2^depth, so it is below maxBlockSize + 2^D.
+     * The streaming engine latency is the largest synthesis path delay. A path
+     * costs the root delay once plus nodeDelay * (2^depth - 2). It has no host
+     * block buffering latency. maxBlockSize is retained for source compatibility.
      */
     inline int maxEngineLatencySamples (int maxDepth, int maxBlockSize) noexcept
     {
@@ -50,7 +48,8 @@ namespace latency_bypass
 
         const int levels = 1 << std::max (maxDepth, 1);
         const int pathDelay = rootDelay + nodeDelay * (levels - 2);
-        return pathDelay + std::max (maxBlockSize, 1) + (levels - 1);
+        (void) maxBlockSize;
+        return pathDelay;
     }
 } // namespace latency_bypass
 

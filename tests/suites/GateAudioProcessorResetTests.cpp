@@ -81,6 +81,7 @@ private:
     {
         auto processor = std::make_unique<GateAudioProcessor>();
         processor->prepareToPlay (TestUtils::TestConfig::SAMPLE_RATE, kBlockSize);
+        processor->getDisplayConsumerCount().add();
         return processor;
     }
 
