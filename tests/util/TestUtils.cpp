@@ -10,6 +10,7 @@
 #include <functional>
 #include <random>
 #include <set>
+#include <new>
 
 //==============================================================================
 // Allocation Tracking - Global operator new/delete override
@@ -28,6 +29,26 @@ void* operator new(size_t size) {
 void* operator new[](size_t size) {
     ++g_allocationCount;
     return std::malloc(size);
+}
+
+// The standard library also allocates temporary buffers with nothrow new.
+// Keep those allocations on the same malloc/free pair as the throwing forms.
+void* operator new(size_t size, const std::nothrow_t&) noexcept {
+    ++g_allocationCount;
+    return std::malloc(size);
+}
+
+void* operator new[](size_t size, const std::nothrow_t&) noexcept {
+    ++g_allocationCount;
+    return std::malloc(size);
+}
+
+void operator delete(void* ptr, const std::nothrow_t&) noexcept {
+    std::free(ptr);
+}
+
+void operator delete[](void* ptr, const std::nothrow_t&) noexcept {
+    std::free(ptr);
 }
 
 void operator delete(void* ptr) noexcept {
