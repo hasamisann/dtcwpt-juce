@@ -41,6 +41,13 @@ public:
      */
     void process(const std::vector<double>& input, std::vector<double>& output, size_t length);
 
+    /**
+     * @brief Clears the delay history and returns the write cursor to its initial position.
+     *
+     * Leaves the delay and the allocated size unchanged. Does not allocate.
+     */
+    void reset();
+
 private:
     size_t size_;               ///< Ring buffer size (power of 2)
     std::vector<double> buffer_; ///< Mirrored ring buffer storage

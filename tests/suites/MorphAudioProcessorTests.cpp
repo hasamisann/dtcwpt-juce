@@ -49,6 +49,12 @@ public:
 
         beginTest ("Mixed-depth committed Morph topology remains deterministic under the worklist scheduler");
         testMixedDepthCommittedMorphTopologyRemainsDeterministicUnderTheWorklistScheduler();
+
+        beginTest ("Without an open editor processBlock does not feed the spectrum bridge");
+        testNoSpectrumPushWithoutEditor();
+
+        beginTest ("Reopening the editor drops stale analyzer data");
+        testReopeningEditorDropsStaleAnalyzerData();
     }
 
 private:
@@ -213,11 +219,20 @@ private:
 
         ProcessRunResult result;
         result.output = captureQuantizedMainOutput (buffer);
-        result.committedDestinations = processor.getCommittedDestinationsForTest();
-        result.persistedTopology = processor.getPersistedTopologyStringForTest();
+        result.committedDestinations = processor.getCommittedTopology();
+        result.persistedTopology = readPersistedTopologyString (processor);
         result.latencySamples = processor.getLatencySamples();
         result.analyzerDelaySamples = processor.getAnalyzerInputDelaySamplesForTest();
         return result;
+    }
+
+    /** The topology string a host would persist: read back from the saved state, not from internals. */
+    static juce::String readPersistedTopologyString (MorphAudioProcessor& processor)
+    {
+        juce::MemoryBlock state;
+        processor.getStateInformation (state);
+        const auto tree = juce::ValueTree::readFromData (state.getData(), state.getSize());
+        return tree.getProperty (topology::kTopologyPropertyKey).toString();
     }
 
     static juce::MemoryBlock getStateInformationCopy (MorphAudioProcessor& processor)
@@ -250,6 +265,9 @@ private:
         constexpr int kBlocksPerSnapshot = SpectrumDataBridge::kSlotSize / kBlockSize;
         static_assert (SpectrumDataBridge::kSlotSize % kBlockSize == 0,
                        "Bridge snapshot helper expects the slot size to be divisible by the test block size");
+
+        // The processor only builds display data while an editor is open.
+        DisplayConsumerCount::Scoped editorOpen (processor.getDisplayConsumerCount());
 
         for (int block = 0; block < kBlocksPerSnapshot; ++block)
         {
@@ -395,7 +413,8 @@ private:
         const auto* originalMorphProcessor = guardedProcessor->getObservedMorphProcessorForTest();
 
         topology::resetInvalidTopologyDiagnosticsForTest();
-        guardedProcessor->getTopologyState().requestChange ({ "LLLLLLLLLLLLL" });
+        expect (! guardedProcessor->requestTopologyChange ({ "LLLLLLLLLLLLL" }),
+                "Over-deep hot-swap request should be rejected");
 
         const auto baselineRun = processOnce (*baselineProcessor, mainSignal, sidechainSignal);
         const auto guardedRun = processOnce (*guardedProcessor, mainSignal, sidechainSignal);
@@ -441,9 +460,9 @@ private:
                 "Processor should keep a valid engine after invalid restore fallback");
         expect (processor->getObservedMorphProcessorForTest() != nullptr,
                 "Processor should keep a valid band processor after invalid restore fallback");
-        expect (processor->getCommittedDestinationsForTest() == getDefaultTopology(),
+        expect (processor->getCommittedTopology() == getDefaultTopology(),
                 "Invalid persisted topology should fall back to the built-in default topology");
-        expect (processor->getPersistedTopologyStringForTest() == expectedDefaultTopology,
+        expect (readPersistedTopologyString (*processor) == expectedDefaultTopology,
                 "Fallback should store the built-in default topology back into APVTS state");
         expectQuantizedOutputsEqual (referenceRun.output, fallbackRun.output,
                                      "Invalid restore fallback should remain behaviorally identical to a fresh default processor");
@@ -466,6 +485,9 @@ private:
         expect (stateSource->applyTopologyCandidateForTest (topologyCandidate),
                 "State source should accept the topology that will be serialized");
         applyParameterState (*stateSource, parameterState);
+        // The engine reports its output from the first block on, so the restored parameter values matter here.
+        // Parameter changes reach the saved ValueTree only on a flush, which copyState() performs.
+        (void) stateSource->getAPVTS().copyState();
         const auto stateData = getStateInformationCopy (*stateSource);
 
         auto restoredProcessor = std::make_unique<MorphAudioProcessor>();
@@ -480,9 +502,9 @@ private:
         const auto restoredRun = processOnce (*restoredProcessor, mainSignal, sidechainSignal);
         const auto referenceRun = processOnce (*referenceProcessor, mainSignal, sidechainSignal);
 
-        expect (restoredProcessor->getCommittedDestinationsForTest() == topologyCandidate,
+        expect (restoredProcessor->getCommittedTopology() == topologyCandidate,
                 "Restored processor should commit the topology stored in the persisted state");
-        expectEquals (restoredProcessor->getPersistedTopologyStringForTest(), expectedPersistedTopology,
+        expectEquals (readPersistedTopologyString (*restoredProcessor), expectedPersistedTopology,
                       "Restored processor should round-trip the persisted topology string");
         expectQuantizedOutputsEqual (referenceRun.output, restoredRun.output,
                                      "Valid restored state should preserve observable processor behavior");
@@ -512,7 +534,7 @@ private:
         auto restoredProcessor = std::make_unique<MorphAudioProcessor>();
         restoredProcessor->setStateInformation (stateData.getData(), static_cast<int> (stateData.getSize()));
         restoredProcessor->prepareToPlay (TestUtils::TestConfig::SAMPLE_RATE, kBlockSize);
-        expect (restoredProcessor->getCommittedDestinationsForTest() == restoredTopology,
+        expect (restoredProcessor->getCommittedTopology() == restoredTopology,
                 "Restore flow should commit the topology stored in state before bridge observation");
         expectLatencyAlignedSnapshot (*restoredProcessor, "State-restore flow");
     }
@@ -548,10 +570,112 @@ private:
         expect (counter.getCount() == 0,
                 "Committed Morph processBlock scenarios should remain allocation-free; found "
                     + juce::String (static_cast<int> (counter.getCount())) + " allocations");
-        expect (noSidechainProcessor->getCommittedDestinationsForTest() == topologyCandidate,
+        expect (noSidechainProcessor->getCommittedTopology() == topologyCandidate,
                 "Allocation-free no-sidechain coverage should preserve the committed topology");
-        expect (duplicatedSidechainProcessor->getCommittedDestinationsForTest() == topologyCandidate,
+        expect (duplicatedSidechainProcessor->getCommittedTopology() == topologyCandidate,
                 "Allocation-free explicit-sidechain coverage should preserve the committed topology");
+    }
+
+    struct MagnitudeChange
+    {
+        int position;   ///< Stream position of the host block that sees the new value
+        float value;
+    };
+
+    // Streams `totalSamples` through a fresh processor (engine block size kBlockSize) in
+    // host blocks of `hostBlockSize`. The magnitude parameter (initially 0) takes the
+    // given values before the host blocks that start at the given positions.
+    // Returns the left output channel.
+    static std::vector<float> runMagnitudeChanges (int hostBlockSize, int totalSamples,
+                                                   const std::vector<MagnitudeChange>& changes)
+    {
+        auto processor = createPreparedProcessor();
+
+        MorphParameterState state;
+        state.magnitude = 0.0f;
+        state.phase = 0.0f;
+        state.bypassLow = false;
+        state.bypassHigh = false;
+        applyParameterState (*processor, state);
+
+        const auto mainSignal = makeSignal (totalSamples, 220.0, 3100.0, 330.0, 5200.0);
+        const auto scSignal = makeSignal (totalSamples, 1700.0, 440.0, 2300.0, 660.0);
+
+        std::vector<float> output;
+        output.reserve (static_cast<std::size_t> (totalSamples));
+
+        for (int position = 0; position < totalSamples; position += hostBlockSize)
+        {
+            for (const auto& change : changes)
+                if (position == change.position)
+                    setFloatParameter (*processor, ParamID::Magnitude, change.value);
+
+            StereoSignal main, sc;
+            const auto first = static_cast<std::ptrdiff_t> (position);
+            const auto last = first + hostBlockSize;
+            main.left.assign (mainSignal.left.begin() + first, mainSignal.left.begin() + last);
+            main.right.assign (mainSignal.right.begin() + first, mainSignal.right.begin() + last);
+            sc.left.assign (scSignal.left.begin() + first, scSignal.left.begin() + last);
+            sc.right.assign (scSignal.right.begin() + first, scSignal.right.begin() + last);
+
+            auto buffer = makeProcessBuffer (main, sc);
+            juce::MidiBuffer midi;
+            processor->processBlock (buffer, midi);
+
+            for (int i = 0; i < hostBlockSize; ++i)
+                output.push_back (buffer.getSample (0, i));
+        }
+
+        return output;
+    }
+
+    void expectSameOutputForHostBlockSizes (int changePosition, int referenceBlockSize,
+                                            const std::vector<int>& hostBlockSizes)
+    {
+        constexpr int total = 8192;
+        const auto reference = runMagnitudeChanges (referenceBlockSize, total, { { changePosition, 1.0f } });
+
+        for (const int hostBlockSize : hostBlockSizes)
+        {
+            const auto output = runMagnitudeChanges (hostBlockSize, total, { { changePosition, 1.0f } });
+            double maxDiff = 0.0;
+            for (std::size_t i = 0; i < output.size(); ++i)
+                maxDiff = std::max (maxDiff, std::abs (static_cast<double> (output[i])
+                                                       - static_cast<double> (reference[i])));
+
+            expectLessThan (maxDiff, 1e-4,
+                            "Change at " + juce::String (changePosition) + ": host block size "
+                            + juce::String (hostBlockSize) + " must match host block size "
+                            + juce::String (referenceBlockSize));
+        }
+    }
+
+    void testParameterChangeTimingIsIndependentOfHostBlockSize()
+    {
+        // On an engine block boundary (2560 = 5 * 512): host blocks of 512 and below.
+        expectSameOutputForHostBlockSizes (2560, kBlockSize, { 256, 128, 64, 32 });
+
+        // In the middle of an engine block (2752 = 5 * 512 + 192): only block sizes
+        // that start a host block exactly there can be compared.
+        expectSameOutputForHostBlockSizes (2752, 32, { 64 });
+    }
+
+    void testIntermediateParameterChangeIsNotLost()
+    {
+        // Two changes (up at 2624, back down at 2752) fall into one engine block
+        // [2560, 3072). With 64-sample host blocks the engine calls the band
+        // processor once for that span, but both requests must shape the output.
+        constexpr int total = 8192;
+        const auto untouched = runMagnitudeChanges (64, total, {});
+        const auto withPulse = runMagnitudeChanges (64, total, { { 2624, 1.0f }, { 2752, 0.0f } });
+
+        double maxDiff = 0.0;
+        for (std::size_t i = 0; i < withPulse.size(); ++i)
+            maxDiff = std::max (maxDiff, std::abs (static_cast<double> (withPulse[i])
+                                                   - static_cast<double> (untouched[i])));
+
+        expectGreaterThan (maxDiff, 1e-3,
+                           "A parameter pulse inside one engine block must not be lost");
     }
 
     void testMixedDepthCommittedMorphTopologyRemainsDeterministicUnderTheWorklistScheduler()
@@ -592,6 +716,81 @@ private:
                       "Second Morph processor should persist the mixed-depth topology string");
         expectEquals (firstRun.latencySamples, secondRun.latencySamples,
                       "Mixed-depth committed Morph runs should preserve latency deterministically");
+    }
+
+    void testNoSpectrumPushWithoutEditor()
+    {
+        auto processor = createPreparedProcessor();
+
+        // No editor has been created, so nothing consumes the display data.
+        for (int block = 0; block < 8; ++block)
+        {
+            juce::AudioBuffer<float> buffer (2, kBlockSize);
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < kBlockSize; ++i)
+                    buffer.setSample (ch, i, 0.25f * std::sin (0.05f * static_cast<float> (i)));
+
+            juce::MidiBuffer midi;
+            processor->processBlock (buffer, midi);
+        }
+
+        expectEquals (static_cast<int> (processor->getSpectrumBridge().getPushCallCountForTest()), 0,
+                      "processBlock must not mono-mix, align and push spectrum data while no editor is open");
+
+        // Opening an editor starts the display data; closing it stops it again.
+        {
+            DisplayConsumerCount::Scoped editorOpen (processor->getDisplayConsumerCount());
+            processBlockOfConstant (*processor, 0.25f);
+            expectEquals (static_cast<int> (processor->getSpectrumBridge().getPushCallCountForTest()), 1,
+                          "processBlock should push spectrum data while an editor is open");
+        }
+
+        processBlockOfConstant (*processor, 0.25f);
+        expectEquals (static_cast<int> (processor->getSpectrumBridge().getPushCallCountForTest()), 1,
+                      "processBlock should stop pushing once the editor is closed");
+    }
+
+    void testReopeningEditorDropsStaleAnalyzerData()
+    {
+        auto processor = createPreparedProcessor();
+        expect (processor->getLatencySamples() > 0, "The default topology must have non-zero latency for this test");
+
+        {
+            // 1024 samples of DC: leaves a half-filled bridge slot and a non-empty analyzer delay line.
+            DisplayConsumerCount::Scoped editorOpen (processor->getDisplayConsumerCount());
+            processBlockOfConstant (*processor, 0.5f);
+            processBlockOfConstant (*processor, 0.5f);
+        }
+
+        // Editor closed while the host keeps running.
+        processBlockOfConstant (*processor, 0.5f);
+
+        DisplayConsumerCount::Scoped editorReopened (processor->getDisplayConsumerCount());
+        for (int block = 0; block < SpectrumDataBridge::kSlotSize / kBlockSize; ++block)
+            processBlockOfConstant (*processor, 0.0f);
+
+        std::array<float, SpectrumDataBridge::kSlotSize> input {}, output {};
+        expect (processor->consumeSpectrumSnapshotForTest (input, output),
+                "A full slot of new samples should be available after reopening the editor");
+
+        int staleSamples = 0;
+        for (float sample : input)
+            if (sample != 0.0f)
+                ++staleSamples;
+
+        expectEquals (staleSamples, 0,
+                      "Samples from before the editor was closed must not reappear in the analyzer input");
+    }
+
+    static void processBlockOfConstant (MorphAudioProcessor& processor, float value)
+    {
+        juce::AudioBuffer<float> buffer (2, kBlockSize);
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < kBlockSize; ++i)
+                buffer.setSample (ch, i, value);
+
+        juce::MidiBuffer midi;
+        processor.processBlock (buffer, midi);
     }
 };
 

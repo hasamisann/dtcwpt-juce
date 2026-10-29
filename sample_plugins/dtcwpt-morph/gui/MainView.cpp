@@ -39,6 +39,7 @@ MainView::MainView (MorphAudioProcessor& processor)
     , aboutButton_    ("About")
     , bypassLowButton_  ("Bypass Low")
     , bypassHighButton_ ("Bypass High")
+    , engineStatusBanner_ ([&processor] { return processor.isEngineAvailable(); })
 {
     // -----------------------------------------------------------------------
     // Header bar
@@ -66,6 +67,9 @@ MainView::MainView (MorphAudioProcessor& processor)
     // Spectrum analyzer widget
     // -----------------------------------------------------------------------
     addAndMakeVisible (spectrumWidget_);
+
+    // Shown only while the DSP engine could not be created; stays on top of the other children.
+    addChildComponent (engineStatusBanner_);
 
     // -----------------------------------------------------------------------
     // Magnitude knob
@@ -346,4 +350,6 @@ void MainView::resized()
     const int checkWidth = w / 2;
     bypassLowButton_.setBounds  (24, checkY, checkWidth - 24, kCheckboxHeight);
     bypassHighButton_.setBounds (checkWidth + 12, checkY, checkWidth - 12, kCheckboxHeight);
+
+    engineStatusBanner_.setBounds (spectrumWidget_.getBounds().withSizeKeepingCentre (juce::jmin (w - 32, 320), 80));
 }

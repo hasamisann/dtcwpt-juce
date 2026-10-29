@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -22,6 +23,9 @@ public:
     {
         beginTest ("Threshold fanout and lowest-band bypass stay observable at processor level");
         testThresholdFanoutAndLowestBandBypass();
+
+        beginTest ("Equal threshold points fan out to every band of any topology");
+        testEqualPointsFanOutToEveryBand();
 
         beginTest ("Invalid hot-swap preserves committed topology and invalid restore falls back");
         testInvalidHotSwapPreservesCommittedTopologyAndRestoreFallsBack();
@@ -43,6 +47,12 @@ public:
 
         beginTest ("Gate rejects valid core topology beyond depth-8 limit");
         testGateRejectsValidCoreTopologyBeyondDepthEightLimit();
+
+        beginTest ("Without an open editor processBlock does not feed the display bridges");
+        testNoDisplayDataWithoutEditor();
+
+        beginTest ("Reopening the editor drops stale analyzer data");
+        testReopeningEditorDropsStaleAnalyzerData();
     }
 
 private:
@@ -66,23 +76,37 @@ private:
         return kDefaultTopology;
     }
 
-    static std::unique_ptr<GateAudioProcessor> createPreparedProcessor (int blockSize = kDefaultBlockSize)
+    /** The processor only builds display data while an editor is open; tests that observe
+        the bridges keep a display consumer registered for the processor's lifetime. */
+    static std::unique_ptr<GateAudioProcessor> createPreparedProcessor (int blockSize = kDefaultBlockSize,
+                                                                         bool withDisplayConsumer = true)
     {
         auto processor = std::make_unique<GateAudioProcessor>();
+        if (withDisplayConsumer)
+            processor->getDisplayConsumerCount().add();
         processor->prepareToPlay (TestUtils::TestConfig::SAMPLE_RATE, blockSize);
         return processor;
     }
 
-    static ProcessorObservation captureObservation (const GateAudioProcessor& processor)
+    static ProcessorObservation captureObservation (GateAudioProcessor& processor)
     {
         return {
-            processor.getCommittedDestinationsForTest(),
-            processor.getPersistedTopologyStringForTest(),
+            processor.getCommittedTopology(),
+            readPersistedTopologyString (processor),
             processor.getLatencySamples(),
             processor.getAnalyzerInputDelaySamplesForTest(),
             processor.getObservedGateProcessorForTest(),
             processor.getEngineIdentityForTest()
         };
+    }
+
+    /** The topology string a host would persist: read back from the saved state, not from internals. */
+    static juce::String readPersistedTopologyString (GateAudioProcessor& processor)
+    {
+        juce::MemoryBlock state;
+        processor.getStateInformation (state);
+        const auto tree = juce::ValueTree::readFromData (state.getData(), state.getSize());
+        return tree.getProperty (topology::kTopologyPropertyKey).toString();
     }
 
     static juce::MemoryBlock createStateWithTopology (const juce::var& topologyProperty)
@@ -236,9 +260,9 @@ private:
         return peakIndex;
     }
 
-    static void setThresholdDb (GateAudioProcessor& processor, int bandIndex, float thresholdDb)
+    static void setThresholdPointDb (GateAudioProcessor& processor, int pointIndex, float thresholdDb)
     {
-        const auto parameterId = juce::String::formatted ("threshold_%02d", bandIndex);
+        const auto parameterId = GateAudioProcessor::getThresholdParameterId (pointIndex);
         auto* parameter = dynamic_cast<juce::AudioParameterFloat*> (processor.getAPVTS().getParameter (parameterId));
         jassert (parameter != nullptr);
 
@@ -246,10 +270,22 @@ private:
             parameter->setValueNotifyingHost (parameter->convertTo0to1 (thresholdDb));
     }
 
+    static void setAllThresholdPointsDb (GateAudioProcessor& processor, float thresholdDb)
+    {
+        for (int point = 0; point < gate_threshold::kNumPoints; ++point)
+            setThresholdPointDb (processor, point, thresholdDb);
+    }
+
+    /**
+     * Sets a distinct, non-trivial threshold curve for tests that only need "some settings":
+     * the i-th value goes to every 6th point (two octaves apart); the other points keep their default.
+     */
     static void setThresholdsDb (GateAudioProcessor& processor, const std::vector<float>& thresholdsDb)
     {
+        constexpr int kPointStride = 6;
+
         for (int index = 0; index < static_cast<int> (thresholdsDb.size()); ++index)
-            setThresholdDb (processor, index, thresholdsDb[static_cast<std::size_t> (index)]);
+            setThresholdPointDb (processor, index * kPointStride, thresholdsDb[static_cast<std::size_t> (index)]);
     }
 
     static void setBypassLowestBand (GateAudioProcessor& processor, bool shouldBypass)
@@ -275,6 +311,7 @@ private:
 
     void expectLatencyAlignedObservation (GateAudioProcessor& processor, const juce::String& context)
     {
+        DisplayConsumerCount::Scoped editorOpen (processor.getDisplayConsumerCount());
         const auto observation = captureObservation (processor);
 
         expectEquals (observation.analyzerInputDelaySamples, observation.latencySamples,
@@ -312,37 +349,79 @@ private:
                       context + ": band-level bridge count should follow the committed topology");
     }
 
+    /** Independent reference: mean of the point polyline over [lowHz, highHz] in log frequency, by midpoint rule. */
+    static double referenceBandThresholdDb (const std::array<double, gate_threshold::kNumPoints>& pointsDb,
+                                            double lowHz, double highHz)
+    {
+        const auto curveAt = [&pointsDb] (double x)
+        {
+            const auto logFrequency = [] (int k) { return std::log10 (gate_threshold::kPoints[static_cast<std::size_t> (k)].frequencyHz); };
+
+            if (x <= logFrequency (0))
+                return pointsDb.front();
+            if (x >= logFrequency (gate_threshold::kNumPoints - 1))
+                return pointsDb.back();
+
+            int k = 0;
+            while (x >= logFrequency (k + 1))
+                ++k;
+
+            const double t = (x - logFrequency (k)) / (logFrequency (k + 1) - logFrequency (k));
+            return pointsDb[static_cast<std::size_t> (k)] + t * (pointsDb[static_cast<std::size_t> (k + 1)] - pointsDb[static_cast<std::size_t> (k)]);
+        };
+
+        const double a = std::log10 (std::max (lowHz, 20.0));
+        const double b = std::log10 (std::max (highHz, 20.0));
+        constexpr int kSteps = 200000;
+
+        double sum = 0.0;
+        for (int step = 0; step < kSteps; ++step)
+            sum += curveAt (a + (b - a) * (static_cast<double> (step) + 0.5) / kSteps);
+
+        return sum / kSteps;
+    }
+
     void testThresholdFanoutAndLowestBandBypass()
     {
+        // Full packet depth 1: band 0 = "L" (0 .. Nyquist/2), band 1 = "H" (Nyquist/2 .. Nyquist).
+        // The threshold curve is open (-120 dB) up to 5 kHz, -60 dB from 6.3 to 10 kHz and closed (+10 dB)
+        // from 12.5 kHz on. Each band must get the mean of that curve over its own frequency range
+        // (checked against an independent numerical integration) and "H" must be the larger one.
         const auto twoBandTopology = TestUtils::getFullPacketDestinations (1);
         const auto signal = makeConstantSignal (kDefaultBlockSize, 0.8f);
 
-        auto lowBandClosed = createPreparedProcessor();
-        auto highBandClosed = createPreparedProcessor();
+        auto lowBandOpen = createPreparedProcessor();
         auto lowBandBypassed = createPreparedProcessor();
 
-        expect (lowBandClosed->applyTopologyCandidateForTest (twoBandTopology));
-        expect (highBandClosed->applyTopologyCandidateForTest (twoBandTopology));
+        expect (lowBandOpen->applyTopologyCandidateForTest (twoBandTopology));
         expect (lowBandBypassed->applyTopologyCandidateForTest (twoBandTopology));
 
-        setThresholdsDb (*lowBandClosed, { 10.0f, -120.0f });
-        setThresholdsDb (*highBandClosed, { -120.0f, 10.0f });
-        setThresholdsDb (*lowBandBypassed, { 10.0f, -120.0f });
+        std::array<double, gate_threshold::kNumPoints> pointsDb {};
+        for (int point = 0; point < gate_threshold::kNumPoints; ++point)
+        {
+            const double frequency = gate_threshold::kPoints[static_cast<std::size_t> (point)].frequencyHz;
+            const float db = frequency <= 5000.0 ? -120.0f : (frequency >= 12500.0 ? 10.0f : -60.0f);
+            pointsDb[static_cast<std::size_t> (point)] = db;
+            setThresholdPointDb (*lowBandOpen, point, db);
+            setThresholdPointDb (*lowBandBypassed, point, db);
+        }
         setBypassLowestBand (*lowBandBypassed, true);
 
-        const auto lowBandClosedOutput = processMonoSignal (*lowBandClosed, signal);
-        const auto highBandClosedOutput = processMonoSignal (*highBandClosed, signal);
+        const auto lowBandOpenOutput = processMonoSignal (*lowBandOpen, signal);
         const auto lowBandBypassedOutput = processMonoSignal (*lowBandBypassed, signal);
+        ignoreUnused (lowBandOpenOutput, lowBandBypassedOutput);
 
-        expectWithinAbsoluteError (lowBandClosed->getLastThresholdLinearForTest (0),
-                                   std::pow (10.0, 10.0 / 20.0),
-                                   1.0e-12,
-                                   "The processor should fan out the first threshold parameter to the active GateBandProcessor");
-        expectWithinAbsoluteError (lowBandClosed->getLastThresholdLinearForTest (1),
-                                   std::pow (10.0, -120.0 / 20.0),
-                                   1.0e-12,
-                                   "The processor should fan out the second threshold parameter independently");
-        expect (! lowBandClosed->getLastBypassLowestForTest(),
+        const double nyquist = TestUtils::TestConfig::SAMPLE_RATE * 0.5;
+        for (int band = 0; band < 2; ++band)
+        {
+            const double expectedDb = referenceBandThresholdDb (pointsDb, band == 0 ? 0.0 : nyquist * 0.5, band == 0 ? nyquist * 0.5 : nyquist);
+            expectWithinAbsoluteError (20.0 * std::log10 (lowBandOpen->getLastThresholdLinearForTest (band)),
+                                       expectedDb, 1.0e-3,
+                                       "Band " + juce::String (band) + ": threshold dB should be the mean of the point curve over the band's frequency range");
+        }
+
+        expectGreaterThan (lowBandOpen->getLastThresholdLinearForTest (1), lowBandOpen->getLastThresholdLinearForTest (0));
+        expect (! lowBandOpen->getLastBypassLowestForTest(),
                 "Lowest-band bypass should remain disabled when the bypass parameter is off");
         expect (lowBandBypassed->getLastBypassLowestForTest(),
                 "Lowest-band bypass should be observable on the committed Gate processor when enabled");
@@ -356,6 +435,25 @@ private:
                       "Band-level bridge should expose one level per committed band after processing");
     }
 
+    void testEqualPointsFanOutToEveryBand()
+    {
+        // With every point at the same value the band threshold equals that value in every topology.
+        for (const auto& destinations : { TestUtils::getFullPacketDestinations (3), getDefaultTopology() })
+        {
+            auto processor = createPreparedProcessor();
+            expect (processor->applyTopologyCandidateForTest (destinations));
+            setAllThresholdPointsDb (*processor, -27.5f);
+
+            processMonoSignal (*processor, makeConstantSignal (kDefaultBlockSize, 0.1f));
+
+            for (int band = 0; band < static_cast<int> (destinations.size()); ++band)
+                expectWithinAbsoluteError (processor->getLastThresholdLinearForTest (band),
+                                           std::pow (10.0, -27.5 / 20.0),
+                                           1.0e-9,
+                                           "Equal points should give the same linear threshold in band " + juce::String (band));
+        }
+    }
+
     void testInvalidHotSwapPreservesCommittedTopologyAndRestoreFallsBack()
     {
         auto processor = createPreparedProcessor();
@@ -365,7 +463,8 @@ private:
         const auto baselineObservation = captureObservation (*processor);
 
         topology::resetInvalidTopologyDiagnosticsForTest();
-        processor->getTopologyState().requestChange ({ "L", "HL" });
+        expect (! processor->requestTopologyChange ({ "L", "HL" }),
+                "Invalid hot-swap request should be rejected");
 
         auto buffer = makeStereoBuffer (makeDeterministicSignal (kDefaultBlockSize));
         juce::MidiBuffer midi;
@@ -428,8 +527,12 @@ private:
         setThresholdsDb (*reference, { -6.0f, -18.0f, -36.0f, -48.0f });
         setBypassLowestBand (*reference, true);
 
+        // The engine reports its output from the first block on, so the restored parameter values matter here.
+        // Parameter changes reach the saved ValueTree only on a flush, which copyState() performs.
+        (void) reference->getAPVTS().copyState();
         const auto state = captureState (*reference);
         auto restored = std::make_unique<GateAudioProcessor>();
+        restored->getDisplayConsumerCount().add();
         restored->setStateInformation (state.getData(), static_cast<int> (state.getSize()));
         restored->prepareToPlay (TestUtils::TestConfig::SAMPLE_RATE, kDefaultBlockSize);
 
@@ -621,6 +724,79 @@ private:
         expectEquals (juce::String (topology::getLastInvalidTopologyDiagnosticCategoryForTest()),
                       juce::String (topology::invalidTopologyDiagnosticCategory()),
                       "Depth-limit rejection should use the shared invalid-topology diagnostic category");
+    }
+
+    void testNoDisplayDataWithoutEditor()
+    {
+        auto processor = createPreparedProcessor (kDefaultBlockSize, false);
+
+        // No editor has been created, so nothing consumes the display data.
+        for (int block = 0; block < 8; ++block)
+        {
+            auto processed = processMonoSignal (*processor, makeConstantSignal (kDefaultBlockSize, 0.5f));
+            ignoreUnused (processed);
+        }
+
+        expectEquals (static_cast<int> (processor->getSpectrumBridge().getPushCallCountForTest()), 0,
+                      "processBlock must not mono-mix, align and push spectrum data while no editor is open");
+        expectEquals (static_cast<int> (processor->getBandLevelBridge().getUpdateCountForTest()), 0,
+                      "processBlock must not publish band levels while no editor is open");
+
+        // Opening an editor starts the display data; closing it stops it again.
+        {
+            DisplayConsumerCount::Scoped editorOpen (processor->getDisplayConsumerCount());
+            auto processed = processMonoSignal (*processor, makeConstantSignal (kDefaultBlockSize, 0.5f));
+            ignoreUnused (processed);
+            expectEquals (static_cast<int> (processor->getSpectrumBridge().getPushCallCountForTest()), 1,
+                          "processBlock should push spectrum data while an editor is open");
+            expectEquals (static_cast<int> (processor->getBandLevelBridge().getUpdateCountForTest()), 1,
+                          "processBlock should publish band levels while an editor is open");
+        }
+
+        auto processed = processMonoSignal (*processor, makeConstantSignal (kDefaultBlockSize, 0.5f));
+        ignoreUnused (processed);
+        expectEquals (static_cast<int> (processor->getSpectrumBridge().getPushCallCountForTest()), 1,
+                      "processBlock should stop pushing spectrum data once the editor is closed");
+        expectEquals (static_cast<int> (processor->getBandLevelBridge().getUpdateCountForTest()), 1,
+                      "processBlock should stop publishing band levels once the editor is closed");
+    }
+
+    void testReopeningEditorDropsStaleAnalyzerData()
+    {
+        auto processor = createPreparedProcessor (kDefaultBlockSize, false);
+        expect (processor->getLatencySamples() > 0, "The default topology must have non-zero latency for this test");
+
+        auto processBlockOfConstant = [&] (float value)
+        {
+            auto processed = processMonoSignal (*processor, makeConstantSignal (kDefaultBlockSize, value));
+            ignoreUnused (processed);
+        };
+
+        {
+            // 1024 samples of DC: leaves a half-filled bridge slot and a non-empty analyzer delay line.
+            DisplayConsumerCount::Scoped editorOpen (processor->getDisplayConsumerCount());
+            processBlockOfConstant (0.5f);
+            processBlockOfConstant (0.5f);
+        }
+
+        // Editor closed while the host keeps running.
+        processBlockOfConstant (0.5f);
+
+        DisplayConsumerCount::Scoped editorReopened (processor->getDisplayConsumerCount());
+        for (int block = 0; block < SpectrumDataBridge::kSlotSize / kDefaultBlockSize; ++block)
+            processBlockOfConstant (0.0f);
+
+        std::array<float, SpectrumDataBridge::kSlotSize> input {}, output {};
+        expect (processor->getSpectrumBridge().tryConsume (input, output),
+                "A full slot of new samples should be available after reopening the editor");
+
+        int staleSamples = 0;
+        for (float sample : input)
+            if (sample != 0.0f)
+                ++staleSamples;
+
+        expectEquals (staleSamples, 0,
+                      "Samples from before the editor was closed must not reappear in the analyzer input");
     }
 };
 

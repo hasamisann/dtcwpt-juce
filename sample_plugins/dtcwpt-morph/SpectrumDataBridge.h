@@ -2,34 +2,40 @@
 
 /**
  * @file SpectrumDataBridge.h
- * @brief Lock-free ring buffer for audio→GUI spectrum data transfer.
+ * @brief Lock-free audio→GUI transfer of spectrum-analyzer sample windows.
  *
  * `SpectrumDataBridge` transfers mono-averaged float samples from the
  * **audio thread** to the **GUI thread** without blocking either thread.
  *
  * ## Design
  *
- * - **4 fixed-size slots**, each holding 2048 input and 2048 output samples
+ * - Built on `TripleBuffer`: the audio thread owns a private back buffer, the
+ *   GUI thread owns a private front buffer, and a third buffer is exchanged
+ *   atomically between them. No buffer is ever read and written concurrently.
+ * - A window ("slot") holds `kSlotSize` input and `kSlotSize` output samples
  *   (matching the FFT window size used by `SpectrumAnalyzerWidget`).
- * - The audio thread accumulates samples via `push()`. When a slot fills to
- *   `kSlotSize` samples, `writeSlot_` advances to the next slot (modulo 4)
- *   and the new slot's fill counter is reset to zero.
- * - The GUI thread reads the latest completed slot via `tryConsume()`. If
- *   `readSlot_` differs from `writeSlot_`, the slot just before `writeSlot_`
- *   is the most recently completed one — it is copied out and `readSlot_` is
- *   advanced to `writeSlot_`.
- * - Overwriting unread slots is acceptable: the GUI only ever needs the
- *   latest spectrum snapshot (no history required).
- * - The audio side uses only `std::atomic` indices (no mutex) — true
- *   lock-free behaviour on the audio thread.
+ * - The audio thread accumulates samples via `push()` directly into its back
+ *   buffer. When `kSlotSize` samples have been collected the buffer is
+ *   published and a fresh back buffer is started; a single `push()` may span
+ *   several slot boundaries.
+ * - The GUI thread takes the latest completed slot via `tryConsume()`. Slots
+ *   that were completed but not consumed are superseded by newer ones (the
+ *   GUI only ever needs the latest window). A slot completed while the GUI is
+ *   in the middle of `tryConsume()` is never lost: it is reported by the next
+ *   call.
+ * - No mutex, no allocation, no data race.
  *
  * ## Thread ownership
- * - `push()`       — **audio thread only**
- * - `tryConsume()` — **GUI thread only**
+ * - `push()`, `discardPartialSlot()` — **audio thread only**
+ * - `tryConsume()`                   — **GUI thread only**
  */
+
+#include "../common/TripleBuffer.h"
 
 #include <array>
 #include <atomic>
+#include <cstdint>
+#include <functional>
 
 class SpectrumDataBridge
 {
@@ -38,7 +44,6 @@ public:
     // Constants
     //==============================================================================
 
-    static constexpr int kRingSlots = 4;      ///< Number of ring slots (power of 2)
     static constexpr int kSlotSize  = 2048;   ///< Samples per slot (matches FFT size)
 
     //==============================================================================
@@ -52,22 +57,38 @@ public:
     //==============================================================================
 
     /**
-     * @brief Accumulate mono-averaged samples into the current write slot.
+     * @brief Accumulate mono-averaged samples into the slot being filled.
      *
-     * Called on the **audio thread**. Copies up to `numSamples` samples from
-     * `inputMono` and `outputMono` into the current write slot. When the slot
-     * fills to `kSlotSize` samples, `writeSlot_` advances and the new slot's
-     * fill counter is reset.
-     *
-     * Processes samples in chunks so that a single call can span a slot
+     * Called on the **audio thread**. Copies `numSamples` samples from
+     * `inputMono` and `outputMono` into the audio thread's private buffer. Each
+     * time the buffer reaches `kSlotSize` samples it is published to the GUI
+     * thread and a new slot is started, so a single call can span a slot
      * boundary (e.g., a 512-sample block can finish one slot and start the
-     * next in a single `push()`).
+     * next).
      *
      * @param inputMono   Mono-averaged input samples  (may be nullptr if numSamples == 0)
      * @param outputMono  Mono-averaged output samples (may be nullptr if numSamples == 0)
      * @param numSamples  Number of samples to push
      */
     void push (const float* inputMono, const float* outputMono, int numSamples);
+
+    /**
+     * @brief Drops the samples collected for the slot that is not yet complete.
+     *
+     * Called on the **audio thread** when the sample stream is discontinuous
+     * (e.g. after display data generation was paused), so that a slot never
+     * mixes samples from before and after the gap. Already published slots are
+     * unaffected.
+     */
+    void reset() noexcept
+    {
+        auto& slot = slots_.getWriteBuffer();
+        slot.input.fill(0.0f); slot.output.fill(0.0f);
+        slots_.publish();
+        fill_ = 0;
+    }
+
+    void discardPartialSlot() noexcept { fill_ = 0; }
 
     //==============================================================================
     // GUI-thread API
@@ -76,12 +97,10 @@ public:
     /**
      * @brief Read the latest completed slot.
      *
-     * Called on the **GUI thread**. If `readSlot_` != `writeSlot_` (i.e., at
-     * least one new slot has been completed since the last consume), copies
-     * the most-recently completed slot's data into `inputOut` and `outputOut`,
-     * advances `readSlot_` to `writeSlot_`, and returns `true`.
-     *
-     * Returns `false` immediately if no new data is available.
+     * Called on the **GUI thread**. If at least one slot has been completed
+     * since the last successful call, copies the most recently completed slot
+     * into `inputOut` and `outputOut` and returns `true`. Returns `false`
+     * immediately if there is no new data.
      *
      * @param inputOut   Receives the input samples from the latest completed slot.
      * @param outputOut  Receives the output samples from the latest completed slot.
@@ -90,34 +109,28 @@ public:
     bool tryConsume (std::array<float, kSlotSize>& inputOut,
                      std::array<float, kSlotSize>& outputOut);
 
-private:
-    //==============================================================================
-    // Internal slot type
-    //==============================================================================
+#if DTCWPT_ENABLE_TEST_SEAMS
+    /** Test seam: called by tryConsume() after the input half has been copied and before the output half. */
+    void setConsumeMidCopyHookForTest (std::function<void()> hook) { consumeMidCopyHook_ = std::move (hook); }
 
+    /** Test seam: number of push() calls with numSamples > 0 since construction. */
+    std::uint64_t getPushCallCountForTest() const noexcept { return pushCallCount_.load (std::memory_order_relaxed); }
+#endif
+
+private:
     struct Slot
     {
         std::array<float, kSlotSize> input  {};   ///< Input mono samples
         std::array<float, kSlotSize> output {};   ///< Output mono samples
-        std::atomic<int> fill { 0 };              ///< Number of samples filled (0..kSlotSize); atomic for thread-safety
     };
 
-    //==============================================================================
-    // State
-    //==============================================================================
+    TripleBuffer<Slot> slots_;
 
-    std::array<Slot, kRingSlots> slots_;
+    /// Samples already written into slots_.getWriteBuffer() (audio thread only).
+    int fill_ { 0 };
 
-    /// Index of the slot currently being written (audio thread).
-    /// A slot is "completed" when push() advances writeSlot_ past it.
-    std::atomic<int> writeSlot_ { 0 };
-
-    /// Index of the last slot read by the GUI thread.
-    /// tryConsume() advances this to match writeSlot_ when new data exists.
-    std::atomic<int> readSlot_  { 0 };
-
-    /// Set to true by push() whenever a slot completes; cleared by tryConsume().
-    /// Needed to distinguish "no new data" from the case where writeSlot_
-    /// has wrapped all the way around back to equal readSlot_.
-    std::atomic<bool> hasNewData_ { false };
+#if DTCWPT_ENABLE_TEST_SEAMS
+    std::function<void()> consumeMidCopyHook_;
+    std::atomic<std::uint64_t> pushCallCount_ { 0 };
+#endif
 };

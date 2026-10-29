@@ -8,15 +8,21 @@
  *  - Full phase replacement
  *  - Threshold gate attenuation
  *  - Bypass Low / Bypass High band
- *  - Per-sample SmoothedValue advancement
- *  - Reset snaps SmoothedValue
+ *  - Linear ramp on the host-sample time axis (shared by bands and channels)
+ *  - Parameter events at stream positions, event queue overflow
+ *  - Reset snaps the ramps
  */
 
 #include "MorphBandProcessor.h"
+#include "TimedLinearRamp.h"
 #include "../util/TestUtils.h"
 
 #include <juce_core/juce_core.h>
+#include <algorithm>
 #include <cmath>
+#include <random>
+#include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -42,15 +48,27 @@ struct SynthBandData
     void init (int numChannels, int numBands, int numSamples,
                const std::vector<int>& destIds)
     {
+        init (numChannels,
+              std::vector<int> (static_cast<std::size_t> (numBands), numSamples),
+              destIds);
+    }
+
+    // Variable sample counts per band (e.g. bands at different tree depths).
+    void init (int numChannels, const std::vector<int>& samplesPerBand,
+               const std::vector<int>& destIds)
+    {
         destinationIds = destIds;
+        const int numBands = static_cast<int> (samplesPerBand.size());
 
         auto alloc = [&](auto& arr)
         {
             arr.resize (static_cast<std::size_t> (numChannels));
             for (auto& ch : arr)
             {
-                ch.resize (static_cast<std::size_t> (numBands),
-                           std::vector<double> (static_cast<std::size_t> (numSamples), 0.0));
+                ch.resize (static_cast<std::size_t> (numBands));
+                for (int b = 0; b < numBands; ++b)
+                    ch[static_cast<std::size_t> (b)].assign (
+                        static_cast<std::size_t> (samplesPerBand[static_cast<std::size_t> (b)]), 0.0);
             }
         };
 
@@ -71,7 +89,7 @@ struct SynthBandData
                     auto bs = static_cast<std::size_t> (b);
                     views[cs][bs] = { re[cs][bs].data(),
                                       im[cs][bs].data(),
-                                      static_cast<std::size_t> (numSamples) };
+                                      re[cs][bs].size() };
                 }
             }
             return views;
@@ -83,6 +101,21 @@ struct SynthBandData
         data.numBands      = numBands;
         data.hasSidechain  = true;
         data.destinationIds = &destinationIds;
+    }
+
+    // Fill every main sample with (mainAmp, 0) and every sidechain sample with
+    // (scAmp, 0). Both have phase 0, so with phase ratio 0 the output magnitude
+    // is mainAmp + m * (scAmp - mainAmp) and m can be recovered from the output.
+    void fillConstant (double mainAmp, double scAmp)
+    {
+        for (auto* arr : { &mainRe, &scRe })
+            for (auto& ch : *arr)
+                for (auto& band : ch)
+                    std::fill (band.begin(), band.end(), arr == &mainRe ? mainAmp : scAmp);
+        for (auto* arr : { &mainIm, &scIm })
+            for (auto& ch : *arr)
+                for (auto& band : ch)
+                    std::fill (band.begin(), band.end(), 0.0);
     }
 
     // Fill main Re/Im with a sinusoidal pattern
@@ -129,6 +162,15 @@ public:
 
     void runTest() override
     {
+        beginTest("Continuous threshold coefficient"); testThresholdGateContinuity();
+        beginTest("Monotonic threshold coefficient"); testThresholdGateMonotonic();
+        beginTest("Disabled threshold"); testNonPositiveThresholdDisablesGate();
+        beginTest("Vector interpolation matches the continuous polar reference"); testMatchesPolarReference();
+        beginTest("Zero-length vectors have a defined direction"); testZeroLengthVectorsUseUnitX();
+
+        beginTest("Deep DWT retains more than 64 pending parameter events");
+        testDeepDwtEventHistory();
+
         beginTest ("1. Passthrough: magnitude=0, phase=0 preserves main signal");
         testPassthrough();
 
@@ -147,17 +189,81 @@ public:
         beginTest ("6. Bypass High: all-bits-set node ID band passes through unchanged");
         testBypassHigh();
 
-        beginTest ("7. SmoothedValue ramps — first sample not at full target");
+        beginTest ("7. Ramp is linear in host time — first sample not at full target");
         testSmoothedValueRamp();
 
-        beginTest ("8. Reset snaps SmoothedValues to target");
+        beginTest ("8. Reset snaps ramps to the requested targets");
         testReset();
 
         beginTest ("9. Threshold boundary preserves full phase replacement");
         testThresholdBoundaryPreservesPhaseReplacement();
+
+        beginTest ("10. Magnitude ramp follows time, not band processing order");
+        testRampIsTimeBasedAcrossBands();
+
+        beginTest ("11. All channels use the same ramp value at the same time");
+        testRampIsIdenticalAcrossChannels();
+
+        beginTest ("12. Bypass settings do not change the ramp timing");
+        testBypassDoesNotAffectRampTiming();
+
+        beginTest ("13. 20 ms ramp completes after 20 ms of host samples");
+        testRampDurationIsHostTime();
+
+        beginTest ("14. TimedLinearRamp closed-form behaviour");
+        testTimedLinearRamp();
+
+        beginTest ("15. Parameter event starts its ramp at its stream position");
+        testEventStartsRampAtStreamPosition();
+
+        beginTest ("16. Ramp continues across internal blocks");
+        testRampContinuesAcrossBlocks();
+
+        beginTest ("17. Intermediate targets inside one internal block are kept");
+        testIntermediateTargetsAreKept();
+
+        beginTest ("18. Events beyond the block are deferred, stale events apply at block start");
+        testDeferredAndStaleEvents();
+
+        beginTest ("19. Pending event history preserves the first and latest requests");
+        testEventQueueOverflow();
+
+        beginTest ("20. Blocks without sidechain still advance the timeline");
+        testNoSidechainAdvancesTimeline();
+
+        beginTest ("21. Reset restarts the stream timeline");
+        testResetRestartsTimeline();
+
+        beginTest ("22. Bypass switches at the event time");
+        testBypassSwitchesAtEventTime();
     }
 
 private:
+    void testDeepDwtEventHistory()
+    {
+        std::vector<int> ids, counts;
+        for (int depth = 1; depth <= 12; ++depth)
+        {
+            ids.push_back((1 << depth) + 1);
+            counts.push_back(4096 >> depth);
+        }
+        ids.push_back(1 << 12);
+        counts.push_back(1);
+        SynthBandData data;
+        data.init(1, counts, ids);
+        data.fillConstant(1.0, 2.0);
+        MorphBandProcessor processor;
+        processor.prepare(48000.0, 2048, 13, 1);
+        processor.setTargets(1.0, 0.0, 0.0, false, false, 0);
+        processor.setTargets(0.0, 0.0, 0.0, false, false, 32);
+        for (int event = 2; event <= 64; ++event)
+            processor.setTargets(0.0, event % 2 == 0 ? 0.1 : 0.0, 0.0, false, false, event * 32);
+        processor.processAllBands(data.data);
+        // H's first coefficient is at host time 1; the initial 0 -> 1 ramp
+        // must still exist even though later events arrived before analysis.
+        expectWithinAbsoluteError(data.mainRe[0][0][0], 1.0 + 1.0 / 960.0, 1.0e-12);
+    }
+
     // -----------------------------------------------------------------------
     // Test 1: Passthrough
     // -----------------------------------------------------------------------
@@ -177,7 +283,7 @@ private:
 
         MorphBandProcessor proc;
         proc.prepare (44100.0, 64, 3, 2);
-        proc.setTargets (0.0, 0.0, 0.001, false, false);
+        proc.setTargets (0.0, 0.0, 0.001, false, false, 0);
         proc.processAllBands (sb.data);
 
         constexpr double tol = 1e-10;
@@ -241,7 +347,7 @@ private:
 
         MorphBandProcessor proc;
         proc.prepare (44100.0, 32, 2, 2);
-        proc.setTargets (1.0, 0.0, 0.001, false, false);
+        proc.setTargets (1.0, 0.0, 0.001, false, false, 0);
         proc.processAllBands (sb.data);
 
         // SmoothedValue ramps over 20 ms = ~882 samples at 44100 Hz
@@ -274,7 +380,7 @@ private:
 
         MorphBandProcessor proc2;
         proc2.prepare (44100.0, 1024, 1, 1);
-        proc2.setTargets (1.0, 0.0, 0.001, false, false);
+        proc2.setTargets (1.0, 0.0, 0.001, false, false, 0);
         proc2.processAllBands (sb2.data);
 
         // After 1024 samples with 20ms ramp at 44100 Hz (~882 samples ramp):
@@ -310,7 +416,7 @@ private:
 
         MorphBandProcessor proc;
         proc.prepare (44100.0, 1024, 1, 1);
-        proc.setTargets (0.0, 1.0, 0.001, false, false);
+        proc.setTargets (0.0, 1.0, 0.001, false, false, 0);
         proc.processAllBands (sb.data);
 
         // Check last 100 samples (after SmoothedValue settles ~882 samples)
@@ -347,7 +453,7 @@ private:
 
         MorphBandProcessor proc;
         proc.prepare (44100.0, 1024, 1, 1);
-        proc.setTargets (0.0, 1.0, 0.5, false, false); // threshold = 0.5, sc << threshold
+        proc.setTargets (0.0, 1.0, 0.5, false, false, 0); // threshold = 0.5, sc << threshold
         proc.processAllBands (sb.data);
 
         // In the settled region, effective phase ratio is tiny because scMag << threshold.
@@ -385,7 +491,7 @@ private:
 
         MorphBandProcessor proc;
         proc.prepare (44100.0, 64, 2, 1);
-        proc.setTargets (1.0, 1.0, 0.001, /*bypassLow=*/true, /*bypassHigh=*/false);
+        proc.setTargets (1.0, 1.0, 0.001, /*bypassLow=*/true, /*bypassHigh=*/false, 0);
         proc.processAllBands (sb.data);
 
         // Band 0 (low, bypassed) must be identical to original
@@ -419,10 +525,10 @@ private:
     // -----------------------------------------------------------------------
     void testBypassHigh()
     {
-        // Band 0: nodeId=127 (binary 01111111 → all bits set → isHighBand → bypassed)
+        // Band 0: nodeId=96 (binary 1100000 → HLLLLL → highest frequency → bypassed)
         // Band 1: nodeId=5   (not high → processed)
         SynthBandData sb;
-        sb.init (1, 2, 64, {127, 5});
+        sb.init (1, 2, 64, {96, 5});
         sb.fillMainSine (0.5);
         sb.fillScSine (0.8, 0.3);
 
@@ -431,7 +537,7 @@ private:
 
         MorphBandProcessor proc;
         proc.prepare (44100.0, 64, 2, 1);
-        proc.setTargets (1.0, 1.0, 0.001, /*bypassLow=*/false, /*bypassHigh=*/true);
+        proc.setTargets (1.0, 1.0, 0.001, /*bypassLow=*/false, /*bypassHigh=*/true, 0);
         proc.processAllBands (sb.data);
 
         constexpr double tol = 1e-15;
@@ -445,55 +551,35 @@ private:
     }
 
     // -----------------------------------------------------------------------
-    // Test 7: SmoothedValue ramp
+    // Test 7: Ramp
     // -----------------------------------------------------------------------
     void testSmoothedValueRamp()
     {
-        // Start with target 0.0 (prepared + snap), then set target 1.0.
-        // Process 128 samples. The first few samples should NOT be at mag=1.0.
+        // Start with magnitude 0.0 (prepared + snapped), then request 1.0 at the
+        // start of the stream. One band at level 2 (4 host samples per subband
+        // sample): sample s sits at tau = (s + 0.5) * 4 host samples, and the
+        // linear 20 ms ramp (882 host samples at 44100 Hz) has the value tau / 882.
+        constexpr int n = 128;
         SynthBandData sb;
-        sb.init (1, 1, 128, {5});
-        sb.fillMainSine (0.5);
-        sb.fillScSine (0.5, 0.2);
+        sb.init (1, 1, n, {5});
+        sb.fillConstant (kMainAmp, kScAmp);
 
         MorphBandProcessor proc;
-        proc.prepare (44100.0, 128, 1, 1);
-        // After prepare(), SmoothedValues are snapped to 0.0 (initial target).
-        // Now set target to 1.0 and process one block.
-        proc.setTargets (1.0, 0.0, 0.001, false, false);
+        proc.prepare (44100.0, n, 1, 1);
+        proc.setTargets (1.0, 0.0, 0.001, false, false, 0);
         proc.processAllBands (sb.data);
 
-        // First sample magnitude: the SmoothedValue starts at 0.0 and ramps over ~882 samples.
-        // With 128 samples processed, we should still be well below 1.0.
-        // Check that the first sample's magnitude is closer to main (not sidechain).
-        double firstOutMag  = std::hypot (sb.mainRe[0][0][0], sb.mainIm[0][0][0]);
-        double mainMagFirst = 0.5; // amplitude of fillMainSine (0.5)
-        double scMagFirst   = 0.5; // amplitude of fillScSine (0.5, but different from main)
+        constexpr double rampSamples = 44100.0 * 0.02;
+        constexpr double tol = 1e-9;
+        for (const std::size_t s : { std::size_t { 0 }, std::size_t { 1 }, std::size_t { 64 }, std::size_t { n - 1 } })
+        {
+            const double tau = sampleTime (2, s);
+            expectWithinAbsoluteError (usedMagnitude (sb, 0, 0, s), tau / rampSamples, tol,
+                                       "Magnitude must follow the 20 ms linear ramp at the subband sample's time");
+        }
 
-        // NOTE: with identical main and sidechain amplitudes, outMag = lerp(0.5, 0.5, t) = 0.5
-        // regardless of the SmoothedValue, making the midPoint test meaningless.
-        // We use a larger sidechain amplitude (0.8) in fillScSine to make the test meaningful.
-        // The test block was initialised with fillScSine (0.5, 0.2), but we need different amps.
-        // Re-initialise with a clearly different sidechain amplitude.
-        SynthBandData sb2;
-        sb2.init (1, 1, 128, {5});
-        sb2.fillMainSine (0.5);
-        sb2.fillScSine (0.8, 0.2); // sidechain amplitude = 0.8, noticeably larger than main
-
-        MorphBandProcessor proc2;
-        proc2.prepare (44100.0, 128, 1, 1);
-        proc2.setTargets (1.0, 0.0, 0.001, false, false);
-        proc2.processAllBands (sb2.data);
-
-        firstOutMag  = std::hypot (sb2.mainRe[0][0][0], sb2.mainIm[0][0][0]);
-        mainMagFirst = 0.5; // amplitude of fillMainSine
-        scMagFirst   = 0.8; // amplitude of fillScSine
-
-        // The output mag at sample 0 should be very close to mainMag (smoothed value ~0)
-        // and much less than scMag (smoothed value not yet reached 1.0).
-        double midPoint = (mainMagFirst + scMagFirst) / 2.0; // = 0.65
-        expect (firstOutMag < midPoint,
-                "First sample should not be at full sidechain magnitude (SmoothedValue ramp)");
+        expect (usedMagnitude (sb, 0, 0, 0) < 0.01,
+                "First sample should not be at the full target (ramp, not a step)");
     }
 
     // -----------------------------------------------------------------------
@@ -501,8 +587,8 @@ private:
     // -----------------------------------------------------------------------
     void testReset()
     {
-        // Set a target, call reset(), verify that subsequent processing is at target
-        // (no ramp artifact — output snaps immediately).
+        // Request a target (queued as an event), call reset(), verify that
+        // subsequent processing is at target (no ramp artifact — output snaps immediately).
         SynthBandData sb;
         sb.init (1, 1, 64, {5});
         sb.fillMainSine (0.5);
@@ -510,8 +596,8 @@ private:
 
         MorphBandProcessor proc;
         proc.prepare (44100.0, 64, 1, 1);
-        proc.setTargets (1.0, 0.0, 0.001, false, false);
-        proc.reset(); // snap SmoothedValues to target immediately
+        proc.setTargets (1.0, 0.0, 0.001, false, false, 0);
+        proc.reset(); // snap ramps to the requested targets and drop the pending event
 
         proc.processAllBands (sb.data);
 
@@ -532,6 +618,405 @@ private:
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Time-axis tests (issue #13)
+    //
+    // Band layout of a complete leaf set over one internal block of T = 8k host
+    // samples (k = 8, T = 64):
+    //   node 3 (H)   level 1, 4k samples
+    //   node 5 (LH)  level 2, 2k samples
+    //   node 8 (LLL) level 3,  k samples
+    //   node 9 (LLH) level 3,  k samples
+    // Subband sample s of a band at level L sits at time tau = (s + 0.5) * 2^L.
+    //
+    // Sample rate 1000 Hz makes the 20 ms ramp 20 host samples long, so the
+    // ramp starts and ends inside the block.
+    // -----------------------------------------------------------------------
+    static constexpr int    kK            = 8;
+    static constexpr double kRampSr       = 1000.0;
+    static constexpr double kRampSamples  = 20.0;   // kRampSr * 0.02
+    static constexpr double kMainAmp      = 1.0;
+    static constexpr double kScAmp        = 3.0;
+
+    static std::vector<int> timeBandIds()     { return { 3, 5, 8, 9 }; }
+    static std::vector<int> timeBandLevels()  { return { 1, 2, 3, 3 }; }
+    static std::vector<int> timeBandSamples() { return { 4 * kK, 2 * kK, kK, kK }; }
+
+    // Magnitude ratio the morph used for a sample, recovered from the output.
+    static double usedMagnitude (const SynthBandData& sb, int ch, int b, std::size_t s)
+    {
+        const auto cs = static_cast<std::size_t> (ch);
+        const auto bs = static_cast<std::size_t> (b);
+        const double out = std::hypot (sb.mainRe[cs][bs][s], sb.mainIm[cs][bs][s]);
+        return (out - kMainAmp) / (kScAmp - kMainAmp);
+    }
+
+    static double expectedRamp (double tau) { return std::min (1.0, tau / kRampSamples); }
+
+    static double sampleTime (int level, std::size_t s)
+    {
+        return (static_cast<double> (s) + 0.5) * static_cast<double> (1 << level);
+    }
+
+    // Runs one internal block with the magnitude stepping 0 -> 1.
+    static void runMagnitudeStep (SynthBandData& sb, bool bypassLow, bool bypassHigh)
+    {
+        sb.init (2, timeBandSamples(), timeBandIds());
+        sb.fillConstant (kMainAmp, kScAmp);
+
+        MorphBandProcessor proc;
+        proc.prepare (kRampSr, 4 * kK, 4, 2);
+        proc.setTargets (1.0, 0.0, 0.0, bypassLow, bypassHigh, 0);
+        proc.processAllBands (sb.data);
+    }
+
+    void testRampIsTimeBasedAcrossBands()
+    {
+        SynthBandData sb;
+        runMagnitudeStep (sb, false, false);
+
+        constexpr double tol = 1e-9;
+        const auto levels  = timeBandLevels();
+        const auto samples = timeBandSamples();
+
+        int mismatches = 0;
+        std::vector<std::pair<double, double>> timeline; // (tau, used magnitude), channel 0
+        for (int b = 0; b < 4; ++b)
+        {
+            for (std::size_t s = 0; s < static_cast<std::size_t> (samples[static_cast<std::size_t> (b)]); ++s)
+            {
+                const double tau  = sampleTime (levels[static_cast<std::size_t> (b)], s);
+                const double used = usedMagnitude (sb, 0, b, s);
+                timeline.emplace_back (tau, used);
+                if (std::abs (used - expectedRamp (tau)) > tol)
+                    ++mismatches;
+            }
+        }
+        expectEquals (mismatches, 0,
+                      "Magnitude used for a subband sample must be the ramp value at its time tau");
+
+        // Low bands must not be ahead of high bands: along the time axis the
+        // used magnitude never decreases and never exceeds what time allows.
+        std::sort (timeline.begin(), timeline.end());
+        bool monotonic = true;
+        for (std::size_t i = 1; i < timeline.size(); ++i)
+            if (timeline[i].second < timeline[i - 1].second - tol)
+                monotonic = false;
+        expect (monotonic, "Used magnitude must be non-decreasing in time across all bands");
+    }
+
+    void testRampIsIdenticalAcrossChannels()
+    {
+        SynthBandData sb;
+        runMagnitudeStep (sb, false, false);
+
+        constexpr double tol = 1e-9;
+        const auto samples = timeBandSamples();
+        int mismatches = 0;
+        for (int b = 0; b < 4; ++b)
+            for (std::size_t s = 0; s < static_cast<std::size_t> (samples[static_cast<std::size_t> (b)]); ++s)
+                if (std::abs (usedMagnitude (sb, 1, b, s) - usedMagnitude (sb, 0, b, s)) > tol)
+                    ++mismatches;
+        expectEquals (mismatches, 0, "Channel 1 must use the same ramp value as channel 0");
+
+        // Channel 1 must actually ramp (it used to hold one constant value per band).
+        const double first = usedMagnitude (sb, 1, 0, 0);
+        const double last  = usedMagnitude (sb, 1, 0, 4 * kK - 1);
+        expect (last > first + 0.1, "Channel 1 must ramp within a band");
+    }
+
+    void testBypassDoesNotAffectRampTiming()
+    {
+        constexpr double tol = 1e-9;
+        const auto levels  = timeBandLevels();
+        const auto samples = timeBandSamples();
+
+        // Bands 1 (node 5) and 3 (node 9) are never bypassed.
+        for (const bool bypass : { false, true })
+        {
+            SynthBandData sb;
+            runMagnitudeStep (sb, /*bypassLow=*/bypass, /*bypassHigh=*/bypass);
+
+            int mismatches = 0;
+            for (const int b : { 1, 3 })
+            {
+                for (std::size_t s = 0; s < static_cast<std::size_t> (samples[static_cast<std::size_t> (b)]); ++s)
+                {
+                    const double tau = sampleTime (levels[static_cast<std::size_t> (b)], s);
+                    if (std::abs (usedMagnitude (sb, 0, b, s) - expectedRamp (tau)) > tol)
+                        ++mismatches;
+                }
+            }
+            expectEquals (mismatches, 0,
+                          bypass ? "Ramp timing must not change when bypassLow/bypassHigh skip bands"
+                                 : "Ramp timing without bypass must follow the time axis");
+        }
+    }
+
+    void testRampDurationIsHostTime()
+    {
+        SynthBandData sb;
+        runMagnitudeStep (sb, false, false);
+
+        constexpr double tol = 1e-9;
+        const auto levels  = timeBandLevels();
+        const auto samples = timeBandSamples();
+
+        // Every sample whose time is at or after 20 ms of host samples must be
+        // at the full target.
+        int notFinished = 0;
+        int checked = 0;
+        for (int b = 0; b < 4; ++b)
+        {
+            for (std::size_t s = 0; s < static_cast<std::size_t> (samples[static_cast<std::size_t> (b)]); ++s)
+            {
+                if (sampleTime (levels[static_cast<std::size_t> (b)], s) < kRampSamples)
+                    continue;
+                ++checked;
+                if (std::abs (usedMagnitude (sb, 0, b, s) - 1.0) > tol)
+                    ++notFinished;
+            }
+        }
+        expect (checked > 0, "Test block must extend past the end of the ramp");
+        expectEquals (notFinished, 0, "Ramp must be complete after sampleRate * 0.02 host samples");
+    }
+
+    // Prepared processor with the bands of the time-axis tests, 1 channel.
+    // Leaf set {2, 3}: two level-1 bands of 32 samples, T = 64.
+    struct TwoBandBlock
+    {
+        SynthBandData sb;
+
+        TwoBandBlock()
+        {
+            sb.init (1, std::vector<int> { 4 * kK, 4 * kK }, { 2, 3 });
+            sb.fillConstant (kMainAmp, kScAmp);
+        }
+
+        void reset() { sb.fillConstant (kMainAmp, kScAmp); }
+    };
+
+    static constexpr std::int64_t kTwoBandLength = 8 * kK; // 64 host samples
+
+    static void prepareTwoBand (MorphBandProcessor& proc)
+    {
+        proc.prepare (kRampSr, 4 * kK, 2, 1);
+    }
+
+    void testTimedLinearRamp()
+    {
+        constexpr double tol = 1e-12;
+        TimedLinearRamp ramp;
+        ramp.setCurrentAndTarget (2.0);
+        expectWithinAbsoluteError (ramp.value (123.0), 2.0, tol, "Snapped ramp holds its value");
+        expect (! ramp.isRamping(), "Snapped ramp is not ramping");
+
+        ramp.retarget (4.0, 10.0);
+        expectWithinAbsoluteError (ramp.value (0.0),  2.0, tol, "Ramp starts at the old value");
+        expectWithinAbsoluteError (ramp.value (5.0),  3.0, tol, "Ramp is linear");
+        expectWithinAbsoluteError (ramp.value (10.0), 4.0, tol, "Ramp ends at the target");
+        expectWithinAbsoluteError (ramp.value (99.0), 4.0, tol, "Ramp holds the target afterwards");
+
+        ramp.advance (5.0);
+        expectWithinAbsoluteError (ramp.value (0.0), 3.0, tol, "advance() moves the origin");
+        expectWithinAbsoluteError (ramp.value (2.5), 3.5, tol, "Ramp continues after advance()");
+
+        // Retarget mid-ramp: new ramp starts from the current value with the full length.
+        ramp.retarget (0.0, 10.0);
+        expectWithinAbsoluteError (ramp.value (0.0), 3.0, tol, "Retarget starts from the current value");
+        expectWithinAbsoluteError (ramp.value (5.0), 1.5, tol, "Retarget ramps over the full length");
+
+        // Re-requesting the same target must not stretch the ramp.
+        ramp.advance (5.0);
+        ramp.retarget (0.0, 10.0);
+        expectWithinAbsoluteError (ramp.value (0.0), 1.5, tol, "Same target is a no-op");
+        expectWithinAbsoluteError (ramp.value (5.0), 0.0, tol, "Same target keeps the remaining time");
+
+        ramp.advance (1000.0);
+        expect (! ramp.isRamping(), "Ramp finished");
+
+        ramp.retarget (7.0, 0.0);
+        expectWithinAbsoluteError (ramp.value (0.0), 7.0, tol, "Zero-length ramp snaps");
+    }
+
+    void testEventStartsRampAtStreamPosition()
+    {
+        TwoBandBlock blk;
+        MorphBandProcessor proc;
+        prepareTwoBand (proc);
+        proc.setTargets (1.0, 0.0, 0.0, false, false, 24);
+        proc.processAllBands (blk.sb.data);
+
+        constexpr double tol = 1e-9;
+        int mismatches = 0;
+        for (int b = 0; b < 2; ++b)
+            for (std::size_t s = 0; s < 4 * kK; ++s)
+            {
+                const double tau = sampleTime (1, s);
+                const double expected = std::clamp ((tau - 24.0) / kRampSamples, 0.0, 1.0);
+                if (std::abs (usedMagnitude (blk.sb, 0, b, s) - expected) > tol)
+                    ++mismatches;
+            }
+        expectEquals (mismatches, 0, "Ramp must start at the event's position inside the block");
+    }
+
+    void testRampContinuesAcrossBlocks()
+    {
+        TwoBandBlock blk;
+        MorphBandProcessor proc;
+        prepareTwoBand (proc);
+        proc.setTargets (1.0, 0.0, 0.0, false, false, 60); // 4 host samples before the block end
+        proc.processAllBands (blk.sb.data);
+
+        constexpr double tol = 1e-9;
+        // Last sample of block 0: tau = 63, 3 samples into the ramp
+        expectWithinAbsoluteError (usedMagnitude (blk.sb, 0, 0, 4 * kK - 1), 3.0 / kRampSamples, tol,
+                                   "Ramp is already running at the end of the first block");
+
+        blk.reset();
+        proc.processAllBands (blk.sb.data);
+        // Second block: tau' = 1 is 4 + 1 = 5 samples into the ramp
+        expectWithinAbsoluteError (usedMagnitude (blk.sb, 0, 0, 0), 5.0 / kRampSamples, tol,
+                                   "Ramp continues into the next block");
+        expectWithinAbsoluteError (usedMagnitude (blk.sb, 0, 0, 4 * kK - 1), 1.0, tol,
+                                   "Ramp completes in the next block");
+    }
+
+    void testIntermediateTargetsAreKept()
+    {
+        // Several host blocks (8 samples each) fall into one internal block; every
+        // setTargets() call is queued, none is lost.
+        TwoBandBlock blk;
+        MorphBandProcessor proc;
+        prepareTwoBand (proc);
+        proc.setTargets (1.0, 0.0, 0.0, false, false, 8);
+        proc.setTargets (0.0, 0.0, 0.0, false, false, 16);
+        proc.processAllBands (blk.sb.data);
+
+        constexpr double tol = 1e-9;
+        int mismatches = 0;
+        for (std::size_t s = 0; s < 4 * kK; ++s)
+        {
+            const double tau = sampleTime (1, s);
+            double expected = 0.0;
+            if (tau >= 16.0)
+                expected = std::max (0.0, 0.4 * (1.0 - (tau - 16.0) / kRampSamples));
+            else if (tau >= 8.0)
+                expected = (tau - 8.0) / kRampSamples;
+            if (std::abs (usedMagnitude (blk.sb, 0, 0, s) - expected) > tol)
+                ++mismatches;
+        }
+        expectEquals (mismatches, 0, "Ramp up to 0.4 at 16, then back down to 0");
+        expect (usedMagnitude (blk.sb, 0, 0, 7) > 0.3, "The first event's ramp must be visible");
+    }
+
+    void testDeferredAndStaleEvents()
+    {
+        constexpr double tol = 1e-9;
+        TwoBandBlock blk;
+        MorphBandProcessor proc;
+        prepareTwoBand (proc);
+
+        // Event at position 74 belongs to the second block (tau' = 10)
+        proc.setTargets (1.0, 0.0, 0.0, false, false, kTwoBandLength + 10);
+        proc.processAllBands (blk.sb.data);
+        expectWithinAbsoluteError (usedMagnitude (blk.sb, 0, 0, 4 * kK - 1), 0.0, tol,
+                                   "Event beyond the block must not affect it");
+
+        blk.reset();
+        proc.processAllBands (blk.sb.data);
+        expectWithinAbsoluteError (usedMagnitude (blk.sb, 0, 0, 10), (sampleTime (1, 10) - 10.0) / kRampSamples, tol,
+                                   "Deferred event applies at its position in the later block");
+
+        // A request positioned before the current block applies from the block start.
+        blk.reset();
+        proc.setTargets (0.0, 0.0, 0.0, false, false, 5);
+        proc.processAllBands (blk.sb.data);
+        // Ramp was complete at 1.0; the stale request ramps 1 -> 0 from tau = 0
+        expectWithinAbsoluteError (usedMagnitude (blk.sb, 0, 0, 0), 1.0 - 1.0 / kRampSamples, tol,
+                                   "Stale event applies at the block start");
+    }
+
+    void testEventQueueOverflow()
+    {
+        // One big block: two level-1 bands of 512 samples, T = 1024.
+        constexpr int n = 512;
+        SynthBandData sb;
+        sb.init (1, std::vector<int> { n, n }, { 2, 3 });
+        sb.fillConstant (kMainAmp, kScAmp);
+
+        MorphBandProcessor proc;
+        proc.prepare (kRampSr, n, 2, 1);
+
+        // All 100 events occur inside this 1024-host-sample block. None may
+        // be discarded before its corresponding subband sample is processed.
+        for (int i = 1; i <= 100; ++i)
+            proc.setTargets (static_cast<double> (i) / 100.0, 0.0, 0.0, false, false, 8 * i);
+        proc.processAllBands (sb.data);
+
+        constexpr double tol = 1e-9;
+        expectWithinAbsoluteError (usedMagnitude (sb, 0, 0, 4), 0.01 / kRampSamples, tol,
+                                   "The first request starts its ramp at host position 8");
+        expectWithinAbsoluteError (usedMagnitude (sb, 0, 0, n - 1), 1.0, tol,
+                                   "The latest request must also be applied");
+    }
+
+    void testNoSidechainAdvancesTimeline()
+    {
+        constexpr double tol = 1e-9;
+        TwoBandBlock blk;
+        MorphBandProcessor proc;
+        prepareTwoBand (proc);
+        proc.setTargets (1.0, 0.0, 0.0, false, false, 0);
+
+        blk.sb.data.hasSidechain = false;
+        proc.processAllBands (blk.sb.data);
+        expectWithinAbsoluteError (blk.sb.mainRe[0][0][3], kMainAmp, tol,
+                                   "Without sidechain the samples stay untouched");
+
+        blk.sb.data.hasSidechain = true;
+        proc.processAllBands (blk.sb.data);
+        expectWithinAbsoluteError (usedMagnitude (blk.sb, 0, 0, 0), 1.0, tol,
+                                   "The ramp ran during the block without sidechain");
+    }
+
+    void testResetRestartsTimeline()
+    {
+        constexpr double tol = 1e-9;
+        TwoBandBlock blk;
+        MorphBandProcessor proc;
+        prepareTwoBand (proc);
+        proc.processAllBands (blk.sb.data);
+        proc.processAllBands (blk.sb.data);   // timeline is now at 128
+
+        proc.reset();                          // engine restarts: stream position 0 again
+        blk.reset();
+        proc.setTargets (1.0, 0.0, 0.0, false, false, 24);
+        proc.processAllBands (blk.sb.data);
+        expectWithinAbsoluteError (usedMagnitude (blk.sb, 0, 0, 20), (sampleTime (1, 20) - 24.0) / kRampSamples, tol,
+                                   "After reset() positions count from the new stream start");
+    }
+
+    void testBypassSwitchesAtEventTime()
+    {
+        constexpr double tol = 1e-9;
+        TwoBandBlock blk;
+        MorphBandProcessor proc;
+        prepareTwoBand (proc);
+        proc.setTargets (1.0, 0.0, 0.0, false, false, 0);
+        proc.processAllBands (blk.sb.data);   // settle the ramp
+        blk.reset();
+
+        // bypassLow turns on at 32: band 0 (node 2, the low band) passes through from then on
+        proc.setTargets (1.0, 0.0, 0.0, true, false, kTwoBandLength + 32);
+        proc.processAllBands (blk.sb.data);
+
+        // Level-1 sample s is at tau' = 2s + 1; bypass starts at tau' = 32 -> s >= 16
+        expectWithinAbsoluteError (blk.sb.mainRe[0][0][15], kScAmp, tol, "Before the event the low band is morphed");
+        expectWithinAbsoluteError (blk.sb.mainRe[0][0][16], kMainAmp, tol, "From the event on the low band passes through");
+        expectWithinAbsoluteError (blk.sb.mainRe[0][1][16], kScAmp, tol, "The high band stays morphed");
+    }
+
     void testThresholdBoundaryPreservesPhaseReplacement()
     {
         SynthBandData sb;
@@ -547,7 +1032,7 @@ private:
 
         MorphBandProcessor proc;
         proc.prepare (44100.0, 1024, 1, 1);
-        proc.setTargets (0.0, 1.0, 0.5, false, false);
+        proc.setTargets (0.0, 1.0, 0.5, false, false, 0);
         proc.processAllBands (sb.data);
 
         constexpr double tol = 1.0e-5;
@@ -560,6 +1045,306 @@ private:
                                        "Threshold equality should preserve the main magnitude");
             expectWithinAbsoluteError (outPhase, PI / 2.0, tol,
                                        "Threshold equality should not attenuate sidechain phase replacement");
+        }
+    }
+    static constexpr std::size_t kSettle = 1000;
+
+    static std::vector<double> measurePhaseRatio (const std::vector<double>& scAmp,
+                                                  double threshold)
+    {
+        const auto n = scAmp.size();
+
+        SynthBandData sb;
+        sb.init (1, 1, static_cast<int> (n), {5});
+        for (std::size_t s = 0; s < n; ++s)
+        {
+            sb.mainRe[0][0][s] = 1.0;
+            sb.mainIm[0][0][s] = 0.0;
+            sb.scRe[0][0][s]   = 0.0;
+            sb.scIm[0][0][s]   = scAmp[s];
+        }
+
+        MorphBandProcessor proc;
+        proc.prepare (44100.0, static_cast<int> (n), 1, 1);
+        proc.setTargets (0.0, 1.0, threshold, false, false, 0);
+        proc.processAllBands (sb.data);
+
+        std::vector<double> k (n, 0.0);
+        for (std::size_t s = 0; s < n; ++s)
+        {
+            const double phi = std::atan2 (sb.mainIm[0][0][s], sb.mainRe[0][0][s]);
+            k[s] = std::sin (phi) / (std::sin (phi) + std::cos (phi));
+        }
+        return k;
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 10: Continuity at the threshold
+    // -----------------------------------------------------------------------
+    void testThresholdGateContinuity()
+    {
+        constexpr double thr = 0.5;
+        constexpr double eps = 1.0e-6;
+        constexpr std::size_t n = kSettle + 100;
+
+        const auto kBelow = measurePhaseRatio (std::vector<double> (n, thr * (1.0 - eps)), thr);
+        const auto kAbove = measurePhaseRatio (std::vector<double> (n, thr * (1.0 + eps)), thr);
+
+        const double below = kBelow[n - 1];
+        const double above = kAbove[n - 1];
+
+        // Just above the threshold the gate is open: full phase replacement.
+        expectWithinAbsoluteError (above, 1.0, 1.0e-5,
+                                   "Just above the threshold the phase ratio should be 1");
+
+        // The ratio must not jump when crossing the threshold.
+        expectWithinAbsoluteError (below, above, 1.0e-3,
+                                   "Phase ratio should be continuous across the threshold");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 11: Monotonic in the sidechain magnitude, 0 .. 1.25 * threshold
+    // -----------------------------------------------------------------------
+    void testThresholdGateMonotonic()
+    {
+        constexpr double thr = 0.5;
+        constexpr std::size_t sweepLen = 256;
+        constexpr std::size_t n = kSettle + sweepLen + 1;
+
+        std::vector<double> scAmp (n, thr);
+        for (std::size_t i = 0; i <= sweepLen; ++i)
+            scAmp[kSettle + i] = 1.25 * thr * static_cast<double> (i) / static_cast<double> (sweepLen);
+        scAmp[kSettle] = 1.0e-9; // avoid an exactly zero sidechain vector
+
+        const auto k = measurePhaseRatio (scAmp, thr);
+
+        bool monotonic = true;
+        bool saturated = true;
+        double maxStep = 0.0;
+        for (std::size_t i = 1; i <= sweepLen; ++i)
+        {
+            const std::size_t s = kSettle + i;
+            if (k[s] < k[s - 1] - 1.0e-9)
+                monotonic = false;
+            maxStep = std::max (maxStep, std::abs (k[s] - k[s - 1]));
+            if (scAmp[s] >= thr && std::abs (k[s] - 1.0) > 1.0e-5)
+                saturated = false;
+        }
+
+        expect (monotonic, "Phase ratio should be non-decreasing as the sidechain magnitude grows");
+        // One sweep step changes scMag / thr by 1.25 / 256 (about 0.005), so a
+        // continuous coefficient moves by a comparable amount per step.
+        expect (maxStep < 0.02, "Phase ratio should not jump between adjacent sweep points");
+        expect (saturated, "Phase ratio should be 1 once the sidechain magnitude reaches the threshold");
+        expect (k[kSettle] < 1.0e-3, "Phase ratio should be about 0 for a vanishing sidechain");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 12: threshold <= 0 means no attenuation
+    // -----------------------------------------------------------------------
+    void testNonPositiveThresholdDisablesGate()
+    {
+        constexpr std::size_t n = kSettle + 100;
+        const auto k = measurePhaseRatio (std::vector<double> (n, 1.0e-4), 0.0);
+        expectWithinAbsoluteError (k[n - 1], 1.0, 1.0e-5,
+                                   "With threshold 0 even a weak sidechain should replace the phase fully");
+    }
+    struct PolarResult { double re, im, lerpLength; };
+
+    static PolarResult polarReference (double mainRe, double mainIm,
+                                       double scRe, double scIm,
+                                       double mag, double ph, double thr)
+    {
+        const double mainM = std::sqrt (mainRe * mainRe + mainIm * mainIm);
+        const double mainP = std::atan2 (mainIm, mainRe);
+        const double scM   = std::sqrt (scRe * scRe + scIm * scIm);
+        const double scP   = std::atan2 (scIm, scRe);
+
+        const double outMag = mainM + mag * (scM - mainM);
+
+        double effPhase = ph;
+        if (scM < thr && thr > 0.0)
+        {
+            effPhase *= (scM / thr);
+            effPhase  = std::clamp (effPhase, 0.0, ph);
+        }
+
+        const double rx = std::cos (mainP);
+        const double ry = std::sin (mainP);
+        const double sx = std::cos (scP);
+        const double sy = std::sin (scP);
+        const double lx = rx + effPhase * (sx - rx);
+        const double ly = ry + effPhase * (sy - ry);
+        const double outPhase = std::atan2 (ly, lx);
+
+        return { outMag * std::cos (outPhase), outMag * std::sin (outPhase),
+                 std::hypot (lx, ly) };
+    }
+
+    // Runs MorphBandProcessor on one band of samples with fixed (non-ramping)
+    // parameters and compares every output with polarReference().
+    // Returns the number of samples whose error exceeds 1e-12 relative to the
+    // output magnitude, and the largest relative error seen.
+    //
+    // The direction of the interpolated vector is ill-conditioned when the two
+    // unit vectors nearly cancel: a rounding error of 1e-16 in either
+    // implementation moves the direction by about 1e-16 / |lerp|. The tolerance
+    // is therefore 1e-12 for |lerp| >= 1e-3 and grows as 1e-3 / |lerp| below
+    // that. Samples whose vector cancels to (almost) zero are skipped: their
+    // direction is rounding noise in the reference and is pinned down by test 11.
+    std::pair<int, double> compareWithReference (const std::vector<double>& mainRe,
+                                                 const std::vector<double>& mainIm,
+                                                 const std::vector<double>& scRe,
+                                                 const std::vector<double>& scIm,
+                                                 double mag, double ph, double thr)
+    {
+        const auto n = mainRe.size();
+        SynthBandData sb;
+        sb.init (1, 1, static_cast<int> (n), {5});
+        sb.mainRe[0][0] = mainRe;  sb.mainIm[0][0] = mainIm;
+        sb.scRe[0][0]   = scRe;    sb.scIm[0][0]   = scIm;
+
+        MorphBandProcessor proc;
+        proc.prepare (48000.0, static_cast<int> (n), 1, 1);
+        proc.setTargets (mag, ph, thr, false, false, 0);
+        proc.reset();   // snap the smoothers to the targets: constant parameters
+        proc.processAllBands (sb.data);
+
+        int bad = 0;
+        double worst = 0.0;
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            const auto ref = polarReference (mainRe[i], mainIm[i], scRe[i], scIm[i], mag, ph, thr);
+            if (ref.lerpLength < 1.0e-9)
+                continue;
+            const double refMag = std::hypot (ref.re, ref.im);
+            const double err = std::hypot (sb.mainRe[0][0][i] - ref.re,
+                                           sb.mainIm[0][0][i] - ref.im);
+            const double rel = refMag > 0.0 ? err / refMag : err;
+            worst = std::max (worst, rel);
+            const double tolerance = 1.0e-12 * std::max (1.0, 1.0e-3 / ref.lerpLength);
+            if (! (rel <= tolerance))
+                ++bad;
+        }
+        return { bad, worst };
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 10: Equivalence with the polar implementation
+    // -----------------------------------------------------------------------
+    void testMatchesPolarReference()
+    {
+        std::mt19937 rng (TestUtils::TestConfig::RANDOM_SEED);
+        std::uniform_real_distribution<double> unit (-1.0, 1.0);
+        std::uniform_real_distribution<double> exponent (-6.0, 1.0);
+
+        constexpr std::size_t n = 512;
+        std::vector<double> mRe (n), mIm (n), sRe (n), sIm (n);
+        auto fill = [&] (std::vector<double>& re, std::vector<double>& im)
+        {
+            for (std::size_t i = 0; i < n; ++i)
+            {
+                const double scale = std::pow (10.0, exponent (rng));
+                re[i] = scale * unit (rng);
+                im[i] = scale * unit (rng);
+            }
+        };
+
+        int totalBad = 0;
+        double worst = 0.0;
+        for (double mag : { 0.0, 0.25, 0.5, 1.0 })
+            for (double ph : { 0.0, 0.3, 0.5, 0.8, 1.0 })
+                for (double thr : { 0.0, 0.01, 0.5, 5.0 })
+                {
+                    fill (mRe, mIm);
+                    fill (sRe, sIm);
+                    const auto r = compareWithReference (mRe, mIm, sRe, sIm, mag, ph, thr);
+                    totalBad += r.first;
+                    worst = std::max (worst, r.second);
+                }
+        expectEquals (totalBad, 0, "Random data: samples differing from the polar reference by more than 1e-12 (worst relative error "
+                                       + juce::String (worst) + ")");
+
+        // Boundary cases: axes, negative real axis, zeros, equal and opposite-ish
+        // vectors, and tiny magnitudes.
+        const std::vector<std::pair<double, double>> points = {
+            { 0.0, 0.0 }, { 1.0, 0.0 }, { 0.0, 1.0 }, { -1.0, 0.0 }, { 0.0, -1.0 },
+            { 1.0, 1.0 }, { -1.0, 1.0 }, { 1.0, -1.0 }, { -1.0, -1.0 },
+            { 3.0, 4.0 }, { 1.0e-100, -2.0e-100 }, { 1.0e-9, 0.0 }, { 1.0e6, -1.0e6 },
+            { -1.0, 1.0e-10 }, { -1.0, -1.0e-10 }
+        };
+        std::vector<double> bmRe, bmIm, bsRe, bsIm;
+        for (const auto& a : points)
+            for (const auto& b : points)
+            {
+                bmRe.push_back (a.first);  bmIm.push_back (a.second);
+                bsRe.push_back (b.first);  bsIm.push_back (b.second);
+            }
+
+        int boundaryBad = 0;
+        for (double mag : { 0.0, 0.5, 1.0 })
+            for (double ph : { 0.0, 0.3, 0.7, 1.0 })
+                for (double thr : { 0.0, 0.5, 10.0 })
+                {
+                    auto r = compareWithReference (bmRe, bmIm, bsRe, bsIm, mag, ph, thr);
+                    boundaryBad += r.first;
+                }
+        expectEquals (boundaryBad, 0,
+                      "Boundary cases: samples differing from the polar reference by more than 1e-12");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 11: |c| = 0 handling
+    // -----------------------------------------------------------------------
+    void testZeroLengthVectorsUseUnitX()
+    {
+        // Main (2, 0) vs sidechain (-3, 0), phase 0.5: the interpolated unit
+        // vector is exactly (0, 0). It is defined as (1, 0), so the output keeps
+        // the interpolated magnitude on the real axis.
+        {
+            SynthBandData sb;
+            sb.init (1, 1, 1, {5});
+            sb.mainRe[0][0][0] = 2.0;  sb.mainIm[0][0][0] = 0.0;
+            sb.scRe[0][0][0]   = -3.0; sb.scIm[0][0][0]   = 0.0;
+
+            MorphBandProcessor proc;
+            proc.prepare (48000.0, 1, 1, 1);
+            proc.setTargets (0.0, 0.5, 0.0, false, false, 0);
+            proc.reset();
+            proc.processAllBands (sb.data);
+
+            expectWithinAbsoluteError (sb.mainRe[0][0][0], 2.0, 1.0e-12,
+                                       "Cancelling lerp: output must lie on the real axis with the main magnitude");
+            expectWithinAbsoluteError (sb.mainIm[0][0][0], 0.0, 1.0e-12,
+                                       "Cancelling lerp: no imaginary component");
+        }
+
+        // Zero main / zero sidechain samples.
+        {
+            SynthBandData sb;
+            sb.init (1, 1, 3, {5});
+            // sample 0: main zero, sc non-zero -> direction of a zero vector is (1, 0)
+            sb.mainRe[0][0][0] = 0.0;  sb.mainIm[0][0][0] = 0.0;
+            sb.scRe[0][0][0]   = 0.0;  sb.scIm[0][0][0]   = 4.0;
+            // sample 1: main non-zero, sc zero
+            sb.mainRe[0][0][1] = 0.0;  sb.mainIm[0][0][1] = 3.0;
+            sb.scRe[0][0][1]   = 0.0;  sb.scIm[0][0][1]   = 0.0;
+            // sample 2: both zero
+            sb.mainRe[0][0][2] = 0.0;  sb.mainIm[0][0][2] = 0.0;
+            sb.scRe[0][0][2]   = 0.0;  sb.scIm[0][0][2]   = 0.0;
+
+            MorphBandProcessor proc;
+            proc.prepare (48000.0, 3, 1, 1);
+            proc.setTargets (1.0, 0.0, 0.0, false, false, 0);   // magnitude from sc, phase from main
+            proc.reset();
+            proc.processAllBands (sb.data);
+
+            expectWithinAbsoluteError (sb.mainRe[0][0][0], 4.0, 1.0e-12, "Zero main phase is 0: Re = scMag");
+            expectWithinAbsoluteError (sb.mainIm[0][0][0], 0.0, 1.0e-12, "Zero main phase is 0: Im = 0");
+            expectWithinAbsoluteError (sb.mainRe[0][0][1], 0.0, 1.0e-12, "Zero sidechain magnitude: Re = 0");
+            expectWithinAbsoluteError (sb.mainIm[0][0][1], 0.0, 1.0e-12, "Zero sidechain magnitude: Im = 0");
+            expectWithinAbsoluteError (sb.mainRe[0][0][2], 0.0, 1.0e-12, "Both zero: Re = 0");
+            expectWithinAbsoluteError (sb.mainIm[0][0][2], 0.0, 1.0e-12, "Both zero: Im = 0");
         }
     }
 };

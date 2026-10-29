@@ -1,5 +1,7 @@
 #include "GateGuiFrequencyMapping.h"
 
+#include <dtcwpt/dtcwpt_frequency_mapping.h>
+
 #include <algorithm>
 #include <cmath>
 
@@ -22,19 +24,41 @@ namespace gate_gui
 
     std::pair<float, float> getBandFrequencyRange (const std::string& path, float nyquist) noexcept
     {
-        float lo = 0.0f;
-        float hi = nyquist > 0.0f ? nyquist : sanitizeSampleRateAndNyquist (0.0f).nyquist;
+        const float safeNyquist = nyquist > 0.0f ? nyquist : sanitizeSampleRateAndNyquist (0.0f).nyquist;
 
-        for (const char ch : path)
+        // Path strings are in Gray-code frequency order; the engine owns that mapping.
+        const auto range = dtcwpt::getNormalizedFrequencyRange (path);
+        return std::pair<float, float> { static_cast<float> (range.lo) * safeNyquist,
+                                         static_cast<float> (range.hi) * safeNyquist };
+    }
+
+    int countThresholdPointsBelow (float nyquist) noexcept
+    {
+        const float displayNyquist = makeFrequencyMapping (nyquist).displayNyquist;
+
+        int count = 0;
+        for (const auto& point : gate_threshold::kPoints)
+            if (point.frequencyHz <= static_cast<double> (displayNyquist))
+                ++count;
+
+        return std::max (count, 1);
+    }
+
+    int findNearestThresholdPoint (float frequencyHz, float nyquist) noexcept
+    {
+        const int numPoints = countThresholdPointsBelow (nyquist);
+        const auto& logs = gate_threshold::getLogFrequencies();
+        const double logFrequency = std::log10 (std::max (static_cast<double> (frequencyHz), gate_threshold::kMinFrequencyHz));
+
+        int nearest = 0;
+        for (int k = 1; k < numPoints; ++k)
         {
-            const float mid = (lo + hi) * 0.5f;
-            if (ch == 'L')
-                hi = mid;
-            else
-                lo = mid;
+            if (std::abs (logs[static_cast<std::size_t> (k)] - logFrequency)
+                < std::abs (logs[static_cast<std::size_t> (nearest)] - logFrequency))
+                nearest = k;
         }
 
-        return std::pair<float, float> { lo, hi };
+        return nearest;
     }
 
     std::vector<FrequencyRange> buildFrequencyRangesForTopology (const std::vector<std::string>& destinations,

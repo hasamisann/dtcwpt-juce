@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -33,12 +34,16 @@ struct BandData {
     /// Empty vector if no sidechain is active.
     std::vector<std::vector<ChannelBandView>> sidechainBands;
 
-    int numChannels;        ///< Number of audio channels
-    int numBands;           ///< Number of destination bands
-    bool hasSidechain;      ///< True if sidechain data is available
+    /// Actual input interval represented by this callback (zero length for legacy synthetic views).
+    std::uint64_t inputStartSample = 0;
+    std::size_t numInputSamples = 0;
+
+    int numChannels = 0;        ///< Number of audio channels
+    int numBands = 0;           ///< Number of destination bands
+    bool hasSidechain = false;      ///< True if sidechain data is available
 
     /// Destination node IDs in band order (for topology-aware processing)
-    const std::vector<int>* destinationIds;
+    const std::vector<int>* destinationIds = nullptr;
 };
 
 /**

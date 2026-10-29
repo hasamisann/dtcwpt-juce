@@ -7,12 +7,14 @@
 #include "dtcwpt_topology_limits.h"
 #include "dtcwpt_topology_planner.h"
 #include "dtcwpt_band_processor.h"
+#include "dtcwpt_frequency_mapping.h"
 #include "dtcwpt_filter_structs.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -38,6 +40,16 @@ struct AnalysisNodeGroup {
 struct SynthesisNodeGroup {
     std::vector<SynthesisNode> nodes; ///< Nodes in order corresponding to ids
     std::vector<int> ids;             ///< Node IDs corresponding to nodes
+};
+
+/**
+ * @brief Static description of one synthesis node for tick-by-tick scheduling.
+ */
+struct SynthesisTickPlan {
+    size_t nodeIndex = 0;     ///< Index into SynthesisNodeGroup::nodes
+    int nodeId = 0;           ///< Node ID (children are 2*nodeId and 2*nodeId+1)
+    bool lowIsLeaf = false;   ///< Low child is a destination band (otherwise another synthesis node)
+    bool highIsLeaf = false;  ///< High child is a destination band
 };
 
 /**
@@ -69,9 +81,34 @@ public:
     void prepareToPlay(double sampleRate, int maxBlockSize,
                        const TopologyConfig& config, int channelNum);
 
-    void processBlock(juce::AudioBuffer<double>& buffer);
+    /**
+     * @brief Processes one host block in place.
+     *
+     * The engine is streaming: every input sample is analysed as it arrives, the
+     * BandProcessor is invoked once per call with the subband samples that became
+     * available during the call (the count differs per band and may be zero), and
+     * the output samples of the same time span are synthesised. The work per call
+     * is therefore proportional to the block length, independent of the topology
+     * depth and of the host's maximum block size.
+     *
+     * Blocks longer than the maxBlockSize given to prepareToPlay() are processed in
+     * chunks of at most maxBlockSize samples (one BandProcessor call per chunk).
+     */
+    void processBlock(juce::AudioBuffer<double>& buffer) noexcept;
 
+    /**
+     * @brief Latency in samples between input and output.
+     *
+     * Equal to the largest filter-path delay of the topology; it does not depend
+     * on the host block size.
+     */
     int getLatency() const;
+    int getTailLengthSamples() const;
+    std::vector<NormalizedFrequencyRange> getDestinationFrequencyRanges() const;
+    /** Clear all stream state without allocating; do not call concurrently with audio. */
+    void reset();
+    /** Process any main/sidechain length together, including oversized host blocks. */
+    void processBlock(juce::AudioBuffer<double>& buffer, const juce::AudioBuffer<double>* sidechain) noexcept;
 
     /**
      * @brief Register a band processor. Takes ownership.
@@ -86,22 +123,39 @@ public:
     /**
      * @brief Feed sidechain audio for parallel CWPT analysis.
      *
-     * Must be called with the same sample count as the main processBlock() call.
-     * Channel count is adjusted to match main input (duplicate last / truncate).
-     * Must be called BEFORE processBlock() for the same block.
+     * Must be called with the same sample count as the main processBlock() call,
+     * which must not exceed the maxBlockSize given to prepareToPlay() (a longer
+     * sidechain block is ignored). Channel count is adjusted to match main input
+     * (duplicate last / truncate). Must be called BEFORE processBlock() for the
+     * same block.
      *
      * @param sidechainBuffer The sidechain audio buffer to process
      */
-    void processSidechain(juce::AudioBuffer<double>& sidechainBuffer);
+    void processSidechain(juce::AudioBuffer<double>& sidechainBuffer) noexcept;
 
 #if DTCWPT_ENABLE_TEST_SEAMS
     enum class PrepareCandidateFailpoint {
         none,
         beforeCommit,
+        beforeCommitBadAlloc,
     };
 
+    enum class AnalysisFaultForTesting { none, internalNodeLookup, cursorOverflow };
+    void setAnalysisFaultForTesting(AnalysisFaultForTesting fault) noexcept { analysisFaultForTesting_ = fault; }
     void setPrepareCandidateFailpointForTesting(PrepareCandidateFailpoint failpoint) noexcept;
     void setAnalysisTraceSinkForTesting(AnalysisTraceSink* sink) noexcept;
+
+    /**
+     * @brief Cumulative amount of filter-bank work done since prepareToPlay().
+     *
+     * Used by tests to measure how evenly the work is spread over host callbacks.
+     */
+    struct WorkCounters {
+        std::uint64_t analysisArrivals = 0;       ///< AnalysisNode::processArrival() calls (all paths)
+        std::uint64_t synthesisOutputSamples = 0; ///< Samples produced by synthesis nodes (Re and Im)
+    };
+
+    WorkCounters getWorkCountersForTesting() const noexcept;
 #endif
 
 private:
@@ -145,31 +199,29 @@ private:
     std::vector<std::vector<size_t>> cursorsRe_;
     std::vector<std::vector<size_t>> cursorsIm_;
 
-    // Per-channel temporary buffer for delay processing (pre-allocated)
+    // Temporary buffers for delay processing (pre-allocated, sized for the widest band)
     std::vector<std::vector<double>> delayTempBuffer_;
-
-    // Temporary buffers for block/slice processing
-    std::vector<double> inputBlockBuffer_;
     std::vector<double> delaySliceBuffer_;
 
     // Latency
     int maxDelay_;
+    int tailLengthSamples_ = 0;
 
-    // --- Block alignment ring buffer ---
-    /// Alignment unit = 2^actualDepth; internal block must be a multiple of this.
-    size_t alignUnit_;
-    /// Internal processing block size = ceil(maxBlockSize / alignUnit) * alignUnit
-    size_t internalBlockSize_;
-    /// Per-channel input accumulation FIFO [ch][0..2*internalBlockSize_)
-    std::vector<std::vector<double>> inputFifo_;
-    /// Samples currently in each channel's input FIFO
-    std::vector<size_t> inputFifoFill_;
-    /// Per-channel output FIFO [ch][0..2*internalBlockSize_)
-    std::vector<std::vector<double>> outputFifo_;
-    /// Samples available for reading in each channel's output FIFO
-    std::vector<size_t> outputFifoFill_;
-    /// Read cursor for each channel's output FIFO
-    std::vector<size_t> outputFifoRead_;
+    // --- Streaming state ---
+    /// Number of input samples consumed (= number of output ticks synthesised) since prepareToPlay()
+    std::uint64_t streamPos_ = 0;
+    /// Deepest level of an internal (synthesis) node
+    int maxSynthesisLevel_ = 0;
+    /// Synthesis nodes grouped by level; plan.nodeIndex points into synthesisNodes{Re,Im}_[ch].nodes
+    std::vector<std::vector<SynthesisTickPlan>> synthesisLevelPlans_;
+    /// Latest output of every synthesis node [channel][nodeId]
+    std::vector<std::vector<double>> synthesisOutputRe_;
+    std::vector<std::vector<double>> synthesisOutputIm_;
+    /// Next unread sample of every destination band within the current chunk [channel][nodeId]
+    std::vector<std::vector<size_t>> leafReadCursors_;
+    /// Silent input used for channels the host buffer does not provide, and sink for unused output
+    std::vector<double> silenceBuffer_;
+    std::vector<double> discardBuffer_;
 
     // --- BandProcessor integration ---
     /// Optional band processor for subband modification
@@ -195,11 +247,9 @@ private:
     std::vector<double> scAnalysisWorkBuffer_;
     std::vector<char> scAnalysisActiveFlags_;
     std::vector<std::vector<double>> scDelayTempBuffer_;
-    std::vector<double> scInputBlockBuffer_;
     std::vector<double> scDelaySliceBuffer_;
-    /// Sidechain FIFO (mirrors main input FIFO)
-    std::vector<std::vector<double>> scInputFifo_;
-    std::vector<size_t> scInputFifoFill_;
+    /// Number of input samples the sidechain analysis has consumed (may lag streamPos_ when no sidechain was fed)
+    std::uint64_t scStreamPos_ = 0;
     /// Sidechain state
     bool sidechainActive_ = false;
     bool sidechainProcessedThisBlock_ = false;
@@ -209,34 +259,36 @@ private:
     // --- Pre-allocated sidechain adjusted channels buffer ---
     std::vector<std::vector<double>> scAdjustedChannels_;
 
-    // --- Pre-allocated processBlock buffers ---
-    std::vector<std::vector<double>> alignedInputBuffers_;
-    std::vector<std::vector<double>> alignedSidechainBuffers_;
-    juce::AudioBuffer<double> alignedOutputBuffer_;
-
     // --- Pre-allocated BandData buffer ---
     BandData cachedBandData_;
 
-    // --- Pre-allocated channel tracking buffer (RT-safe, avoids per-block alloc) ---
-    std::vector<char> channelHasData_;  // use char instead of bool to avoid bit-packed specialization
-    std::vector<char> scChannelHasData_;  // use char instead of bool to avoid bit-packed specialization
-
 #if DTCWPT_ENABLE_TEST_SEAMS
+    AnalysisFaultForTesting analysisFaultForTesting_ = AnalysisFaultForTesting::none;
     PrepareCandidateFailpoint prepareCandidateFailpoint_ = PrepareCandidateFailpoint::none;
     AnalysisTraceSink* analysisTraceSink_ = nullptr;
+    WorkCounters workCounters_;
 #endif
 
+    void processBlockInternal(juce::AudioBuffer<double>& buffer, const juce::AudioBuffer<double>* directSidechain) noexcept;
+
     // Helper methods
-    /// Analysis + delay compensation phase for one channel.
-    void processChannelAnalysisAndDelay(int ch, const std::vector<double>& inputBlock);
+    /// Analysis + delay compensation phase for one channel and one chunk of numSamples input samples.
+    void processChannelAnalysisAndDelay(int ch, const double* input, size_t numSamples);
 
     /// Sidechain analysis phase for one channel (no delay compensation - sidechain is control signal).
-    void processSidechainAnalysisAndDelay(int ch, const std::vector<double>& inputBlock);
+    void processSidechainAnalysisAndDelay(int ch, const double* input, size_t numSamples);
 
-    /// Synthesis + output averaging phase for one channel.
-    void processChannelSynthesisAndAverage(int ch, juce::AudioBuffer<double>& output);
+    /// Synthesises numSamples output ticks starting at streamPos_ for one channel and averages the Re/Im trees.
+    void processChannelSynthesisAndAverage(int ch, double* output, size_t numSamples);
 
-    void analysisProcess(const std::vector<double>& inputBlock,
+    /// Makes the sidechain analysis decimation phase match the main stream after a gap without sidechain input.
+    void alignSidechainPhase() noexcept;
+
+    /// Fills cachedBandData_ for the current chunk. Returns true if any band holds samples.
+    bool prepareBandData(bool hasSidechain);
+
+    void analysisProcess(const double* input,
+                         size_t numSamples,
                          AnalysisNodeGroup& nodeGroup,
                          const AnalysisSchedulerMetadata& metadata,
                          std::vector<std::vector<double>>& results,
@@ -244,11 +296,6 @@ private:
                          AnalysisRuntimeState& runtime,
                          AnalysisPathId path,
                          int channel);
-
-    void synthesisProcess(std::vector<std::vector<double>>& analysedData,
-                          SynthesisNodeGroup& nodeGroup,
-                          const std::vector<int>& nodeIds,
-                          std::vector<size_t>& cursors);
 
     static int getNodeLevel(int nodeId);
     

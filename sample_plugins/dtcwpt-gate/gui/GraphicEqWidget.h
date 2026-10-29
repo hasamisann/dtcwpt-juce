@@ -2,15 +2,17 @@
 
 /**
  * @file GraphicEqWidget.h
- * @brief GUI Component for per-band threshold editing and level metering.
+ * @brief GUI Component for threshold editing and per-band level metering.
  *
- * This widget provides a graphic equalizer-style interface for setting the
- * noise gate thresholds of the DT-CWPT subbands. It displays a filled bar
- * for each active band, where the top of the bar represents the threshold.
- * It also overlays a real-time RMS level meter line for each band.
- * Thresholds can be painted by clicking and dragging across the widget.
- * A context menu on right-click allows resetting or fully opening/closing 
- * the gate for a specific band.
+ * This widget provides a graphic equalizer-style interface for the noise gate
+ * thresholds. The editable values are the 31 ISO 1/3-octave threshold points
+ * (see GateThresholdCurve.h), drawn as a curve with a handle per point.
+ * Behind the curve, a filled bar per active band shows the threshold the band
+ * actually uses (the mean of the curve over the band's frequency range), and a
+ * real-time RMS level meter line is overlaid for each band.
+ * Points can be painted by clicking and dragging across the widget.
+ * A context menu on right-click allows resetting or fully opening/closing
+ * the gate around a specific point.
  */
 
 #include "GateGuiFrequencyMapping.h"
@@ -18,6 +20,7 @@
 #include "../GateAudioProcessor.h"
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -26,7 +29,7 @@
  *
  * Runs a 30 Hz timer to animate the level meters. Caches parameter pointers
  * from the APVTS to ensure safe, allocation-free access during paint and mouse
- * events. Support for tooltips and per-band right-click context menus.
+ * events. Support for tooltips and per-point right-click context menus.
  */
 class GraphicEqWidget : public juce::Component, public juce::Timer
 {
@@ -34,7 +37,7 @@ public:
     /**
      * @brief Constructs the GraphicEqWidget.
      *
-     * @param processor  Reference to the main audio processor (for APVTS, TopologyState, etc.)
+     * @param processor  Reference to the main audio processor (for APVTS, committed topology, etc.)
      * @param sampleRate The current audio sample rate (used for calculating Nyquist frequency mappings)
      */
     GraphicEqWidget (GateAudioProcessor& processor, float sampleRate);
@@ -85,21 +88,27 @@ private:
     /** Map Y coordinate to threshold (dB). */
     float yToDb (float y) const;
 
-    /** Updates one specific band from a Y position in widget coordinates. */
-    void updateThresholdForBandFromY (int bandIdx, float y);
+    /** Updates one threshold point from a Y position in widget coordinates. */
+    void updateThresholdForPointFromY (int pointIdx, float y);
 
-    /** Applies one drag segment and fills all crossed bands. */
+    /** Applies one drag segment and fills all crossed threshold points. */
     void applyDragSegment (juce::Point<float> from, juce::Point<float> to);
 
-    /** Begin/end gesture lifecycle for touched bands. */
-    void beginGestureForBand (int bandIdx);
+    /** Begin/end gesture lifecycle for touched points. */
+    void beginGestureForPoint (int pointIdx);
     void endAllActiveGestures();
 
-    /** Returns X center coordinate of band index, or -1 if invalid. */
-    float getBandCenterX (int bandIdx) const;
-    
-    /** Returns the index of the band that covers the given X coordinate. */
-    int findBandAtX (float x) const;
+    /** Returns X coordinate of a threshold point. */
+    float getPointX (int pointIdx) const;
+
+    /** Returns the threshold point nearest to the given X coordinate (log frequency axis). */
+    int findPointAtX (float x) const;
+
+    /** Number of threshold points shown for the current Nyquist frequency. */
+    int getNumVisiblePoints() const;
+
+    /** Current values of all threshold points in dB. */
+    std::array<double, gate_threshold::kNumPoints> readPointsDb() const;
 
     //==============================================================================
     // Data References
@@ -112,15 +121,18 @@ private:
     // Cached current destinations for stable drawing (refreshed in paint)
     std::vector<std::string> currentDestinations_;
 
+    /** Topology generation currentDestinations_ was read at. */
+    std::uint64_t lastTopologyGeneration_ { 0 };
+
     //==============================================================================
     // Cached Parameters
     //==============================================================================
 
     /** Cached raw parameter states for fast drawing. */
-    std::array<std::atomic<float>*, GateBandProcessor::kMaxBands> thresholdRaw_ {};
+    std::array<std::atomic<float>*, gate_threshold::kNumPoints> thresholdRaw_ {};
 
     /** Cached parameter objects for host notification during interactions. */
-    std::array<juce::RangedAudioParameter*, GateBandProcessor::kMaxBands> thresholdParams_ {};
+    std::array<juce::RangedAudioParameter*, gate_threshold::kNumPoints> thresholdParams_ {};
 
     /** Determines if the lowest band is visually bypassed. */
     std::atomic<float>* bypassLowestRaw_ {nullptr};
@@ -131,7 +143,7 @@ private:
 
     bool isDragging_ = false;
     juce::Point<float> lastMousePos_ {};
-    std::array<bool, GateBandProcessor::kMaxBands> activeBandGestures_ {};
+    std::array<bool, gate_threshold::kNumPoints> activePointGestures_ {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (GraphicEqWidget)
 };

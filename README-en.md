@@ -46,6 +46,7 @@ dtcwpt/                  <- JUCE module root
 ├── dtcwpt_stateful_filter.h/.ipp
 ├── dtcwpt_delay_buffer.h/.ipp
 ├── dtcwpt_topology_planner.h/.ipp
+├── dtcwpt_frequency_mapping.h/.ipp
 ├── dtcwpt_band_processor.h/.ipp
 ├── dtcwpt_complex_utils.h/.ipp
 ├── dtcwpt_filter_structs.h
@@ -204,6 +205,35 @@ In other words:
 | `"LL"` | Root -> Low -> Low | 2 | 4 |
 | `"LH"` | Root -> Low -> High | 2 | 5 |
 | `"HLL"` | Root -> High -> Low -> Low | 3 | 12 |
+
+#### Path Strings and Frequency (Gray-code Order)
+
+**Path strings are NOT in natural binary frequency order.** After a high-pass filter and 2:1 decimation the sub-band spectrum is mirrored, so below an H step the roles of L and H are swapped. The band covered by a whole subtree is as expected (e.g. everything under `H` is the upper half), but the order of the leaves inside a subtree follows the Gray code.
+
+Rule: walk the path from the root. While the "mirrored" flag is off, L = lower half and H = upper half; while it is on, L = upper half and H = lower half. Every H toggles the flag. The rule is the same for the Re and Im trees and at every level.
+
+For a depth-3 full packet at 48 kHz (3 kHz per band), from lowest to highest frequency:
+
+| Band | 0-3k | 3-6k | 6-9k | 9-12k | 12-15k | 15-18k | 18-21k | 21-24k |
+|------|------|------|------|-------|--------|--------|--------|--------|
+| Path | `LLL` | `LLH` | `LHH` | `LHL` | `HHL` | `HHH` | `HLH` | `HLL` |
+
+The highest band is `HLL`, not `HHH`. Do not derive frequencies from path strings, and do not assume "the H-only path is the highest band"; use the following API instead (`#include <dtcwpt/dtcwpt.h>`).
+
+```cpp
+// Normalized frequency range (0 = DC, 1 = Nyquist)
+dtcwpt::NormalizedFrequencyRange r = dtcwpt::getNormalizedFrequencyRange("HLL");  // {0.875, 1.0}
+auto r2 = dtcwpt::getNormalizedFrequencyRange(12);                                // node ID overload
+
+// Frequency-order index among the bands of the same depth (0 = lowest)
+std::uint64_t idx = dtcwpt::getFrequencyOrderIndex("HLL");                        // 7
+
+// Sort destinations by frequency
+dtcwpt::sortPathsByFrequency(destinations, /*descending=*/true);
+
+// After prepareToPlay(): frequency range of every destination (in band-index order)
+std::vector<dtcwpt::NormalizedFrequencyRange> ranges = processor.getDestinationFrequencyRanges();
+```
 
 #### Valid Topology Examples
 
@@ -440,7 +470,7 @@ Initializes the processor with given parameters. Must be called before processin
 void processBlock(juce::AudioBuffer<double>& buffer);
 ```
 
-Processes an audio block. Accepts any buffer size; an internal FIFO handles block-size adaptation automatically.
+Processes an audio block. Accepts any buffer size. The engine is streaming: it analyses every input sample as it arrives and synthesises the output samples of the same time span. The work of a call is proportional to the block length and is spread evenly over host callbacks, independent of the host buffer size and of the topology depth. `BandProcessor::processAllBands()` is called at most once per call (only when subband samples became available); the number of samples per band depends on the band level and on the position in the stream and can be zero for some bands. Blocks longer than the `maxBlockSize` passed to `prepareToPlay()` are processed internally in chunks of at most `maxBlockSize` samples.
 
 ---
 
@@ -448,7 +478,15 @@ Processes an audio block. Accepts any buffer size; an internal FIFO handles bloc
 int getLatency() const;
 ```
 
-Returns the processing latency in samples. Use this for host latency compensation.
+Returns the processing latency in samples. Use this for host latency compensation. The value is the filter-path delay of the topology (the largest delay over all destinations) and does not depend on the host buffer size (`maxBlockSize`).
+
+---
+
+```cpp
+std::vector<NormalizedFrequencyRange> getDestinationFrequencyRanges() const;
+```
+
+Returns the normalized frequency range (0 = DC, 1 = Nyquist) covered by each destination, in band-index order (the order of `TopologyConfig::destinations` / `BandData`). Path strings are in Gray-code order (see "Path Strings and Frequency" above). Allocates; do not call from the audio thread.
 
 ---
 
@@ -464,7 +502,7 @@ Registers a band processor (takes ownership). If `prepareToPlay()` was already c
 void processSidechain(juce::AudioBuffer<double>& sidechainBuffer);
 ```
 
-Feeds sidechain audio for parallel CWPT analysis. Must be called with the same sample count as the main `processBlock()` call, and must be called before `processBlock()` for the same block.
+Feeds sidechain audio for parallel CWPT analysis. Must be called with the same sample count as the main `processBlock()` call, and must be called before `processBlock()` for the same block. The sample count must not exceed the `maxBlockSize` passed to `prepareToPlay()`; a longer sidechain block is ignored.
 
 ---
 
@@ -496,6 +534,8 @@ public:
 ```
 
 Abstract interface for user-defined subband processing. See [Band Processing](#band-processing) for usage details.
+
+`maxSamplesPerBand` in `prepare()` is the upper limit on the number of samples passed for one band in a single `processAllBands()` call (`ceil(maxBlockSize / 2^minDestinationLevel)`). `numSamples` varies from call to call and can be 0.
 
 ---
 

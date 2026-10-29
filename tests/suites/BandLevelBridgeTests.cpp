@@ -1,7 +1,9 @@
 #include <juce_core/juce_core.h>
 #include "BandLevelBridge.h"
+#include <algorithm>
+#include <atomic>
 #include <thread>
-#include <chrono>
+#include <vector>
 
 class BandLevelBridgeTests : public juce::UnitTest
 {
@@ -54,49 +56,86 @@ public:
             BandLevelBridge bridge;
             float in70[70];
             for (int i = 0; i < 70; ++i) in70[i] = -1.0f;
-            
+
             bridge.update(in70, 70);
-            float out[64] = { 0.0f };
+            float out[BandLevelBridge::kMaxBands] = { 0.0f };
             int n = bridge.read(out);
             expectEquals(n, 70);
-            for (int i = 0; i < 64; ++i)
+            for (int i = 0; i < 70; ++i)
                 expectEquals(out[i], -1.0f);
+
+            // More bands than kMaxBands are clamped to kMaxBands.
+            std::vector<float> inBig(static_cast<size_t>(BandLevelBridge::kMaxBands) + 44, -2.0f);
+            bridge.update(inBig.data(), static_cast<int>(inBig.size()));
+            n = bridge.read(out);
+            expectEquals(n, BandLevelBridge::kMaxBands);
+            for (int i = 0; i < BandLevelBridge::kMaxBands; ++i)
+                expectEquals(out[i], -2.0f);
         }
 
-        beginTest("Concurrent try_lock skip");
+        beginTest("Latest update is always visible to the next read");
         {
             BandLevelBridge bridge;
-            float in1[1] = { -10.0f };
-            bridge.update(in1, 1);
+            float out[BandLevelBridge::kMaxBands] = { 0.0f };
+            for (int round = 1; round <= 50; ++round)
+            {
+                const int bands = 1 + (round * 7) % 40;
+                std::vector<float> in(static_cast<size_t>(bands), -static_cast<float>(round));
+                bridge.update(in.data(), bands);
+                expectEquals(bridge.read(out), bands);
+                expectEquals(out[0], -static_cast<float>(round));
+                expectEquals(out[bands - 1], -static_cast<float>(round));
+                // Reading again without a new update keeps returning the latest values.
+                expectEquals(bridge.read(out), bands);
+                expectEquals(out[0], -static_cast<float>(round));
+            }
+        }
 
-            std::atomic<bool> threadHoldsMutex { false };
-            std::atomic<bool> threadReady { false };
-            
-            // To simulate holding the mutex, we will just call read in a slow manner, or more simply:
-            // The object's mutex is private, so we can't lock it directly.
-            // We just know that update() uses try_lock. There's no way to easily test the failure of try_lock externally without friend access or modifying the class.
-            // But we can spawn a thread that repeatedly calls read(), and the main thread calls update().
-            // We just verify it doesn't deadlock or crash.
-            
-            auto readerThread = std::thread([&]() {
-                threadReady = true;
-                while (threadHoldsMutex)
+        beginTest("Concurrent update/read never exposes a band count with another update's levels");
+        {
+            BandLevelBridge bridge;
+
+            // Every update fills `bands` entries with -bands, so a consistent read
+            // satisfies out[i] == -n for all i < n.
+            std::atomic<bool> readerDone { false };
+            std::thread writer([&]
+            {
+                const int counts[] = { 7, 70, 3, 256, 1 };
+                std::vector<float> in(BandLevelBridge::kMaxBands);
+                int k = 0;
+                while (!readerDone.load(std::memory_order_acquire))
                 {
-                    float out[64];
-                    bridge.read(out);
+                    const int bands = counts[k++ % 5];
+                    std::fill(in.begin(), in.begin() + bands, -static_cast<float>(bands));
+                    bridge.update(in.data(), bands);
                 }
             });
 
-            while (!threadReady) { juce::Thread::yield(); }
-            
-            threadHoldsMutex = true;
-            for (int i = 0; i < 1000; ++i)
+            int inconsistent = 0, badCount = 0, nonEmptyReads = 0;
+            float out[BandLevelBridge::kMaxBands];
+            const auto deadline = juce::Time::getMillisecondCounter() + 400;
+            for (int iter = 0; iter < 2000000 && juce::Time::getMillisecondCounter() < deadline; ++iter)
             {
-                bridge.update(in1, 1);
+                const int n = bridge.read(out);
+                if (n == 0) continue;
+                ++nonEmptyReads;
+                if (n != 7 && n != 70 && n != 3 && n != 256 && n != 1) { ++badCount; continue; }
+                for (int i = 0; i < n; ++i)
+                    if (out[i] != -static_cast<float>(n)) { ++inconsistent; break; }
             }
-            threadHoldsMutex = false;
-            readerThread.join();
-            expect(true, "Concurrent read/update completed without deadlock");
+            readerDone.store(true, std::memory_order_release);
+            writer.join();
+
+            expect(nonEmptyReads > 0, "Reader should observe at least one update");
+            expectEquals(badCount, 0);
+            expectEquals(inconsistent, 0);
+
+            // After the writer has stopped, the very last update must be visible.
+            float last[2] = { -11.0f, -22.0f };
+            bridge.update(last, 2);
+            expectEquals(bridge.read(out), 2);
+            expectEquals(out[0], -11.0f);
+            expectEquals(out[1], -22.0f);
         }
     }
 };

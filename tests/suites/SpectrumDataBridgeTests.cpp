@@ -9,11 +9,21 @@
  *  4. Multiple pushes (chunks of 256) accumulate correctly.
  *  5. Overwrite: 4 full slots pushed without consuming — tryConsume returns latest.
  *  6. tryConsume clears flag: second call returns false until new data pushed.
+ *  7. A snapshot being read is not overwritten when the writer laps the ring
+ *     (deterministic, via the mid-copy test seam).
+ *  8. A slot completed while the reader is mid-consume is not lost
+ *     (deterministic, via the mid-copy test seam).
+ *  9. discardPartialSlot drops a half-filled slot without touching published ones.
+ * 10. Concurrent writer/reader stress: no torn snapshots, tags never go
+ *     backwards, and the final slot is always observable (run under TSan).
  */
 
 #include "SpectrumDataBridge.h"
 #include <juce_core/juce_core.h>
 #include <array>
+#include <atomic>
+#include <cstdint>
+#include <thread>
 #include <vector>
 
 class SpectrumDataBridgeTests : public juce::UnitTest
@@ -40,6 +50,18 @@ public:
 
         beginTest ("6. tryConsume clears flag; second call returns false");
         testConsumeClearsFlag();
+
+        beginTest ("7. Reader mid-copy is not overwritten when the writer laps the ring");
+        testReaderIsNotOverwrittenWhileConsuming();
+
+        beginTest ("8. Slot completed during tryConsume is not lost");
+        testSlotCompletedDuringConsumeIsNotLost();
+
+        beginTest ("9. discardPartialSlot drops only the unfinished slot");
+        testDiscardPartialSlot();
+
+        beginTest ("10. Concurrent writer/reader stress keeps snapshots consistent");
+        testConcurrentStress();
     }
 
 private:
@@ -192,6 +214,175 @@ private:
         // Push another slot — should be consumable again
         bridge.push (inp.data(), outp.data(), SpectrumDataBridge::kSlotSize);
         expect (bridge.tryConsume (inOut, outOut), "tryConsume should succeed after new data");
+    }
+
+    // -----------------------------------------------------------------------
+    // Pushes one full slot whose samples are all `tag` (input) / `-tag` (output).
+    static void pushConstantSlot (SpectrumDataBridge& bridge, float tag)
+    {
+        std::vector<float> inp (static_cast<std::size_t> (SpectrumDataBridge::kSlotSize), tag);
+        std::vector<float> outp (static_cast<std::size_t> (SpectrumDataBridge::kSlotSize), -tag);
+        bridge.push (inp.data(), outp.data(), SpectrumDataBridge::kSlotSize);
+    }
+
+    // -----------------------------------------------------------------------
+    void testReaderIsNotOverwrittenWhileConsuming()
+    {
+#if DTCWPT_ENABLE_TEST_SEAMS
+        SpectrumDataBridge bridge;
+        pushConstantSlot (bridge, 1.0f);
+
+        // Four slots is enough to lap the original 4-slot ring.
+        constexpr int kLapSlots = 4;
+
+        // While the reader is between the input copy and the output copy, the
+        // audio thread completes four more slots, which wraps the whole ring.
+        bridge.setConsumeMidCopyHookForTest ([&]
+        {
+            for (int i = 0; i < kLapSlots; ++i)
+                pushConstantSlot (bridge, 2.0f + static_cast<float> (i));
+        });
+
+        std::array<float, SpectrumDataBridge::kSlotSize> inOut {}, outOut {};
+        expect (bridge.tryConsume (inOut, outOut), "tryConsume should return true");
+        bridge.setConsumeMidCopyHookForTest (nullptr);
+
+        expectEquals (inOut.front(), 1.0f, "Input half should come from the first slot");
+        expectEquals (outOut.front(), -1.0f,
+                      "Output half must come from the same slot as the input half "
+                      "(the slot being read must not be overwritten)");
+        expectEquals (outOut.back(), -1.0f, "Output half must not be partially overwritten");
+
+        // The newest completed slot (tag 5) must still be delivered afterwards.
+        expect (bridge.tryConsume (inOut, outOut), "The latest slot should be consumable afterwards");
+        expectEquals (inOut.front(), 5.0f, "Latest slot input");
+        expectEquals (outOut.front(), -5.0f, "Latest slot output");
+#else
+        expect (false, "DTCWPT_ENABLE_TEST_SEAMS must be enabled");
+#endif
+    }
+
+    // -----------------------------------------------------------------------
+    void testSlotCompletedDuringConsumeIsNotLost()
+    {
+#if DTCWPT_ENABLE_TEST_SEAMS
+        SpectrumDataBridge bridge;
+        pushConstantSlot (bridge, 1.0f);
+
+        bridge.setConsumeMidCopyHookForTest ([&] { pushConstantSlot (bridge, 2.0f); });
+
+        std::array<float, SpectrumDataBridge::kSlotSize> inOut {}, outOut {};
+        expect (bridge.tryConsume (inOut, outOut), "First tryConsume should return true");
+        bridge.setConsumeMidCopyHookForTest (nullptr);
+        expectEquals (inOut.front(), 1.0f, "First consume returns the first slot");
+
+        expect (bridge.tryConsume (inOut, outOut),
+                "A slot completed during the previous tryConsume must still be reported as new");
+        expectEquals (inOut.front(), 2.0f, "Second consume returns the slot completed mid-consume");
+#else
+        expect (false, "DTCWPT_ENABLE_TEST_SEAMS must be enabled");
+#endif
+    }
+
+    // -----------------------------------------------------------------------
+    void testDiscardPartialSlot()
+    {
+        SpectrumDataBridge bridge;
+        std::array<float, SpectrumDataBridge::kSlotSize> inOut {}, outOut {};
+
+        // Half a slot of stale samples is discarded; the next full slot is clean.
+        std::vector<float> stale (static_cast<std::size_t> (SpectrumDataBridge::kSlotSize / 2), 9.0f);
+        bridge.push (stale.data(), stale.data(), static_cast<int> (stale.size()));
+        bridge.discardPartialSlot();
+        pushConstantSlot (bridge, 1.0f);
+
+        expect (bridge.tryConsume (inOut, outOut), "A full slot after the discard should be delivered");
+        expectEquals (inOut.front(), 1.0f, "Slot must start with the post-discard samples");
+        expectEquals (inOut.back(), 1.0f, "Slot must not contain pre-discard samples");
+        expect (! bridge.tryConsume (inOut, outOut), "The discarded partial slot must not be published");
+
+        // A completed, not yet consumed slot survives a discard.
+        pushConstantSlot (bridge, 2.0f);
+        bridge.push (stale.data(), stale.data(), static_cast<int> (stale.size()));
+        bridge.discardPartialSlot();
+        expect (bridge.tryConsume (inOut, outOut), "A published slot survives discardPartialSlot");
+        expectEquals (inOut.front(), 2.0f);
+    }
+
+    // -----------------------------------------------------------------------
+    void testConcurrentStress()
+    {
+        SpectrumDataBridge bridge;
+        constexpr int kSlotsToWrite = 4000;
+
+        std::atomic<bool> writerDone { false };
+
+        std::thread writer ([&]
+        {
+            // Odd chunk sizes so that slot boundaries fall inside push() calls.
+            const int chunkSizes[] = { 64, 137, 512, 1000, 2048, 3001 };
+            std::vector<float> inp (4096), outp (4096);
+            int chunkIndex = 0;
+            int sampleInSlot = 0;
+            int tag = 1;
+
+            while (tag <= kSlotsToWrite)
+            {
+                const int want = chunkSizes[chunkIndex++ % 6];
+                int n = 0;
+                // Fill `n` samples (never crossing more than the remaining tag range).
+                while (n < want && tag <= kSlotsToWrite)
+                {
+                    inp[static_cast<std::size_t> (n)]  = static_cast<float> (tag);
+                    outp[static_cast<std::size_t> (n)] = -static_cast<float> (tag);
+                    ++n;
+                    if (++sampleInSlot == SpectrumDataBridge::kSlotSize)
+                    {
+                        sampleInSlot = 0;
+                        ++tag;
+                    }
+                }
+                bridge.push (inp.data(), outp.data(), n);
+            }
+            writerDone.store (true, std::memory_order_release);
+        });
+
+        int tornSnapshots = 0;
+        int backwards = 0;
+        int received = 0;
+        float lastTag = 0.0f;
+        std::array<float, SpectrumDataBridge::kSlotSize> inOut {}, outOut {};
+
+        auto checkSnapshot = [&]
+        {
+            ++received;
+            const float tag = inOut.front();
+            bool torn = false;
+            for (std::size_t i = 0; i < inOut.size(); ++i)
+                if (inOut[i] != tag || outOut[i] != -tag)
+                    torn = true;
+            if (torn)
+                ++tornSnapshots;
+            if (tag < lastTag)
+                ++backwards;
+            lastTag = tag;
+        };
+
+        while (! writerDone.load (std::memory_order_acquire))
+            if (bridge.tryConsume (inOut, outOut))
+                checkSnapshot();
+
+        writer.join();
+
+        // Drain: the very last completed slot must be observable.
+        if (bridge.tryConsume (inOut, outOut))
+            checkSnapshot();
+
+        expectEquals (tornSnapshots, 0, "No snapshot may mix samples from different slots");
+        expectEquals (backwards, 0, "Snapshot tags must never go backwards");
+        expect (received > 0, "Reader should receive at least one snapshot");
+        expectEquals (lastTag, static_cast<float> (kSlotsToWrite),
+                      "The final completed slot must not be lost");
     }
 };
 

@@ -23,6 +23,9 @@ public:
 
         beginTest ("Delay clamping obeys [0, maxDelay]");
         testDelayClamping();
+
+        beginTest ("Blocks longer than maxBlockSize are written completely");
+        testBlockLongerThanMaxBlockSize();
     }
 
 private:
@@ -132,6 +135,37 @@ private:
         const float expected[] = { 0.0f, 0.0f, 0.0f, 0.0f };
         for (int i = 0; i < 4; ++i)
             expectEquals (output[i], expected[i]);
+    }
+
+    void testBlockLongerThanMaxBlockSize()
+    {
+        AnalyzerLatencyAligner aligner;
+        aligner.prepare (4, 16);
+        aligner.setDelaySamples (3);
+
+        constexpr int numSamples = 10;
+        float input[numSamples] = {};
+        float output[numSamples] = {};
+        for (int i = 0; i < numSamples; ++i)
+        {
+            input[i]  = static_cast<float> (i + 1);
+            output[i] = -999.0f; // sentinel: must be overwritten
+        }
+
+        aligner.processBlock (input, output, numSamples);
+
+        for (int i = 0; i < numSamples; ++i)
+        {
+            const float expected = i < 3 ? 0.0f : static_cast<float> (i - 2);
+            expectEquals (output[i], expected);
+        }
+
+        // The delay line must stay continuous across the next block.
+        const float next[] = { 100.0f, 101.0f };
+        float nextOutput[2] = {};
+        aligner.processBlock (next, nextOutput, 2);
+        expectEquals (nextOutput[0], 8.0f);
+        expectEquals (nextOutput[1], 9.0f);
     }
 };
 
