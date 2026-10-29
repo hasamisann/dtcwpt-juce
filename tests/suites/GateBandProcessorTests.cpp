@@ -13,6 +13,9 @@ public:
 
     void runTest() override
     {
+        beginTest("Enabling stereo link converges to one shared gain in 20 ms");
+        testStereoLinkTransition();
+
         beginTest("Gate below threshold (zero time constants: instantaneous gate)");
         {
             GateBandProcessor gate;
@@ -481,6 +484,40 @@ public:
     }
 
 private:
+    void testStereoLinkTransition()
+    {
+        GateBandProcessor gate;
+        gate.prepare(48000.0, 24000, 1, 2);
+        double threshold = 0.1;
+        gate.setThresholds(&threshold, 1);
+        GateBandProcessor::DynamicsParams params;
+        params.attackMs = 100.0;
+        params.holdMs = 0.0;
+        params.stereoLink = false;
+        gate.setDynamics(params);
+        std::vector<int> ids { 2 };
+        std::vector<double> left(24000, 0.5), right(24000, 0.01), imag(24000, 0.0);
+        dtcwpt::BandData data;
+        data.numChannels = 2;
+        data.numBands = 1;
+        data.destinationIds = &ids;
+        data.bands = {{{left.data(), imag.data(), left.size()}},
+                      {{right.data(), imag.data(), right.size()}}};
+        gate.processAllBands(data);
+        const double oldLeftGain = left.back() / 0.5;
+        const double oldRightGain = right.back() / 0.01;
+        params.stereoLink = true;
+        gate.setDynamics(params);
+        std::fill(left.begin(), left.end(), 0.5);
+        std::fill(right.begin(), right.end(), 0.01);
+        data.bands[0][0].numSamples = data.bands[1][0].numSamples = 480;
+        gate.processAllBands(data); // depth 1: 480 coefficients = 20 ms
+        expectWithinAbsoluteError(left[479] / 0.5, right[479] / 0.01, 1.0e-12);
+        // Switching modes must not jump either gain to the other's old state.
+        expect(std::abs(left[0] / 0.5 - oldLeftGain) < 0.01);
+        expect(std::abs(right[0] / 0.01 - oldRightGain) < 0.01);
+    }
+
     static constexpr double kPi = 3.14159265358979323846;
     static constexpr double kFs = 44100.0;
 
