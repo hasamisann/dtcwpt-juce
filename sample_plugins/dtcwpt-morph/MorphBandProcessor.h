@@ -17,12 +17,11 @@
  * 5. Converts back to Re/Im.
  *
  * Parameters are smoothed with a 20 ms linear ramp defined on the host-sample
- * time axis (TimedLinearRamp). One processAllBands() call covers one engine
- * internal block of T host samples; subband sample s of a band at tree level L
- * sits at time tau = (s + 0.5) * 2^L inside that block, and every band and
- * channel uses the ramp value at that tau. Parameter changes are queued with
- * their position in the input stream by setTargets() and start their ramp at
- * the matching time inside the block.
+ * time axis (TimedLinearRamp). Streaming callbacks provide their exact input
+ * interval in BandData. Each coefficient uses the ramp value at its causal
+ * analysis arrival sample, independent of the caller's block segmentation.
+ * Legacy synthetic BandData without an input interval uses coefficient midpoint
+ * timing. setTargets() queues changes at their position in the input stream.
  *
  * Thread safety: All public methods are called on the audio thread and are
  * real-time safe (noexcept, no allocations, no locks, no syscalls).

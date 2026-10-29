@@ -38,12 +38,12 @@ struct BandData {
     std::uint64_t inputStartSample = 0;
     std::size_t numInputSamples = 0;
 
-    int numChannels;        ///< Number of audio channels
-    int numBands;           ///< Number of destination bands
-    bool hasSidechain;      ///< True if sidechain data is available
+    int numChannels = 0;        ///< Number of audio channels
+    int numBands = 0;           ///< Number of destination bands
+    bool hasSidechain = false;      ///< True if sidechain data is available
 
     /// Destination node IDs in band order (for topology-aware processing)
-    const std::vector<int>* destinationIds;
+    const std::vector<int>* destinationIds = nullptr;
 };
 
 /**
