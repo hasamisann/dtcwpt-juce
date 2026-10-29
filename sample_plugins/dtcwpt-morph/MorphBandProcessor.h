@@ -73,8 +73,15 @@ public:
     // Parameter control (audio thread)
     //==============================================================================
 
-    /** Maximum number of pending parameter events (see setTargets()). */
-    static constexpr int kEventQueueCapacity = 64;
+    /** Default capacity covers the maximum decimation interval at one event per host sample. */
+    static constexpr int kEventQueueCapacity = 1 << 12;
+
+    /** Non-real-time: reserve one event per host sample of the pending engine block. */
+    void reserveTargetEvents (std::size_t maximumHostInterval)
+    {
+        events_.resize (std::max (maximumHostInterval, static_cast<std::size_t> (kEventQueueCapacity)));
+        segments_.resize (events_.size() + 1);
+    }
 
     /**
      * @brief Queues new parameter targets taking effect at a position in the input stream.
@@ -244,7 +251,7 @@ private:
     void endBlock (std::int64_t blockLength) noexcept;
 
     /** Pending events, oldest first. Filled by setTargets(), drained by processAllBands(). */
-    std::array<TargetEvent, kEventQueueCapacity> events_;
+    std::vector<TargetEvent> events_ = std::vector<TargetEvent> (kEventQueueCapacity);
     int numEvents_ { 0 };
 
     /** Latest requested targets (the queue's last event, or the last consumed one). */
@@ -254,7 +261,7 @@ private:
     Segment state_;
 
     /** Segments of the block being processed: one per consumed event plus the initial one. */
-    std::array<Segment, kEventQueueCapacity + 1> segments_;
+    std::vector<Segment> segments_ = std::vector<Segment> (kEventQueueCapacity + 1);
     int numSegments_ { 1 };
 
     /** Stream position of the first sample of the next internal block. */

@@ -115,6 +115,13 @@ bool MorphAudioProcessor::tryApplyTopologyCandidate (const std::vector<std::stri
         newEngine->setBandProcessor (std::move (newMorphProcessor));
         newEngine->prepareToPlay (currentSampleRate_, currentBlockSize_, config, 2);
 
+        std::size_t depth = 0;
+        for (const auto& path : candidateDestinations)
+            depth = std::max (depth, path.size());
+        const std::size_t alignment = std::size_t { 1 } << depth;
+        const std::size_t block = static_cast<std::size_t> (std::max (1, currentBlockSize_));
+        observedMorphProcessor->reserveTargetEvents (((block + alignment - 1) / alignment) * alignment);
+
         const int newLatency = newEngine->getLatency();
         const int newAnalyzerMaxDelay = std::max (analyzerInputAlignerMaxDelay_, newLatency);
 

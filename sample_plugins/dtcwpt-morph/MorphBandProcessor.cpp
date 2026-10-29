@@ -54,7 +54,7 @@ void MorphBandProcessor::setTargets (double magnitude, double phase,
 
     // Queue full: merge the two oldest events into one that keeps the newer
     // event's position and values, i.e. drop the oldest. The latest requests win.
-    if (numEvents_ == kEventQueueCapacity)
+    if (numEvents_ == static_cast<int> (events_.size()))
     {
         std::copy (events_.begin() + 1, events_.end(), events_.begin());
         --numEvents_;

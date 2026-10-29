@@ -218,7 +218,7 @@ public:
         beginTest ("18. Events beyond the block are deferred, stale events apply at block start");
         testDeferredAndStaleEvents();
 
-        beginTest ("19. Event queue overflow keeps the latest requests");
+        beginTest ("19. Pending event history preserves the first and latest requests");
         testEventQueueOverflow();
 
         beginTest ("20. Blocks without sidechain still advance the timeline");
@@ -941,26 +941,17 @@ private:
         MorphBandProcessor proc;
         proc.prepare (kRampSr, n, 2, 1);
 
-        // 100 events 8 host samples apart with increasing magnitude. The queue holds
-        // 64, so the 36 oldest are dropped: the first surviving event is #37 at 296.
+        // All 100 events occur inside this 1024-host-sample block. None may
+        // be discarded before its corresponding subband sample is processed.
         for (int i = 1; i <= 100; ++i)
             proc.setTargets (static_cast<double> (i) / 100.0, 0.0, 0.0, false, false, 8 * i);
         proc.processAllBands (sb.data);
 
         constexpr double tol = 1e-9;
-        int earlyNonZero = 0;
-        for (std::size_t s = 0; s < n; ++s)
-            if (sampleTime (1, s) < 296.0 && std::abs (usedMagnitude (sb, 0, 0, s)) > tol)
-                ++earlyNonZero;
-        expectEquals (earlyNonZero, 0, "Dropped (oldest) events must not start any ramp");
-
+        expectWithinAbsoluteError (usedMagnitude (sb, 0, 0, 4), 0.01 / kRampSamples, tol,
+                                   "The first request starts its ramp at host position 8");
         expectWithinAbsoluteError (usedMagnitude (sb, 0, 0, n - 1), 1.0, tol,
-                                   "The latest request must win");
-
-        // First sample after the first surviving event: ramp 0 -> 0.37 started at 296
-        const std::size_t s = 150; // tau = 301
-        expectWithinAbsoluteError (usedMagnitude (sb, 0, 0, s), 0.37 * (301.0 - 296.0) / kRampSamples, tol,
-                                   "First surviving event ramps from 0");
+                                   "The latest request must also be applied");
     }
 
     void testNoSidechainAdvancesTimeline()
