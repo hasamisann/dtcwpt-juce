@@ -53,6 +53,7 @@ set_target_properties(dtcwpt_tests PROPERTIES
 target_sources(dtcwpt_tests
     PRIVATE
         main.cpp
+        suites/TailPublicationTests.cpp
         suites/AnalysisNodeTests.cpp
         suites/AnalysisSynthesisTests.cpp
         suites/ComplexUtilsTests.cpp
