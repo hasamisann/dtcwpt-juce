@@ -1,5 +1,7 @@
 #include "GateGuiFrequencyMapping.h"
 
+#include <dtcwpt/dtcwpt_frequency_mapping.h>
+
 #include <algorithm>
 #include <cmath>
 
@@ -22,19 +24,12 @@ namespace gate_gui
 
     std::pair<float, float> getBandFrequencyRange (const std::string& path, float nyquist) noexcept
     {
-        float lo = 0.0f;
-        float hi = nyquist > 0.0f ? nyquist : sanitizeSampleRateAndNyquist (0.0f).nyquist;
+        const float safeNyquist = nyquist > 0.0f ? nyquist : sanitizeSampleRateAndNyquist (0.0f).nyquist;
 
-        for (const char ch : path)
-        {
-            const float mid = (lo + hi) * 0.5f;
-            if (ch == 'L')
-                hi = mid;
-            else
-                lo = mid;
-        }
-
-        return std::pair<float, float> { lo, hi };
+        // Path strings are in Gray-code frequency order; the engine owns that mapping.
+        const auto range = dtcwpt::getNormalizedFrequencyRange (path);
+        return std::pair<float, float> { static_cast<float> (range.lo) * safeNyquist,
+                                         static_cast<float> (range.hi) * safeNyquist };
     }
 
     int countThresholdPointsBelow (float nyquist) noexcept

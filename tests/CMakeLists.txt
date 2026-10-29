@@ -70,6 +70,8 @@ target_sources(dtcwpt_tests
         suites/GraphicEqDragPaintTests.cpp
         suites/GateEditorSampleRateTests.cpp
         suites/GateGuiFrequencyMappingTests.cpp
+        suites/FrequencyMappingTests.cpp
+        suites/FrequencyOrderTests.cpp
         suites/SpectrumDataBridgeTests.cpp
         suites/BandLevelBridgeTests.cpp
         suites/GateBandProcessorTests.cpp

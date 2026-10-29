@@ -1274,4 +1274,13 @@ int DTCWPTProcessor::getLatency() const {
     return maxDelay_ + static_cast<int>(internalBlockSize_);
 }
 
+std::vector<NormalizedFrequencyRange> DTCWPTProcessor::getDestinationFrequencyRanges() const {
+    std::vector<NormalizedFrequencyRange> ranges;
+    ranges.reserve(destinations_.size());
+    for (const int nodeId : destinations_) {
+        ranges.push_back(getNormalizedFrequencyRange(nodeId));
+    }
+    return ranges;
+}
+
 } // namespace dtcwpt

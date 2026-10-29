@@ -6,6 +6,7 @@
 #include "dtcwpt_delay_buffer.h"
 #include "dtcwpt_topology_limits.h"
 #include "dtcwpt_topology_planner.h"
+#include "dtcwpt_frequency_mapping.h"
 #include "dtcwpt_band_processor.h"
 #include "dtcwpt_filter_structs.h"
 
@@ -72,6 +73,17 @@ public:
     void processBlock(juce::AudioBuffer<double>& buffer);
 
     int getLatency() const;
+
+    /**
+     * @brief Frequency range of each destination band, in destination order.
+     *
+     * Entry i corresponds to TopologyConfig::destinations[i] (band index i in
+     * BandData). Ranges are normalised: 0 is DC, 1 is Nyquist. Paths are NOT in
+     * natural binary order, see dtcwpt_frequency_mapping.h.
+     *
+     * Allocates; call from a non-audio thread. Empty before prepareToPlay().
+     */
+    std::vector<NormalizedFrequencyRange> getDestinationFrequencyRanges() const;
 
     /**
      * @brief Register a band processor. Takes ownership.

@@ -144,7 +144,7 @@ public:
         beginTest ("5. Bypass Low: power-of-2 node ID band passes through unchanged");
         testBypassLow();
 
-        beginTest ("6. Bypass High: all-bits-set node ID band passes through unchanged");
+        beginTest ("6. Bypass High: node ID of the band touching Nyquist passes through unchanged");
         testBypassHigh();
 
         beginTest ("7. SmoothedValue ramps — first sample not at full target");
@@ -155,6 +155,9 @@ public:
 
         beginTest ("9. Threshold boundary preserves full phase replacement");
         testThresholdBoundaryPreservesPhaseReplacement();
+
+        beginTest ("10. Bypass High targets the highest-frequency band of a depth-3 full packet (HLL)");
+        testBypassHighTargetsHighestFrequencyBand();
     }
 
 private:
@@ -419,10 +422,10 @@ private:
     // -----------------------------------------------------------------------
     void testBypassHigh()
     {
-        // Band 0: nodeId=127 (binary 01111111 → all bits set → isHighBand → bypassed)
-        // Band 1: nodeId=5   (not high → processed)
+        // Band 0: nodeId=96 (HLLLLL: the band whose upper edge is Nyquist → isHighBand → bypassed)
+        // Band 1: nodeId=5  (not high → processed)
         SynthBandData sb;
-        sb.init (1, 2, 64, {127, 5});
+        sb.init (1, 2, 64, {96, 5});
         sb.fillMainSine (0.5);
         sb.fillScSine (0.8, 0.3);
 
@@ -529,6 +532,49 @@ private:
             double expScMag = std::hypot (ref.scRe[0][0][s], ref.scIm[0][0][s]);
             expectWithinAbsoluteError (outMag, expScMag, tol,
                                        "After reset(), first sample should be at full morph");
+        }
+    }
+
+    // Issue #12: after the high-pass + 2:1 decimation the sub-band spectrum is
+    // mirrored, so the highest band of a depth-3 full packet is HLL (node 12),
+    // not HHH (node 15).
+    void testBypassHighTargetsHighestFrequencyBand()
+    {
+        constexpr int numBands = 8;
+        std::vector<int> nodeIds;
+        for (int id = 8; id < 16; ++id)
+            nodeIds.push_back (id);
+
+        SynthBandData sb;
+        sb.init (1, numBands, 64, nodeIds);
+        sb.fillMainSine (0.5);
+        sb.fillScSine (0.8, 0.3);
+
+        const auto origRe = sb.mainRe[0];
+        const auto origIm = sb.mainIm[0];
+
+        MorphBandProcessor proc;
+        proc.prepare (44100.0, 64, numBands, 1);
+        proc.setTargets (1.0, 1.0, 0.001, /*bypassLow=*/false, /*bypassHigh=*/true);
+        proc.processAllBands (sb.data);
+
+        auto changed = [&] (int band)
+        {
+            const auto b = static_cast<std::size_t> (band);
+            for (std::size_t s = 0; s < 64; ++s)
+                if (std::abs (sb.mainRe[0][b][s] - origRe[b][s]) > 1e-9
+                    || std::abs (sb.mainIm[0][b][s] - origIm[b][s]) > 1e-9)
+                    return true;
+            return false;
+        };
+
+        for (int band = 0; band < numBands; ++band)
+        {
+            const int nodeId = nodeIds[static_cast<std::size_t> (band)];
+            if (nodeId == 12)
+                expect (! changed (band), "HLL (node 12, 21-24 kHz at 48 kHz) must be bypassed by bypassHigh");
+            else
+                expect (changed (band), "node " + juce::String (nodeId) + " must still be processed");
         }
     }
 

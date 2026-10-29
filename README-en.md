@@ -46,6 +46,7 @@ dtcwpt/                  <- JUCE module root
 ├── dtcwpt_stateful_filter.h/.ipp
 ├── dtcwpt_delay_buffer.h/.ipp
 ├── dtcwpt_topology_planner.h/.ipp
+├── dtcwpt_frequency_mapping.h/.ipp
 ├── dtcwpt_band_processor.h/.ipp
 ├── dtcwpt_complex_utils.h/.ipp
 ├── dtcwpt_filter_structs.h
@@ -204,6 +205,35 @@ In other words:
 | `"LL"` | Root -> Low -> Low | 2 | 4 |
 | `"LH"` | Root -> Low -> High | 2 | 5 |
 | `"HLL"` | Root -> High -> Low -> Low | 3 | 12 |
+
+#### Path Strings and Frequency (Gray-code Order)
+
+**Path strings are NOT in natural binary frequency order.** After a high-pass filter and 2:1 decimation the sub-band spectrum is mirrored, so below an H step the roles of L and H are swapped. The band covered by a whole subtree is as expected (e.g. everything under `H` is the upper half), but the order of the leaves inside a subtree follows the Gray code.
+
+Rule: walk the path from the root. While the "mirrored" flag is off, L = lower half and H = upper half; while it is on, L = upper half and H = lower half. Every H toggles the flag. The rule is the same for the Re and Im trees and at every level.
+
+For a depth-3 full packet at 48 kHz (3 kHz per band), from lowest to highest frequency:
+
+| Band | 0-3k | 3-6k | 6-9k | 9-12k | 12-15k | 15-18k | 18-21k | 21-24k |
+|------|------|------|------|-------|--------|--------|--------|--------|
+| Path | `LLL` | `LLH` | `LHH` | `LHL` | `HHL` | `HHH` | `HLH` | `HLL` |
+
+The highest band is `HLL`, not `HHH`. Do not derive frequencies from path strings, and do not assume "the H-only path is the highest band"; use the following API instead (`#include <dtcwpt/dtcwpt.h>`).
+
+```cpp
+// Normalized frequency range (0 = DC, 1 = Nyquist)
+dtcwpt::NormalizedFrequencyRange r = dtcwpt::getNormalizedFrequencyRange("HLL");  // {0.875, 1.0}
+auto r2 = dtcwpt::getNormalizedFrequencyRange(12);                                // node ID overload
+
+// Frequency-order index among the bands of the same depth (0 = lowest)
+std::uint64_t idx = dtcwpt::getFrequencyOrderIndex("HLL");                        // 7
+
+// Sort destinations by frequency
+dtcwpt::sortPathsByFrequency(destinations, /*descending=*/true);
+
+// After prepareToPlay(): frequency range of every destination (in band-index order)
+std::vector<dtcwpt::NormalizedFrequencyRange> ranges = processor.getDestinationFrequencyRanges();
+```
 
 #### Valid Topology Examples
 
@@ -449,6 +479,14 @@ int getLatency() const;
 ```
 
 Returns the processing latency in samples. Use this for host latency compensation.
+
+---
+
+```cpp
+std::vector<NormalizedFrequencyRange> getDestinationFrequencyRanges() const;
+```
+
+Returns the normalized frequency range (0 = DC, 1 = Nyquist) covered by each destination, in band-index order (the order of `TopologyConfig::destinations` / `BandData`). Path strings are in Gray-code order (see "Path Strings and Frequency" above). Allocates; do not call from the audio thread.
 
 ---
 

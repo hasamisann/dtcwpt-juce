@@ -27,6 +27,7 @@
 // dtcwpt headers
 #include <dtcwpt/dtcwpt_band_processor.h>
 #include <dtcwpt/dtcwpt_complex_utils.h>
+#include <dtcwpt/dtcwpt_frequency_mapping.h>
 
 // JUCE headers
 #include <juce_audio_basics/juce_audio_basics.h>
@@ -145,8 +146,10 @@ private:
     /**
      * @brief Returns true if the node ID represents the highest-frequency band.
      *
-     * The highest-frequency (H-only) band is the leaf whose node ID has all
-     * bits set: (n & (n + 1)) == 0.
+     * The band is the highest one when its normalised upper edge is 1
+     * (Nyquist). Because the sub-band spectrum is mirrored after each H step,
+     * this is NOT the H-only path: at depth 3 it is HLL (node 12), not HHH.
+     * See dtcwpt::getNormalizedFrequencyRange().
      *
      * @param nodeId Destination node ID from BandData::destinationIds
      * @return true if this is the high bypass band

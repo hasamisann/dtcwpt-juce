@@ -44,6 +44,7 @@ dtcwpt/                  <- JUCE モジュールルート
 ├── dtcwpt_stateful_filter.h/.ipp
 ├── dtcwpt_delay_buffer.h/.ipp
 ├── dtcwpt_topology_planner.h/.ipp
+├── dtcwpt_frequency_mapping.h/.ipp
 ├── dtcwpt_band_processor.h/.ipp
 ├── dtcwpt_complex_utils.h/.ipp
 ├── dtcwpt_filter_structs.h
@@ -197,6 +198,35 @@ ctest --test-dir build -C Release --output-on-failure
 | `"LL"` | ルート -> Low -> Low | 2 | 4 |
 | `"LH"` | ルート -> Low -> High | 2 | 5 |
 | `"HLL"` | ルート -> High -> Low -> Low | 3 | 12 |
+
+#### パス文字列と周波数の対応（グレイコード順）
+
+**パス文字列は自然な二進展開の周波数順ではありません。** ハイパスフィルタ -> 2:1 間引きの後はサブバンドのスペクトルが反転するため、H を通過した先では L と H の上下が入れ替わります。ある節点の部分木全体が覆う帯域（例: `H` 以下は上半分）は自然順どおりですが、部分木内部のリーフの並びはグレイコード順になります。
+
+規則: パスを根から辿り、「反転フラグ」が立っていない間は L = 下半分、H = 上半分、反転中は L = 上半分、H = 下半分。H を通過するたびに反転フラグを切り替えます。Re/Im 両ツリー、すべてのレベルで同じ規則です。
+
+48 kHz・深さ 3 のフルパケット（各バンド 3 kHz 幅）で、周波数の低い順に並べると次のとおりです。
+
+| 周波数帯 | 0-3k | 3-6k | 6-9k | 9-12k | 12-15k | 15-18k | 18-21k | 21-24k |
+|----------|------|------|------|-------|--------|--------|--------|--------|
+| パス | `LLL` | `LLH` | `LHH` | `LHL` | `HHL` | `HHH` | `HLH` | `HLL` |
+
+最高域は `HHH` ではなく `HLL` です。パス文字列から周波数を決めたり「H のみのパス = 最高域」と仮定したりせず、次の API を使ってください（`#include <dtcwpt/dtcwpt.h>`）。
+
+```cpp
+// 正規化周波数範囲（0 = DC, 1 = ナイキスト）
+dtcwpt::NormalizedFrequencyRange r = dtcwpt::getNormalizedFrequencyRange("HLL");  // {0.875, 1.0}
+auto r2 = dtcwpt::getNormalizedFrequencyRange(12);                                // ノード ID 版
+
+// 同じ深度のバンドの中での周波数順インデックス（0 = 最低域）
+std::uint64_t idx = dtcwpt::getFrequencyOrderIndex("HLL");                        // 7
+
+// デスティネーションを周波数順に並べ替える
+dtcwpt::sortPathsByFrequency(destinations, /*descending=*/true);
+
+// prepareToPlay() 後: 各デスティネーション（バンドインデックス順）の周波数範囲
+std::vector<dtcwpt::NormalizedFrequencyRange> ranges = processor.getDestinationFrequencyRanges();
+```
 
 #### 有効なトポロジーの例
 
@@ -442,6 +472,14 @@ int getLatency() const;
 ```
 
 サンプル数での処理レイテンシーを返します。ホストのレイテンシー補償に使用してください。
+
+---
+
+```cpp
+std::vector<NormalizedFrequencyRange> getDestinationFrequencyRanges() const;
+```
+
+各デスティネーション（`TopologyConfig::destinations` / `BandData` のバンドインデックス順）が覆う正規化周波数範囲（0 = DC, 1 = ナイキスト）を返します。パス文字列はグレイコード順です（上記「パス文字列と周波数の対応」参照）。メモリを確保するため、オーディオスレッドでは呼び出さないでください。
 
 ---
 

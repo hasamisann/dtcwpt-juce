@@ -40,6 +40,11 @@ namespace gate_gui
 
     FrequencyMapping makeFrequencyMapping (float nyquist) noexcept;
 
+    /**
+     * Frequency range [low, high] in Hz of the band at @p path.
+     * Path strings are in Gray-code frequency order (see dtcwpt_frequency_mapping.h),
+     * e.g. at 48 kHz depth 3 the highest band is "HLL", not "HHH".
+     */
     std::pair<float, float> getBandFrequencyRange (const std::string& path, float nyquist) noexcept;
 
     /** Number of threshold points (ISO 1/3 octave) at or below the display Nyquist; these are the ones the graph shows. */
